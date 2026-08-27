@@ -319,7 +319,7 @@ Commit: `git add src tests && git commit -m "feat: define monitor domain contrac
 - Produces: `normalizeLegalName(value: string): string`.
 - Produces: `matchesBlacklist(opportunity, entries): BlacklistMatch | null`.
 
-- [ ] **Step 1: Write failing LERIBE tests**
+- [x] **Step 1: Write failing LERIBE tests**
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -339,17 +339,17 @@ describe('matchesBlacklist', () => {
 });
 ```
 
-- [ ] **Step 2: Run and observe failure**
+- [x] **Step 2: Run and observe failure**
 
 Run: `npx vitest run tests/domain/blacklist.test.ts`
 
 Expected: FAIL because the blacklist module is missing.
 
-- [ ] **Step 3: Implement deterministic normalization and matching**
+- [x] **Step 3: Implement deterministic normalization and matching**
 
 `normalizeLegalName` must apply Unicode NFD, remove combining marks, uppercase, replace punctuation with spaces, normalize `S.A.C.`/`SAC`, and collapse whitespace. `matchesBlacklist` must prefer exact tax ID, then normalized name, and return the matched entry without fuzzy matching.
 
-- [ ] **Step 4: Add supplier-or-debtor coverage and rerun**
+- [x] **Step 4: Add supplier-or-debtor coverage and rerun**
 
 Add a test proving a helper named `findOpportunityBlacklistMatch` checks both parties and reports the role `supplier` or `debtor`.
 
@@ -357,7 +357,7 @@ Run: `npx vitest run tests/domain/blacklist.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit: `git add src/domain tests/domain && git commit -m "feat: enforce permanent counterparty blacklist"`
 
