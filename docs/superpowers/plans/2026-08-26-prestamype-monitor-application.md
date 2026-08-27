@@ -443,23 +443,23 @@ Commit: `git add src/domain tests/domain && git commit -m "feat: score and evalu
 - Produces: `formatOpportunityAlert(opportunity, evaluation, portfolio, detectedAt): string`.
 - Produces: `formatTechnicalAlert(event): string`.
 
-- [ ] **Step 1: Write failing message tests**
+- [x] **Step 1: Write failing message tests**
 
 Assert that a high-priority message includes `🔴 OPORTUNIDAD ALTA`, company, risk, annual return, score, remaining amount, Lima timestamp, reasons, warnings, and direct URL. Add a S/0 test expecting `Saldo disponible: S/0.00` and `Sin liquidez disponible; no ejecutar inversión`.
 
-- [ ] **Step 2: Run and observe failure**
+- [x] **Step 2: Run and observe failure**
 
 Run: `npx vitest run tests/notifications/telegram-message.test.ts`
 
-- [ ] **Step 3: Implement HTML-safe Telegram formatting**
+- [x] **Step 3: Implement HTML-safe Telegram formatting**
 
 Use Telegram HTML tags only after escaping `&`, `<`, and `>`. Keep messages below 4,000 characters. Use `Intl.NumberFormat('es-PE', { style: 'currency', currency: 'PEN' })` and `America/Lima` timestamps.
 
-- [ ] **Step 4: Add technical alert cases**
+- [x] **Step 4: Add technical alert cases**
 
 Cover `SESSION_EXPIRED`, `CAPTCHA`, `RATE_LIMIT`, `DOM_CHANGED`, `COST_PAUSE`, and `RECOVERED`. Technical messages must not contain raw exception objects or request headers.
 
-- [ ] **Step 5: Run and commit**
+- [x] **Step 5: Run and commit**
 
 Run: `npx vitest run tests/notifications/telegram-message.test.ts` and `npm run typecheck`.
 
