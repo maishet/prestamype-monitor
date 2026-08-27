@@ -374,7 +374,7 @@ Commit: `git add src/domain tests/domain && git commit -m "feat: enforce permane
 - Produces: `scoreOpportunity(opportunity, portfolio): ScoreBreakdown`.
 - Produces: `evaluateOpportunity(input): Evaluation`.
 
-- [ ] **Step 1: Write failing scoring boundary tests**
+- [x] **Step 1: Write failing scoring boundary tests**
 
 Cover these exact expectations:
 
@@ -391,11 +391,11 @@ it.each([['A+', 10], ['A', 10], ['B', 8], ['C', 6]] as const)(
 );
 ```
 
-- [ ] **Step 2: Run and observe missing exports**
+- [x] **Step 2: Run and observe missing exports**
 
 Run: `npx vitest run tests/domain/scoring.test.ts`
 
-- [ ] **Step 3: Implement component formulas**
+- [x] **Step 3: Implement component formulas**
 
 Use these bounded formulas:
 
@@ -409,7 +409,7 @@ Use these bounded formulas:
 
 Round only the final total to one decimal place and keep every component within its declared maximum.
 
-- [ ] **Step 4: Write failing hard-gate tests**
+- [x] **Step 4: Write failing hard-gate tests**
 
 Add cases proving:
 
@@ -421,7 +421,7 @@ Add cases proving:
 - `collectionProblem: true` returns `DO_NOT_INVEST`.
 - Score 80 returns `INVEST`, score 70–79.9 returns `REVIEW`, and lower scores return `IGNORE`.
 
-- [ ] **Step 5: Implement `evaluateOpportunity` and run the suite**
+- [x] **Step 5: Implement `evaluateOpportunity` and run the suite**
 
 Return hard-gate reasons before scoring. Preserve all blacklist and collection reasons in `warnings`.
 
@@ -429,7 +429,7 @@ Run: `npx vitest run tests/domain/scoring.test.ts tests/domain/evaluate.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Commit: `git add src/domain tests/domain && git commit -m "feat: score and evaluate Prestamype opportunities"`
 
