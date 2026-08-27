@@ -1,9 +1,12 @@
 # Diseño del monitor de oportunidades de Prestamype
 
-**Fecha:** 26 de agosto de 2026  
-**Estado:** Arquitectura y estrategia aprobadas por el usuario; documento pendiente de revisión final  
-**Plataforma objetivo:** AWS Lambda, Amazon SQS, EventBridge Scheduler, DynamoDB y Telegram  
-**Región inicial:** `sa-east-1` (São Paulo)  
+**Fecha:** 26 de agosto de 2026
+
+**Estado:** Arquitectura y estrategia aprobadas por el usuario; documento pendiente de revisión final
+
+**Plataforma objetivo:** AWS Lambda, Amazon SQS, EventBridge Scheduler, DynamoDB y Telegram
+
+**Región inicial:** `sa-east-1` (São Paulo)
 
 ## 1. Objetivo
 
