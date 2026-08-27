@@ -73,7 +73,7 @@ tests/
 **Interfaces:**
 - Produces: `npm test`, `npm run typecheck`, `npm run lint`, and `npm run format:check` project commands.
 
-- [ ] **Step 1: Initialize the package and install exact dependencies**
+- [x] **Step 1: Initialize the package and install exact dependencies**
 
 Run:
 
@@ -83,7 +83,7 @@ npm install --save-exact @aws-sdk/client-dynamodb @aws-sdk/client-sqs @aws-sdk/c
 npm install --save-dev --save-exact @eslint/js @types/aws-lambda @types/node eslint eslint-config-prettier playwright prettier typescript typescript-eslint vitest
 ```
 
-- [ ] **Step 2: Add scripts and ESM metadata to `package.json`**
+- [x] **Step 2: Add scripts and ESM metadata to `package.json`**
 
 ```json
 {
@@ -107,7 +107,7 @@ Install the TypeScript runner used by the two scripts:
 npm install --save-dev --save-exact tsx
 ```
 
-- [ ] **Step 3: Create strict compiler and Vitest configuration**
+- [x] **Step 3: Create strict compiler and Vitest configuration**
 
 `tsconfig.json`:
 
@@ -161,7 +161,7 @@ node_modules/
 docs/
 ```
 
-- [ ] **Step 4: Write and run the smoke test**
+- [x] **Step 4: Write and run the smoke test**
 
 `tests/smoke.test.ts`:
 
@@ -177,7 +177,7 @@ Run: `npm test`
 
 Expected: one passing test.
 
-- [ ] **Step 5: Run static checks and commit**
+- [x] **Step 5: Run static checks and commit**
 
 Run: `npm run typecheck` and `npm run format:check`.
 
