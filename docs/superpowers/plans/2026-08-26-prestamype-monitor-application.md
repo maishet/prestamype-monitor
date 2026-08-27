@@ -193,7 +193,7 @@ Commit: `git add package.json package-lock.json tsconfig.json vitest.config.ts e
 **Interfaces:**
 - Produces: `Opportunity`, `PaymentHistory`, `PortfolioSnapshot`, `Evaluation`, `MonitorConfig`, and `DEFAULT_CONFIG`.
 
-- [ ] **Step 1: Write a failing defaults test**
+- [x] **Step 1: Write a failing defaults test**
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -208,13 +208,13 @@ describe('DEFAULT_CONFIG', () => {
 });
 ```
 
-- [ ] **Step 2: Run the test and observe the missing module failure**
+- [x] **Step 2: Run the test and observe the missing module failure**
 
 Run: `npx vitest run tests/domain/evaluate.test.ts`
 
 Expected: FAIL because `defaults.ts` does not exist.
 
-- [ ] **Step 3: Create the domain types and defaults**
+- [x] **Step 3: Create the domain types and defaults**
 
 Define these exact shapes in `src/domain/types.ts`:
 
@@ -298,13 +298,13 @@ export interface EncryptedSession {
 
 Create `DEFAULT_CONFIG` with allowed risks `['A+', 'A', 'B', 'C']`, minimum annual return `15`, currency `PEN`, minimum investment `10000`, high priority `80`, and review `70`.
 
-- [ ] **Step 4: Run the focused test and all static checks**
+- [x] **Step 4: Run the focused test and all static checks**
 
 Run: `npx vitest run tests/domain/evaluate.test.ts` and `npm run typecheck`.
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit: `git add src tests && git commit -m "feat: define monitor domain contracts"`
 
