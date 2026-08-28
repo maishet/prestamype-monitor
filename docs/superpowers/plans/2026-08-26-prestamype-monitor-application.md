@@ -478,23 +478,23 @@ Commit: `git add src/notifications tests/notifications && git commit -m "feat: f
 - Produces: `parseOpportunityCards(html: string): OpportunitySummary[]`.
 - Produces: `parseOpportunityDetail(html: string, summary): Opportunity`.
 
-- [ ] **Step 1: Create minimal sanitized fixtures**
+- [x] **Step 1: Create minimal sanitized fixtures**
 
 The list fixture must contain cards for A at 16%, C at 20%, D at 21%, and B at 14.9%. The detail fixture must contain pagador and proveedor histories with totals, on-time counts, late counts, current counts, delinquency, average delay, total amount, funded amount, remaining amount, and dates. Use invented company names and no cookies or account data.
 
-- [ ] **Step 2: Write failing parser tests**
+- [x] **Step 2: Write failing parser tests**
 
 Assert exact typed values, integer cents, decimal percentages, stable IDs from the opportunity link, and `null` for absent optional values. Assert that malformed essential fields produce a typed `PageStructureError` rather than guessed data.
 
-- [ ] **Step 3: Run and observe failure**
+- [x] **Step 3: Run and observe failure**
 
 Run: `npx vitest run tests/browser/parsers.test.ts`
 
-- [ ] **Step 4: Implement parsers with explicit selector alternatives**
+- [x] **Step 4: Implement parsers with explicit selector alternatives**
 
 Use pure Cheerio functions over serialized HTML so tests do not start Chromium. Centralize selectors in a `PRESTAMYPE_SELECTORS` constant. Define `PageStructureError` in `src/browser/errors.ts`. Parse Peruvian number formats by removing currency text and thousands separators before converting to cents.
 
-- [ ] **Step 5: Run and commit**
+- [x] **Step 5: Run and commit**
 
 Run: `npx vitest run tests/browser/parsers.test.ts` and `npm run typecheck`.
 
