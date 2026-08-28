@@ -572,23 +572,23 @@ Commit: `git add src/application src/browser tests/browser && git commit -m "fea
 **Interfaces:**
 - Produces: `runMonitor(dependencies, input): Promise<MonitorRunResult>`.
 
-- [ ] **Step 1: Write a failing happy-path orchestration test**
+- [x] **Step 1: Write a failing happy-path orchestration test**
 
 Use in-memory fakes and assert this order: acquire lock, load blacklist, load portfolio, list candidates, evaluate, save opportunity, send alert, mark alert, close browser, release lock.
 
-- [ ] **Step 2: Run and observe failure**
+- [x] **Step 2: Run and observe failure**
 
 Run: `npx vitest run tests/application/monitor.test.ts`
 
-- [ ] **Step 3: Implement the minimal orchestration**
+- [x] **Step 3: Implement the minimal orchestration**
 
 Generate a material alert key from opportunity ID plus normalized risk, return, remaining amount, due date, and evaluation decision. Do not send `IGNORE` results. Send `DO_NOT_INVEST` only when a new blacklist/collection conflict is detected, not on every scan.
 
-- [ ] **Step 4: Add failure and idempotency tests**
+- [x] **Step 4: Add failure and idempotency tests**
 
 Cover lock unavailable, duplicate alert, notifier failure, browser failure, and repository failure. In every case, assert `close()` and `releaseLock()` run in `finally`. Assert no partial financial recommendation is sent after parser or structure errors.
 
-- [ ] **Step 5: Run and commit**
+- [x] **Step 5: Run and commit**
 
 Run: `npx vitest run tests/application/monitor.test.ts` and `npm test`.
 

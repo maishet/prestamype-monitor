@@ -21,12 +21,21 @@ export interface MonitorRepository {
   releaseLock(owner: string): Promise<void>;
   getBlacklist(): Promise<readonly BlacklistEntry[]>;
   getOpportunityFingerprints(): Promise<Readonly<Record<string, string>>>;
-  hasAlert(alertKey: string): Promise<boolean>;
   saveOpportunity(
     opportunity: Opportunity,
     evaluation: Evaluation,
   ): Promise<void>;
-  markAlerted(alertKey: string): Promise<void>;
+  claimAlert(
+    alertKey: string,
+    owner: string,
+    leaseUntilEpochSeconds: number,
+  ): Promise<boolean>;
+  /** Marks a successfully delivered alert. Telegram delivery remains at-most-once
+   * during the lease, not provably exactly-once: a successful send followed by a
+   * persistence failure is inherently ambiguous. */
+  completeAlert(alertKey: string, owner: string): Promise<void>;
+  /** Releases only a claim whose notification definitely failed before delivery. */
+  releaseAlertClaim(alertKey: string, owner: string): Promise<void>;
 }
 
 export interface Notifier {
