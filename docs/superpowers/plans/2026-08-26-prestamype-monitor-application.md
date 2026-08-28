@@ -638,19 +638,19 @@ Commit: `git add src/security src/cli tests/security && git commit -m "feat: cap
 - Produces: `npm run dry-run -- --fixture` with no network.
 - Produces: `npm run dry-run -- --live` requiring explicit local session configuration.
 
-- [ ] **Step 1: Write a failing fixture dry-run test**
+- [x] **Step 1: Write a failing fixture dry-run test**
 
 Assert the command evaluates sanitized fixtures, outputs only a redacted recommendation summary, does not invoke Telegram, and exits zero.
 
-- [ ] **Step 2: Implement fixture and live modes**
+- [x] **Step 2: Implement fixture and live modes**
 
 Fixture mode uses local HTML. Live mode opens the authenticated page read-only and prints prospective Telegram messages prefixed with `[NO ENVIADO]`. Require `--live`; never make live access the default.
 
-- [ ] **Step 3: Document local commands and safety boundaries**
+- [x] **Step 3: Document local commands and safety boundaries**
 
 Document installation, test commands, session capture, fixture dry-run, live dry-run, redaction policy, and the fact that no investment actions exist.
 
-- [ ] **Step 4: Run the full verification gate**
+- [x] **Step 4: Run the full verification gate**
 
 Run:
 
@@ -664,6 +664,6 @@ npm run dry-run -- --fixture
 
 Expected: all commands exit zero and no secret-like values appear in output.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit: `git add . && git commit -m "test: verify local Prestamype monitor workflow"`
