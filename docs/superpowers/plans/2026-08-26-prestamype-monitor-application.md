@@ -511,7 +511,7 @@ Commit: `git add src/browser tests/browser tests/fixtures && git commit -m "feat
 - Produces: `OpportunitySource` port with `getPortfolio()` and `listEligibleOpportunities(config)`.
 - Produces: `PrestamypeClient` implementing `OpportunitySource`.
 
-- [ ] **Step 1: Define ports and write a failing route-policy test**
+- [x] **Step 1: Define ports and write a failing route-policy test**
 
 Ports:
 
@@ -539,25 +539,25 @@ export interface SessionStore { saveEncryptedSession(payload: EncryptedSession):
 
 Test that `shouldBlockResource('image')`, `font`, `media`, and known analytics hosts return true, while `document`, `script`, `xhr`, and Prestamype hosts remain allowed.
 
-- [ ] **Step 2: Run and observe failure**
+- [x] **Step 2: Run and observe failure**
 
 Run: `npx vitest run tests/browser/prestamype-client.test.ts`
 
-- [ ] **Step 3: Implement browser launch and safety policy**
+- [x] **Step 3: Implement browser launch and safety policy**
 
 Launch one headless Chromium browser with one context, Spanish locale, Lima timezone, fixed viewport, supplied storage state, and no stealth/CAPTCHA plugins. Abort images, fonts, media, analytics, and ads. Set navigation timeout to 12 seconds and total scan deadline to 25 seconds.
 
-- [ ] **Step 4: Implement visible navigation flow**
+- [x] **Step 4: Implement visible navigation flow**
 
 Navigate to `/app/inversionista/oportunidades`, verify authenticated page markers, select **Retorno mayor**, restrict risk to A+/A/B/C when the visible UI supports it, and stop parsing once sorted returns are below 15%. Compare visible card fingerprints with the repository cache and open details sequentially only for new or materially changed candidates.
 
 Explicitly reject any locator whose accessible name matches `/invertir|reservar|pagar|confirmar/i`. The client must expose no method capable of clicking those controls.
 
-- [ ] **Step 5: Add defensive-condition tests**
+- [x] **Step 5: Add defensive-condition tests**
 
 Mock Playwright boundaries and prove that CAPTCHA raises `SessionChallengeError`, login redirect raises `SessionExpiredError`, 403/429 raises `RateLimitError`, and missing sort confirmation raises `PageStructureError`.
 
-- [ ] **Step 6: Run and commit**
+- [x] **Step 6: Run and commit**
 
 Run: `npx vitest run tests/browser/prestamype-client.test.ts` and `npm run typecheck`.
 

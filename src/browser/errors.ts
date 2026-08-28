@@ -19,3 +19,34 @@ export class PageStructureError extends Error {
     this.field = field;
   }
 }
+
+export class SessionChallengeError extends Error {
+  constructor() {
+    super("A browser challenge requires manual intervention");
+    this.name = "SessionChallengeError";
+  }
+}
+
+export class SessionExpiredError extends Error {
+  constructor() {
+    super("The Prestamype session is no longer authenticated");
+    this.name = "SessionExpiredError";
+  }
+}
+
+export class RateLimitError extends Error {
+  readonly status: 403 | 429;
+
+  constructor(status: 403 | 429) {
+    super(`Prestamype rejected the browser request (${status})`);
+    this.name = "RateLimitError";
+    this.status = status;
+  }
+}
+
+export class ScanDeadlineError extends Error {
+  constructor() {
+    super("The safe browser scan deadline was exceeded");
+    this.name = "ScanDeadlineError";
+  }
+}
