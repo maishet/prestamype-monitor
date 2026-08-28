@@ -43,5 +43,12 @@ export interface Notifier {
 }
 
 export interface SessionStore {
-  saveEncryptedSession(payload: EncryptedSession): Promise<void>;
+  loadEncryptedSession(options?: {
+    signal: AbortSignal;
+  }): Promise<EncryptedSession | null>;
+  /** Adapters should honor the signal so cancellation cannot persist a session late. */
+  saveEncryptedSession(
+    payload: EncryptedSession,
+    options?: { signal: AbortSignal },
+  ): Promise<void>;
 }

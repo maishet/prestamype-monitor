@@ -605,23 +605,23 @@ Commit: `git add src/application tests/application && git commit -m "feat: orche
 - Produces: `encryptSession(storageState, key): EncryptedSession`.
 - Produces: `decryptSession(payload, key): BrowserContextOptions['storageState']`.
 
-- [ ] **Step 1: Write failing cryptography tests**
+- [x] **Step 1: Write failing cryptography tests**
 
 Assert AES-256-GCM round trip, unique IVs for identical input, rejection after ciphertext modification, and rejection of keys not exactly 32 bytes.
 
-- [ ] **Step 2: Run and observe failure**
+- [x] **Step 2: Run and observe failure**
 
 Run: `npx vitest run tests/security/session-crypto.test.ts`
 
-- [ ] **Step 3: Implement session encryption**
+- [x] **Step 3: Implement session encryption**
 
 Serialize storage state as UTF-8 JSON. Return base64 `iv`, `ciphertext`, and `authTag` plus schema version `1`. Never accept a caller-provided IV.
 
-- [ ] **Step 4: Implement the capture CLI**
+- [x] **Step 4: Implement the capture CLI**
 
 Open a visible local Playwright browser, navigate to Prestamype, print `Inicia sesión manualmente y vuelve aquí`, wait for the authenticated opportunities marker, capture `context.storageState()`, encrypt it, and write it through an injected `SessionStore`. Never request the password on stdin and never print the state.
 
-- [ ] **Step 5: Run and commit**
+- [x] **Step 5: Run and commit**
 
 Run: `npx vitest run tests/security/session-crypto.test.ts`, `npm run typecheck`, and `npm run lint`.
 
