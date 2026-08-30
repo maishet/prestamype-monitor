@@ -4,6 +4,7 @@ import type {
   PortfolioSnapshot,
   RiskGrade,
 } from "./types.js";
+import { resultingConcentrationRatio } from "./investment-projection.js";
 
 const EXPERIENCE_AUCTION_CALIBRATION_COUNT = 100;
 const EXPERIENCE_AMOUNT_CALIBRATION_CENTS = 10_000_000;
@@ -127,32 +128,8 @@ export function scoreConcentration(
   opportunity: Opportunity,
   portfolio: PortfolioSnapshot,
 ): number {
-  const taxId = opportunity.debtor.taxId;
-  const activeTotal = portfolio.activeTotalCents;
-  if (
-    taxId === null ||
-    activeTotal === null ||
-    !Number.isFinite(activeTotal) ||
-    activeTotal < 0
-  ) {
-    return 2;
-  }
-
-  const remainingAmount = opportunity.remainingAmountCents;
-  if (!Number.isFinite(remainingAmount) || remainingAmount < 0) return 2;
-
-  const recordedExposure = portfolio.exposureByTaxId[taxId];
-  if (
-    recordedExposure !== undefined &&
-    (!Number.isFinite(recordedExposure) || recordedExposure < 0)
-  ) {
-    return 2;
-  }
-  const exposure = recordedExposure ?? 0;
-  const denominator = activeTotal + remainingAmount;
-  if (!Number.isFinite(denominator) || denominator === 0) return 2;
-
-  const ratio = (exposure + remainingAmount) / denominator;
+  const ratio = resultingConcentrationRatio(opportunity, portfolio);
+  if (ratio === null) return 2;
   if (ratio < 0.4) return 5;
   if (ratio < 0.65) return 3;
   if (ratio < 0.85) return 1;

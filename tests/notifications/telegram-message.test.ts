@@ -25,7 +25,7 @@ const history: PaymentHistory = {
 
 const opportunity: Opportunity = {
   id: "opp-42",
-  url: "https://prestamype.com/oportunidades/opp-42",
+  url: "https://www.prestamype.com/app/inversionista/oportunidades/opp-42",
   supplier: { legalName: "Proveedor Andino S.A.C.", taxId: "20111111111" },
   debtor: { legalName: "Pagador Nacional S.A.", taxId: "20222222222" },
   risk: "A",
@@ -77,8 +77,10 @@ describe("formatOpportunityAlert", () => {
     expect(message).toContain("Concentración resultante elevada");
     expect(message).toContain("27/08/2026, 10:30");
     expect(message).toContain(
-      '<a href="https://prestamype.com/oportunidades/opp-42">Abrir oportunidad</a>',
+      '<a href="https://www.prestamype.com/app/inversionista/oportunidades/opp-42">Abrir oportunidad</a>',
     );
+    expect(message).toContain("Concentración resultante:");
+    expect(message).toContain("Monto posible: S/2,500.00");
     expect(message).not.toMatch(
       /ejecutar la inversión|invertir automáticamente/i,
     );
@@ -120,12 +122,37 @@ describe("formatOpportunityAlert", () => {
     expect(unavailable).not.toContain("Sin liquidez disponible");
   });
 
+  it("uses the same possible amount for Telegram concentration as scoring", () => {
+    const candidate = { ...opportunity, remainingAmountCents: 1_000_000 };
+    const base = {
+      ...portfolio,
+      activeTotalCents: 100_000,
+      exposureByTaxId: { "20222222222": 10_000 },
+    };
+    const zero = formatOpportunityAlert(
+      candidate,
+      evaluation,
+      { ...base, availableBalanceCents: 0 },
+      new Date("2026-08-27T15:30:00.000Z"),
+    );
+    const hundred = formatOpportunityAlert(
+      candidate,
+      evaluation,
+      { ...base, availableBalanceCents: 10_000 },
+      new Date("2026-08-27T15:30:00.000Z"),
+    );
+    expect(zero).toContain("Monto posible: S/0.00");
+    expect(zero).toContain("Concentración resultante: 10.0%");
+    expect(hundred).toContain("Monto posible: S/100.00");
+    expect(hundred).toContain("Concentración resultante: 18.2%");
+  });
+
   it("escapes HTML text and safe link attributes, and rejects non-HTTPS URLs", () => {
     const hostile = {
       ...opportunity,
       supplier: { legalName: 'Proveedor <script>& "Uno"', taxId: null },
       debtor: { legalName: "Pagador > Proveedor & Co.", taxId: null },
-      url: 'https://prestamype.com/oportunidad/"quoted"?a=1&b=2',
+      url: "https://www.prestamype.com/app/inversionista/oportunidades/opp-safe",
     };
     const safe = formatOpportunityAlert(
       hostile,
@@ -148,8 +175,8 @@ describe("formatOpportunityAlert", () => {
       "Empresa: Proveedor &lt;script&gt;&amp; &quot;Uno&quot;",
     );
     expect(safe).toContain("Rentable &lt;hoy&gt; &amp; mañana");
-    expect(safe).toMatch(
-      /href="https:\/\/prestamype\.com\/oportunidad\/(?:%22|&quot;)quoted/,
+    expect(safe).toContain(
+      'href="https://www.prestamype.com/app/inversionista/oportunidades/opp-safe"',
     );
     expect(safe).not.toContain("<script>");
     expect(unsafe).not.toContain("href=");
@@ -198,7 +225,7 @@ describe("formatOpportunityAlert", () => {
 
   it("bounds escaped output without throwing and degrades an oversized link safely", () => {
     const ampersands = "&".repeat(950);
-    const oversizedUrl = `https://prestamype.com/oportunidad?a=${ampersands}`;
+    const oversizedUrl = `https://www.prestamype.com/app/inversionista/oportunidades/opp-42?a=${ampersands}`;
 
     expect(() =>
       formatOpportunityAlert(
@@ -250,7 +277,7 @@ describe("formatOpportunityAlert", () => {
     expect(message).toMatch(/advertencias omitidas/i);
   });
 
-  it("rejects HTTPS links outside prestamype.com and its subdomains", () => {
+  it("rejects HTTPS links outside the exact canonical Prestamype host", () => {
     const message = formatOpportunityAlert(
       { ...opportunity, url: "https://evil.example/oportunidad/opp-42" },
       evaluation,
@@ -261,6 +288,19 @@ describe("formatOpportunityAlert", () => {
     expect(message).not.toContain("href=");
     expect(message).not.toContain("evil.example");
     expect(message).toContain("Enlace: no disponible (URL inválida)");
+  });
+
+  it("rejects arbitrary Prestamype subdomains", () => {
+    const message = formatOpportunityAlert(
+      {
+        ...opportunity,
+        url: "https://evil.prestamype.com/app/inversionista/oportunidades/opp-42",
+      },
+      evaluation,
+      portfolio,
+      new Date("2026-08-27T15:30:00.000Z"),
+    );
+    expect(message).not.toContain("href=");
   });
 });
 
@@ -299,5 +339,30 @@ describe("formatTechnicalAlert", () => {
 
     expect(message).toContain("Pausa controlada");
     expect(message).not.toMatch(/secret-error|authorization|secret-token/i);
+  });
+
+  it("redacts sensitive canaries from the explicitly safe detail", () => {
+    const message = formatTechnicalAlert({
+      type: "DOM_CHANGED",
+      safeDetail:
+        "RUC 20123456789 Authorization: Bearer very-secret cookie=session-value token=token-value",
+    });
+    expect(message).not.toMatch(
+      /20123456789|very-secret|session-value|token-value/i,
+    );
+    expect(message).toContain("[REDACTADO]");
+  });
+
+  it("redacts the complete remainder of every line after a sensitive label", () => {
+    const message = formatTechnicalAlert({
+      type: "DOM_CHANGED",
+      safeDetail:
+        "Línea segura\nCookie: session=FIRST; csrf=SECONDSECRET Authorization: Bearer TOPSECRET\nOtra línea segura\ntoken=THIRD api-key=FOURTH",
+    });
+    expect(message).toContain("Línea segura");
+    expect(message).toContain("Otra línea segura");
+    expect(message).not.toMatch(/FIRST|SECONDSECRET|TOPSECRET|THIRD|FOURTH/);
+    expect(message).toContain("Cookie: [REDACTADO]");
+    expect(message).toContain("token=[REDACTADO]");
   });
 });

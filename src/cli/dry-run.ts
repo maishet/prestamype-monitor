@@ -25,6 +25,7 @@ import {
   decryptSession,
   type StorageState,
 } from "../security/session-crypto.js";
+import { redactSensitiveText } from "../security/redaction.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const FIXTURE_FILES = {
@@ -157,31 +158,11 @@ function modeFromArgs(args: readonly string[]): "fixture" | "live" {
 }
 
 export function redactDryRunOutput(value: string): string {
-  const clean = Array.from(value, (character) => {
-    const code = character.charCodeAt(0);
-    return (code < 32 &&
-      character !== "\n" &&
-      character !== "\r" &&
-      character !== "\t") ||
-      code === 127
-      ? ""
-      : character;
-  }).join("");
-  return clean
+  return redactSensitiveText(value)
     .split(/\r?\n/)
     .slice(0, 200)
     .map((rawLine) => {
-      let line = rawLine.slice(0, 1_000);
-      line = line.replace(/\b\d{11}\b/g, "[REDACTADO]");
-      line = line.replace(
-        /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{4,})?\b/g,
-        "[REDACTADO]",
-      );
-      line = line.replace(/\b(Bearer|Basic)\s+\S.*$/i, "$1 [REDACTADO]");
-      line = line.replace(
-        /\b(authorization|proxy-authorization|cookie|set-cookie|token|secret|password|api[_-]?key|x-api-key|session|jwt)(\s*[:=]\s*).*$/i,
-        "$1$2[REDACTADO]",
-      );
+      const line = rawLine.slice(0, 1_000);
       return line;
     })
     .join("\n")
@@ -355,6 +336,7 @@ async function runLive(
       });
     }
     const config = adapter.config ?? DEFAULT_CONFIG;
+    source.beginScan?.();
     const portfolio = await raceWithAbort(
       source.getPortfolio(),
       controller.signal,

@@ -1,1 +1,12 @@
 node_modules/
+dist/
+coverage/
+.aws-sam/
+.env
+.env.*
+!.env.example
+*session*.json
+*storageState*.json
+*storage-state*.json
+*credentials*.json
+.superpowers/

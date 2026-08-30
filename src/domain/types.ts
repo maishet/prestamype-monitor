@@ -23,7 +23,23 @@ export interface BlacklistEntry {
   reason: string;
   source: string;
   createdAt: string;
+  status?: string;
+  evidence?: string | null;
 }
+
+export interface CollectionConflict {
+  supplier: PartyIdentity;
+  debtor: PartyIdentity;
+  status: string;
+  evidence: string | null;
+}
+
+export interface OpportunityFingerprintRecord {
+  visibleFingerprint: string;
+  detailCheckedAt: string;
+}
+
+export type OpportunityPersistenceMetadata = OpportunityFingerprintRecord;
 
 export interface Opportunity {
   id: string;
@@ -48,6 +64,7 @@ export interface PortfolioSnapshot {
   availableBalanceCents: number | null;
   activeTotalCents: number | null;
   exposureByTaxId: Readonly<Record<string, number>>;
+  collectionConflicts?: readonly CollectionConflict[];
 }
 
 export interface MonitorConfig {
@@ -57,6 +74,7 @@ export interface MonitorConfig {
   minimumInvestmentCents: number;
   highPriorityScore: number;
   reviewScore: number;
+  detailRefreshIntervalMs?: number;
 }
 
 export interface Evaluation {

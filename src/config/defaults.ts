@@ -7,4 +7,5 @@ export const DEFAULT_CONFIG: MonitorConfig = {
   minimumInvestmentCents: 10_000,
   highPriorityScore: 80,
   reviewScore: 70,
+  detailRefreshIntervalMs: 15 * 60 * 1_000,
 };

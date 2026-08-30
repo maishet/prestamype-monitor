@@ -6,6 +6,9 @@ import type {
   Opportunity,
   PortfolioSnapshot,
 } from "../domain/types.js";
+import { normalizeLegalName } from "../domain/normalization.js";
+import { opportunityFingerprint } from "../browser/prestamype-client.js";
+import { redactSensitiveText } from "../security/redaction.js";
 import { formatOpportunityAlert } from "../notifications/telegram-message.js";
 import type {
   MonitorRepository,
@@ -40,10 +43,48 @@ export interface MonitorRunResult {
   readonly alertsSent: number;
 }
 
-function materialAlertKeys(
+function canonicalNumber(value: number | null): string | null {
+  if (value === null) return null;
+  return Number.isFinite(value) ? value.toString() : "invalid";
+}
+
+function canonicalHistory(
+  history: Opportunity["debtorHistory"],
+): object | null {
+  if (history === null) return null;
+  return Object.fromEntries(
+    Object.entries(history).map(([key, value]) => [
+      key,
+      typeof value === "number" ? canonicalNumber(value) : value,
+    ]),
+  );
+}
+
+export function materialAlertKeys(
   opportunity: Opportunity,
   evaluation: Evaluation,
 ): readonly string[] {
+  const material = [
+    opportunity.id,
+    opportunity.risk,
+    canonicalNumber(opportunity.annualReturnPct),
+    canonicalNumber(opportunity.monthlyReturnPct),
+    opportunity.totalAmountCents,
+    opportunity.fundedAmountCents,
+    opportunity.remainingAmountCents,
+    opportunity.closesAt,
+    opportunity.dueAt,
+    opportunity.collectionProblem,
+    canonicalHistory(opportunity.debtorHistory),
+    canonicalHistory(opportunity.supplierHistory),
+    evaluation.decision,
+    canonicalNumber(evaluation.score),
+    Object.fromEntries(
+      Object.entries(evaluation.components)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => [key, canonicalNumber(value)]),
+    ),
+  ];
   if (evaluation.decision === "DO_NOT_INVEST") {
     const conflicts = evaluation.warnings
       .map((warning) =>
@@ -51,19 +92,26 @@ function materialAlertKeys(
       )
       .sort();
     return [...new Set(conflicts)].map((conflict) =>
-      JSON.stringify([opportunity.id, "DO_NOT_INVEST", conflict]),
+      JSON.stringify([...material, conflict]),
     );
   }
-  return [
-    JSON.stringify([
-      opportunity.id,
-      opportunity.risk,
-      opportunity.annualReturnPct.toFixed(6),
-      opportunity.remainingAmountCents,
-      opportunity.dueAt,
-      evaluation.decision,
-    ]),
-  ];
+  return [JSON.stringify(material)];
+}
+
+function safeCollectionText(value: string): string {
+  return redactSensitiveText(value).replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+function hasBlacklistIdentity(
+  party: Opportunity["supplier"],
+  entries: readonly BlacklistEntry[],
+): boolean {
+  if (party.taxId !== null)
+    return entries.some((entry) => entry.taxId === party.taxId);
+  const name = normalizeLegalName(party.legalName);
+  return entries.some(
+    (entry) => normalizeLegalName(entry.normalizedName) === name,
+  );
 }
 
 function collectError(errors: unknown[], error: unknown): void {
@@ -93,11 +141,40 @@ export async function runMonitor(
   const errors: unknown[] = [];
   let result: MonitorRunResult | undefined;
   try {
-    const blacklistEntries = await dependencies.repository.getBlacklist();
+    const persistedBlacklist = await dependencies.repository.getBlacklist();
     const fingerprints =
       await dependencies.repository.getOpportunityFingerprints();
     source = await dependencies.createSource();
+    source.beginScan?.();
     const portfolio = await source.getPortfolio();
+    const detectedEntries: BlacklistEntry[] = [];
+    for (const conflict of portfolio.collectionConflicts ?? []) {
+      for (const party of [conflict.supplier, conflict.debtor]) {
+        const entry: BlacklistEntry = {
+          taxId: party.taxId,
+          normalizedName: normalizeLegalName(party.legalName),
+          reason: "Problema de cobranza detectado en cartera",
+          source: "portfolio-collection",
+          createdAt: now.toISOString(),
+          status: safeCollectionText(conflict.status),
+          evidence:
+            conflict.evidence === null
+              ? null
+              : safeCollectionText(conflict.evidence),
+        };
+        if (
+          hasBlacklistIdentity(party, [
+            ...persistedBlacklist,
+            ...detectedEntries,
+          ])
+        )
+          continue;
+        detectedEntries.push(entry);
+      }
+    }
+    if (detectedEntries.length > 0)
+      await dependencies.repository.addBlacklistEntries(detectedEntries);
+    const blacklistEntries = [...persistedBlacklist, ...detectedEntries];
     const candidates = await source.listEligibleOpportunities(
       dependencies.config,
       fingerprints,
@@ -114,9 +191,17 @@ export async function runMonitor(
       }),
     }));
     for (const { opportunity, evaluation } of records) {
-      await dependencies.repository.saveOpportunity(opportunity, evaluation);
       evaluated += 1;
-      if (evaluation.decision === "IGNORE") continue;
+      const detailCheckedAt = now.toISOString();
+      const save = () =>
+        dependencies.repository.saveOpportunity(opportunity, evaluation, {
+          visibleFingerprint: opportunityFingerprint(opportunity),
+          detailCheckedAt,
+        });
+      if (evaluation.decision === "IGNORE") {
+        await save();
+        continue;
+      }
 
       let detectedAt: Date | undefined;
       const claimedKeys: string[] = [];
@@ -131,7 +216,10 @@ export async function runMonitor(
           );
           if (claimed) claimedKeys.push(alertKey);
         }
-        if (claimedKeys.length === 0) continue;
+        if (claimedKeys.length === 0) {
+          await save();
+          continue;
+        }
         const message = (dependencies.formatAlert ?? formatOpportunityAlert)(
           opportunity,
           evaluation,
@@ -181,6 +269,7 @@ export async function runMonitor(
           { cause: completionErrors[0] },
         );
       }
+      await save();
     }
     result = { acquired: true, evaluated, alertsSent };
   } catch (error) {

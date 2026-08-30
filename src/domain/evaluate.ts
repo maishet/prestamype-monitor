@@ -93,6 +93,19 @@ export function evaluateOpportunity({
         ? "REVIEW"
         : "IGNORE";
 
+  if (decision === "INVEST" || decision === "REVIEW") {
+    reasons.push(
+      `Retorno anual ${opportunity.annualReturnPct.toFixed(2)}% cumple el mínimo`,
+      `Riesgo ${opportunity.risk} permitido`,
+    );
+    const history = opportunity.debtorHistory;
+    if (history !== null && history.totalAuctions > 0) {
+      reasons.push(
+        `Historial pagador: ${history.paidOnTime}/${history.totalAuctions} pagos a tiempo`,
+      );
+    }
+  }
+
   return {
     decision,
     score: score.total,

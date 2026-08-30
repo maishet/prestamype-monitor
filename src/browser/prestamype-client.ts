@@ -6,6 +6,7 @@ import type {
   MonitorConfig,
   Opportunity,
   PortfolioSnapshot,
+  OpportunityFingerprintRecord,
 } from "../domain/types.js";
 import {
   PageStructureError,
@@ -17,10 +18,13 @@ import {
 import {
   parseOpportunityCards,
   parseOpportunityDetail,
+  parseVisibleMoneyCents,
+  isProblematicCollectionStatus,
   type OpportunitySummary,
 } from "./parsers.js";
 
-const ORIGIN = "https://prestamype.com";
+export const ORIGIN = "https://www.prestamype.com";
+const APEX_ORIGIN = "https://prestamype.com";
 const OPPORTUNITIES_PATH = "/app/inversionista/oportunidades";
 const PORTFOLIO_PATH = "/app/inversionista/portafolio";
 const PROHIBITED_ACTION = /invertir|reservar|pagar|confirmar/i;
@@ -37,6 +41,7 @@ export interface PageLike {
   url(): string;
   content(): Promise<string>;
   locator(selector: string): LocatorLike;
+  getByRole(role: string, options: { name: string; exact: true }): LocatorLike;
   route(
     pattern: string,
     handler: (
@@ -88,6 +93,7 @@ export function shouldBlockResource(
   } catch {
     return true;
   }
+  if (url.origin === APEX_ORIGIN) return resourceType !== "document";
   if (url.origin !== ORIGIN) return true;
   return !["document", "script", "xhr", "fetch"].includes(resourceType);
 }
@@ -144,6 +150,7 @@ export class PrestamypeClient implements OpportunitySource {
   private operationTail: Promise<void> = Promise.resolve();
   private resourcesClosePromise: Promise<void> | null = null;
   private cleanupScheduled = false;
+  private scanDeadline: number | null = null;
 
   constructor(private readonly options: PrestamypeClientOptions) {
     this.launcher = options.launcher ?? productionLauncher;
@@ -151,8 +158,19 @@ export class PrestamypeClient implements OpportunitySource {
     this.deadlineMs = options.deadlineMs ?? 25_000;
   }
 
+  beginScan(): void {
+    if (this.closed)
+      throw new PageStructureError("UNSUPPORTED_VALUE", "clientState");
+    this.scanDeadline = this.now() + this.deadlineMs;
+  }
+
+  private currentScanDeadline(): number {
+    this.scanDeadline ??= this.now() + this.deadlineMs;
+    return this.scanDeadline;
+  }
+
   async getPortfolio(): Promise<PortfolioSnapshot> {
-    const deadline = this.now() + this.deadlineMs;
+    const deadline = this.currentScanDeadline();
     const release = await this.acquireOperation(deadline);
     try {
       const page = await this.getPage(deadline);
@@ -186,6 +204,60 @@ export class PrestamypeClient implements OpportunitySource {
           );
         exposureByTaxId[taxId] = (exposureByTaxId[taxId] ?? 0) + amount;
       }
+      const collectionConflicts = $(PORTFOLIO_SELECTORS.collectionRow)
+        .toArray()
+        .flatMap((row) => {
+          const scope = $(row);
+          const required = (selector: string, field: string): string => {
+            const value = scope.find(selector).first().text().trim();
+            if (value === "")
+              throw new PageStructureError("MISSING_FIELD", field);
+            return value;
+          };
+          const identity = (role: "supplier" | "debtor") => {
+            const legalName = required(
+              role === "supplier"
+                ? PORTFOLIO_SELECTORS.supplierName
+                : PORTFOLIO_SELECTORS.debtorName,
+              `portfolioCollection.${role}.legalName`,
+            );
+            const rawTaxId = scope
+              .find(
+                role === "supplier"
+                  ? PORTFOLIO_SELECTORS.supplierTaxId
+                  : PORTFOLIO_SELECTORS.debtorTaxId,
+              )
+              .first()
+              .text()
+              .trim();
+            if (rawTaxId !== "" && !/^\d{11}$/.test(rawTaxId))
+              throw new PageStructureError(
+                "INVALID_FIELD",
+                `portfolioCollection.${role}.taxId`,
+              );
+            return { legalName, taxId: rawTaxId === "" ? null : rawTaxId };
+          };
+          const status = required(
+            PORTFOLIO_SELECTORS.collectionStatus,
+            "portfolioCollection.status",
+          );
+          const supplier = identity("supplier");
+          const debtor = identity("debtor");
+          if (!isProblematicCollectionStatus(status)) return [];
+          const evidence = scope
+            .find(PORTFOLIO_SELECTORS.collectionEvidence)
+            .first()
+            .text()
+            .trim();
+          return [
+            {
+              supplier,
+              debtor,
+              status,
+              evidence: evidence === "" ? null : evidence,
+            },
+          ];
+        });
       return {
         availableBalanceCents: parseOptionalPenCents(balanceText),
         activeTotalCents:
@@ -195,6 +267,7 @@ export class PrestamypeClient implements OpportunitySource {
             ? null
             : parsedActiveTotal,
         exposureByTaxId,
+        ...(collectionConflicts.length === 0 ? {} : { collectionConflicts }),
       };
     } catch (error) {
       this.closeOnDeadline(error);
@@ -206,9 +279,9 @@ export class PrestamypeClient implements OpportunitySource {
 
   async listEligibleOpportunities(
     config: MonitorConfig,
-    knownFingerprints: Readonly<Record<string, string>>,
+    knownFingerprints: Readonly<Record<string, OpportunityFingerprintRecord>>,
   ): Promise<Opportunity[]> {
-    const deadline = this.now() + this.deadlineMs;
+    const deadline = this.currentScanDeadline();
     const release = await this.acquireOperation(deadline);
     try {
       return await this.listEligibleWithinDeadline(
@@ -226,21 +299,16 @@ export class PrestamypeClient implements OpportunitySource {
 
   private async listEligibleWithinDeadline(
     config: MonitorConfig,
-    knownFingerprints: Readonly<Record<string, string>>,
+    knownFingerprints: Readonly<Record<string, OpportunityFingerprintRecord>>,
     deadline: number,
   ): Promise<Opportunity[]> {
     const page = await this.getPage(deadline);
     await this.navigate(page, OPPORTUNITIES_PATH, deadline);
     await this.assertAuthenticated(page, deadline);
-    await this.click(
-      page,
-      '[data-action="sort-return-desc"]',
-      "Retorno mayor",
-      deadline,
-    );
+    await this.clickAccessible(page, "button", "Retorno mayor", deadline);
     for (const risk of ["A+", "A", "B", "C"] as const) {
       if (config.allowedRisks.includes(risk)) {
-        await this.click(page, `[data-filter-risk="${risk}"]`, risk, deadline);
+        await this.clickAccessible(page, "checkbox", risk, deadline);
       }
     }
     this.ensureDeadline(deadline);
@@ -264,7 +332,16 @@ export class PrestamypeClient implements OpportunitySource {
         summary.currency !== config.currency
       )
         continue;
-      if (knownFingerprints[summary.id] === summaryFingerprint(summary))
+      const known = knownFingerprints[summary.id];
+      const checkedAt =
+        known === undefined ? Number.NaN : Date.parse(known.detailCheckedAt);
+      const refreshInterval = config.detailRefreshIntervalMs ?? 15 * 60 * 1_000;
+      const recentlyChecked =
+        Number.isFinite(checkedAt) && this.now() - checkedAt < refreshInterval;
+      if (
+        known?.visibleFingerprint === summaryFingerprint(summary) &&
+        recentlyChecked
+      )
         continue;
       await this.navigate(page, new URL(summary.url).pathname, deadline);
       await this.assertAuthenticated(page, deadline);
@@ -409,17 +486,18 @@ export class PrestamypeClient implements OpportunitySource {
       throw new PageStructureError("MISSING_FIELD", "authenticatedPage");
   }
 
-  private async click(
+  private async clickAccessible(
     page: PageLike,
-    selector: string,
+    role: "button" | "checkbox",
     name: string,
     deadline: number,
   ): Promise<void> {
     this.ensureDeadline(deadline);
     assertAllowedInteraction({ kind: "click", name });
-    const locator = page.locator(selector);
-    if (await this.withDeadline(locator.isVisible(), deadline))
-      await this.withDeadline(locator.click(), deadline);
+    const locator = page.getByRole(role, { name, exact: true });
+    if (!(await this.withDeadline(locator.isVisible(), deadline)))
+      throw new PageStructureError("MISSING_FIELD", "interaction");
+    await this.withDeadline(locator.click(), deadline);
   }
 
   private ensureDeadline(deadline: number): void {
@@ -437,7 +515,13 @@ export class PrestamypeClient implements OpportunitySource {
       return await Promise.race([
         operation,
         new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => reject(new ScanDeadlineError()), remaining);
+          timer = setTimeout(() => {
+            const error = new ScanDeadlineError() as ScanDeadlineError & {
+              hardTimeout?: boolean;
+            };
+            error.hardTimeout = true;
+            reject(error);
+          }, remaining);
         }),
       ]);
     } finally {
@@ -446,7 +530,11 @@ export class PrestamypeClient implements OpportunitySource {
   }
 
   private closeOnDeadline(error: unknown): void {
-    if (!(error instanceof ScanDeadlineError)) return;
+    if (
+      !(error instanceof ScanDeadlineError) ||
+      !(error as ScanDeadlineError & { hardTimeout?: boolean }).hardTimeout
+    )
+      return;
     this.closed = true;
     this.closePromise ??= Promise.resolve();
     this.scheduleEventualCleanup();
@@ -496,6 +584,13 @@ export const PORTFOLIO_SELECTORS = {
   exposureRow: "[data-portfolio-exposure]",
   taxId: '[data-field="tax-id"]',
   amount: '[data-field="amount"]',
+  collectionRow: "[data-portfolio-collection]",
+  supplierName: '[data-field="supplier-name"]',
+  supplierTaxId: '[data-field="supplier-tax-id"]',
+  debtorName: '[data-field="debtor-name"]',
+  debtorTaxId: '[data-field="debtor-tax-id"]',
+  collectionStatus: '[data-field="collection-status"]',
+  collectionEvidence: '[data-field="collection-evidence"]',
 } as const;
 
 function isAllowedNavigation(url: URL): boolean {
@@ -512,19 +607,13 @@ function isAllowedNavigation(url: URL): boolean {
 }
 
 function isLoginPath(url: URL): boolean {
-  return (
-    url.origin === ORIGIN &&
-    /^\/(?:login|iniciar-sesion)\/?$/.test(url.pathname)
-  );
+  return url.origin === ORIGIN && /^\/iniciar-sesion\/?$/.test(url.pathname);
 }
 
 function parseOptionalPenCents(raw: string): number | null {
   const compact = raw.trim();
   if (compact === "") return null;
-  const match = /^S\/\s*(\d{1,3}(?:\.\d{3})*|\d+)(?:,(\d{2}))?$/.exec(compact);
-  if (match === null)
-    throw new PageStructureError("INVALID_FIELD", "portfolioAmount");
-  return Number(match[1]!.replace(/\./g, "")) * 100 + Number(match[2] ?? "00");
+  return parseVisibleMoneyCents(compact, "PEN", "portfolioAmount");
 }
 
 const productionLauncher: BrowserLauncher = {

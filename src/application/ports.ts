@@ -4,14 +4,17 @@ import type {
   Evaluation,
   MonitorConfig,
   Opportunity,
+  OpportunityFingerprintRecord,
+  OpportunityPersistenceMetadata,
   PortfolioSnapshot,
 } from "../domain/types.js";
 
 export interface OpportunitySource {
+  beginScan?(): void;
   getPortfolio(): Promise<PortfolioSnapshot>;
   listEligibleOpportunities(
     config: MonitorConfig,
-    knownFingerprints: Readonly<Record<string, string>>,
+    knownFingerprints: Readonly<Record<string, OpportunityFingerprintRecord>>,
   ): Promise<Opportunity[]>;
   close(): Promise<void>;
 }
@@ -20,10 +23,14 @@ export interface MonitorRepository {
   acquireLock(owner: string, ttlEpochSeconds: number): Promise<boolean>;
   releaseLock(owner: string): Promise<void>;
   getBlacklist(): Promise<readonly BlacklistEntry[]>;
-  getOpportunityFingerprints(): Promise<Readonly<Record<string, string>>>;
+  getOpportunityFingerprints(): Promise<
+    Readonly<Record<string, OpportunityFingerprintRecord>>
+  >;
+  addBlacklistEntries(entries: readonly BlacklistEntry[]): Promise<void>;
   saveOpportunity(
     opportunity: Opportunity,
     evaluation: Evaluation,
+    metadata: OpportunityPersistenceMetadata,
   ): Promise<void>;
   claimAlert(
     alertKey: string,

@@ -4,6 +4,11 @@ import type {
   PaymentHistory,
   PortfolioSnapshot,
 } from "../domain/types.js";
+import {
+  possibleInvestmentCents,
+  resultingConcentrationRatio,
+} from "../domain/investment-projection.js";
+import { redactSensitiveText } from "../security/redaction.js";
 
 const TELEGRAM_MESSAGE_LIMIT = 4_000;
 const MAX_TEXT_FIELD_RENDERED_LENGTH = 400;
@@ -63,8 +68,9 @@ function safeText(
   value: string,
   maximumRenderedLength = MAX_TEXT_FIELD_RENDERED_LENGTH,
 ): string {
-  const escapedCharacters = Array.from(value, (character) =>
-    escapeHtml(character),
+  const escapedCharacters = Array.from(
+    redactSensitiveText(value),
+    (character) => escapeHtml(character),
   );
   const fullLength = escapedCharacters.reduce(
     (length, character) => length + character.length,
@@ -159,14 +165,17 @@ function decisionPresentation(decision: Evaluation["decision"]): {
 function safeHttpsUrl(value: string): string | null {
   try {
     const url = new URL(value);
-    const isPrestamypeHost =
-      url.hostname === "prestamype.com" ||
-      url.hostname.endsWith(".prestamype.com");
+    const isPrestamypeHost = url.hostname === "www.prestamype.com";
     if (
       url.protocol !== "https:" ||
       !isPrestamypeHost ||
       url.username !== "" ||
       url.password !== "" ||
+      url.search !== "" ||
+      url.hash !== "" ||
+      !/^\/app\/inversionista\/oportunidades\/[A-Za-z0-9_-]+$/.test(
+        url.pathname,
+      ) ||
       `<a href="${escapeHtml(url.href)}">Abrir oportunidad</a>`.length >
         MAX_LINK_RENDERED_LENGTH
     ) {
@@ -231,6 +240,7 @@ export function formatOpportunityAlert(
   const sameParty =
     opportunity.supplier.legalName.trim().toLocaleLowerCase("es-PE") ===
     opportunity.debtor.legalName.trim().toLocaleLowerCase("es-PE");
+  const possibleAmount = possibleInvestmentCents(opportunity, portfolio);
 
   const lines: MessageLine[] = [
     { html: `<b>${presentation.title}</b>`, priority: "essential" },
@@ -303,6 +313,14 @@ export function formatOpportunityAlert(
       html: `Saldo disponible: ${portfolio.availableBalanceCents === null ? "no disponible" : formatMoney(portfolio.availableBalanceCents)}`,
       priority: "normal",
     },
+    {
+      html: `Monto posible: ${possibleAmount === null ? "no disponible" : formatMoney(possibleAmount)}`,
+      priority: "normal",
+    },
+    {
+      html: `Concentración resultante: ${formatResultingConcentration(opportunity, portfolio)}`,
+      priority: "normal",
+    },
   );
 
   if (portfolio.availableBalanceCents === 0) {
@@ -357,6 +375,14 @@ export function formatOpportunityAlert(
   );
 
   return renderWithinTelegramLimit(lines);
+}
+
+function formatResultingConcentration(
+  opportunity: Opportunity,
+  portfolio: PortfolioSnapshot,
+): string {
+  const ratio = resultingConcentrationRatio(opportunity, portfolio);
+  return ratio === null ? "no disponible" : `${(ratio * 100).toFixed(1)}%`;
 }
 
 const technicalTitles: Readonly<Record<TechnicalAlertType, string>> = {

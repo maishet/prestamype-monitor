@@ -28,6 +28,7 @@ const config: MonitorConfig = {
   minimumInvestmentCents: 10_000,
   highPriorityScore: 80,
   reviewScore: 70,
+  detailRefreshIntervalMs: 15 * 60 * 1_000,
 };
 
 const cards = (
@@ -78,11 +79,13 @@ class FakeLocator implements LocatorLike {
 }
 
 class FakePage implements PageLike {
-  currentUrl = "https://prestamype.com/app/inversionista/portafolio";
+  currentUrl = "https://www.prestamype.com/app/inversionista/portafolio";
   html =
     '<main data-page="portfolio"><span data-field="available-balance">S/ 50,00</span></main>';
   readonly visits: string[] = [];
   readonly actions: string[] = [];
+  readonly accessibleActions: { role: string; name: string; exact: boolean }[] =
+    [];
   statusByPath: Record<string, number> = {};
   listHtml = cards([{ id: "one", risk: "A", annualReturn: "16,50%" }]);
   detailHtml: Record<string, string> = { one: detail("one") };
@@ -131,6 +134,13 @@ class FakePage implements PageLike {
     if (selector.startsWith('[data-filter-risk="'))
       return new FakeLocator(true, selector);
     return new FakeLocator(false);
+  }
+  getByRole(
+    role: string,
+    options: { name: string; exact: boolean },
+  ): LocatorLike {
+    this.accessibleActions.push({ role, ...options });
+    return new FakeLocator(true, options.name);
   }
   async route(
     _pattern: string,
@@ -184,15 +194,26 @@ function harness(page = new FakePage(), now: () => number = () => 0) {
 describe("safe browser policy", () => {
   it("blocks heavy resources and every third-party request", () => {
     for (const kind of ["image", "font", "media"])
-      expect(shouldBlockResource(kind, "https://prestamype.com/a")).toBe(true);
+      expect(shouldBlockResource(kind, "https://www.prestamype.com/a")).toBe(
+        true,
+      );
     expect(
       shouldBlockResource("script", "https://google-analytics.com/a.js"),
     ).toBe(true);
     expect(shouldBlockResource("xhr", "https://evil.example/api")).toBe(true);
     for (const kind of ["document", "script", "xhr", "fetch"])
-      expect(shouldBlockResource(kind, "https://prestamype.com/app")).toBe(
+      expect(shouldBlockResource(kind, "https://www.prestamype.com/app")).toBe(
         false,
       );
+    expect(shouldBlockResource("document", "https://prestamype.com/")).toBe(
+      false,
+    );
+    expect(shouldBlockResource("script", "https://prestamype.com/app.js")).toBe(
+      true,
+    );
+    expect(shouldBlockResource("xhr", "https://api.prestamype.com/x")).toBe(
+      true,
+    );
   });
 
   it("rejects unsafe navigation and prohibited interaction names", () => {
@@ -257,6 +278,13 @@ describe("PrestamypeClient", () => {
         /invertir|reservar|pagar|confirmar/i.test(selector),
       ),
     ).toBe(false);
+    expect(h.page.accessibleActions).toEqual([
+      { role: "button", name: "Retorno mayor", exact: true },
+      { role: "checkbox", name: "A+", exact: true },
+      { role: "checkbox", name: "A", exact: true },
+      { role: "checkbox", name: "B", exact: true },
+      { role: "checkbox", name: "C", exact: true },
+    ]);
   });
 
   it("skips unchanged visible cards", async () => {
@@ -265,7 +293,10 @@ describe("PrestamypeClient", () => {
       await import("../../src/browser/parsers.js")
     ).parseOpportunityCards(h.page.listHtml);
     const result = await h.client.listEligibleOpportunities(config, {
-      one: summaryFingerprint(summary!),
+      one: {
+        visibleFingerprint: summaryFingerprint(summary!),
+        detailCheckedAt: "2030-01-01T00:00:00.000Z",
+      },
     });
     expect(result).toEqual([]);
     expect(h.page.visits).toHaveLength(1);
@@ -297,12 +328,22 @@ describe("PrestamypeClient", () => {
       parseOpportunityDetail(detail("one"), summary!),
     );
     expect(
-      await h.client.listEligibleOpportunities(config, { one: persisted }),
+      await h.client.listEligibleOpportunities(config, {
+        one: {
+          visibleFingerprint: persisted,
+          detailCheckedAt: "2030-01-01T00:00:00.000Z",
+        },
+      }),
     ).toEqual([]);
     h.page.listHtml = cards([{ id: "one", risk: "A", annualReturn: "17,00%" }]);
     expect(
       (
-        await h.client.listEligibleOpportunities(config, { one: persisted })
+        await h.client.listEligibleOpportunities(config, {
+          one: {
+            visibleFingerprint: persisted,
+            detailCheckedAt: "2030-01-01T00:00:00.000Z",
+          },
+        })
       ).map((x) => x.id),
     ).toEqual(["one"]);
   });
@@ -318,7 +359,7 @@ describe("PrestamypeClient", () => {
       const h = harness();
       if (scenario === "captcha") h.page.captcha = true;
       if (scenario === "login")
-        h.page.currentUrl = "https://prestamype.com/login";
+        h.page.currentUrl = "https://www.prestamype.com/iniciar-sesion";
       if (scenario === "rate")
         h.page.statusByPath["/app/inversionista/oportunidades"] = 429;
       if (scenario === "sort") h.page.sortConfirmation = "";
@@ -331,6 +372,24 @@ describe("PrestamypeClient", () => {
       ).resolves.not.toMatch(/<html|cookie|authorization/i);
     },
   );
+
+  it("rejects an evil final host and accepts the canonical www application destination", async () => {
+    const safe = harness();
+    await expect(safe.client.getPortfolio()).resolves.toBeDefined();
+    expect(safe.page.visits[0]).toBe(
+      "https://www.prestamype.com/app/inversionista/portafolio",
+    );
+
+    const evil = harness();
+    evil.page.goto = async () => {
+      evil.page.currentUrl =
+        "https://evil.prestamype.com/app/inversionista/portafolio";
+      return { status: () => 200 };
+    };
+    await expect(evil.client.getPortfolio()).rejects.toBeInstanceOf(
+      PageStructureError,
+    );
+  });
 
   it("treats a missing authenticated DOM marker as a structure change", async () => {
     const h = harness();
@@ -347,6 +406,44 @@ describe("PrestamypeClient", () => {
       h.client.listEligibleOpportunities(config, {}),
     ).rejects.toBeInstanceOf(ScanDeadlineError);
     expect(h.page.visits.length).toBeLessThanOrEqual(1);
+  });
+
+  it("shares one deadline across portfolio and listing, then resets on a new scan", async () => {
+    let now = 0;
+    const h = harness(new FakePage(), () => now);
+    h.client.beginScan();
+    await h.client.getPortfolio();
+    now = 20_000;
+    h.page.content = async () => {
+      now = 26_000;
+      return h.page.html;
+    };
+    await expect(
+      h.client.listEligibleOpportunities(config, {}),
+    ).rejects.toBeInstanceOf(ScanDeadlineError);
+    now = 30_000;
+    h.page.content = FakePage.prototype.content.bind(h.page);
+    h.client.beginScan();
+    await expect(h.client.getPortfolio()).resolves.toBeDefined();
+  });
+
+  it("reopens an unchanged card after the conservative detail refresh interval", async () => {
+    const now = Date.parse("2026-08-27T12:30:00.000Z");
+    const h = harness(new FakePage(), () => now);
+    const [summary] = (
+      await import("../../src/browser/parsers.js")
+    ).parseOpportunityCards(h.page.listHtml);
+    const known = {
+      one: {
+        visibleFingerprint: summaryFingerprint(summary!),
+        detailCheckedAt: "2026-08-27T12:00:00.000Z",
+      },
+    };
+    expect(
+      (await h.client.listEligibleOpportunities(config, known)).map(
+        (x) => x.id,
+      ),
+    ).toEqual(["one"]);
   });
 
   it("times out an actually hung Playwright operation near the deadline", async () => {
@@ -402,6 +499,49 @@ describe("PrestamypeClient", () => {
       activeTotalCents: 30_000,
       exposureByTaxId: { "20123456789": 30_000 },
     });
+  });
+
+  it("parses observed portfolio money and problematic collection identities", async () => {
+    const h = harness();
+    h.page.html = `<main data-page="portfolio">
+      <span data-field="available-balance">S/ 0.00</span>
+      <span data-field="active-total">S/ 6,807.52</span>
+      <div data-portfolio-exposure><span data-field="tax-id">20987654321</span><span data-field="amount">S/ 6,807.52</span></div>
+      <div data-portfolio-collection>
+        <span data-field="supplier-name">Proveedor Cobranza SAC</span>
+        <span data-field="supplier-tax-id">20123456789</span>
+        <span data-field="debtor-name">Pagador Cobranza SA</span>
+        <span data-field="debtor-tax-id">20987654321</span>
+        <span data-field="collection-status">Cobranza administrativa I</span>
+        <span data-field="collection-evidence">Fila visible de cartera</span>
+      </div>
+    </main>`;
+    expect(await h.client.getPortfolio()).toMatchObject({
+      availableBalanceCents: 0,
+      activeTotalCents: 680_752,
+      collectionConflicts: [
+        {
+          supplier: {
+            legalName: "Proveedor Cobranza SAC",
+            taxId: "20123456789",
+          },
+          debtor: { legalName: "Pagador Cobranza SA", taxId: "20987654321" },
+          status: "Cobranza administrativa I",
+          evidence: "Fila visible de cartera",
+        },
+      ],
+    });
+  });
+
+  it("fails closed when a portfolio collection row is only partially structured", async () => {
+    const h = harness();
+    h.page.html = `<div data-portfolio-collection>
+      <span data-field="supplier-name">Proveedor incompleto</span>
+      <span data-field="collection-status">Cobranza legal</span>
+    </div>`;
+    await expect(h.client.getPortfolio()).rejects.toBeInstanceOf(
+      PageStructureError,
+    );
   });
 
   it("does not describe a positive portfolio as known when exposure rows are absent", async () => {

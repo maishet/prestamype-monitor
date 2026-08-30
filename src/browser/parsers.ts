@@ -10,7 +10,7 @@ import type {
 } from "../domain/types.js";
 import { PageStructureError } from "./errors.js";
 
-const PRESTAMYPE_ORIGIN = "https://prestamype.com";
+export const PRESTAMYPE_ORIGIN = "https://www.prestamype.com";
 
 export const PRESTAMYPE_SELECTORS = {
   opportunityCard: ["[data-opportunity-card]", "article.opportunity-card"],
@@ -279,7 +279,10 @@ function parseHistory(
 
 function parseCollectionProblem(scope: Cheerio<AnyNode>): boolean {
   const raw = optionalText(scope, PRESTAMYPE_SELECTORS.collectionStatus);
-  if (raw === undefined) return false;
+  return raw === undefined ? false : isProblematicCollectionStatus(raw);
+}
+
+export function isProblematicCollectionStatus(raw: string): boolean {
   const tokens = raw
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -312,6 +315,14 @@ function parseCollectionProblem(scope: Cheerio<AnyNode>): boolean {
   }
 
   return indicators.some((indicator) => !negatedIndicators.has(indicator));
+}
+
+export function parseVisibleMoneyCents(
+  raw: string,
+  currency: Currency,
+  field = "money",
+): number {
+  return parseCents(raw, field, currency);
 }
 
 function matchDirectNegation(
@@ -532,14 +543,15 @@ function parseNumber(raw: string, field: string): number {
       throw new PageStructureError("INVALID_FIELD", field);
     }
   } else if (compact.includes(",")) {
-    if (/^\d+,\d{1,2}$/.test(compact)) normalized = compact.replace(",", ".");
-    else if (/^\d{1,3}(?:,\d{3}){2,}$/.test(compact))
+    if (/^\d{1,3}(?:,\d{3})+$/.test(compact))
       normalized = compact.replace(/,/g, "");
+    else if (/^\d+,\d{1,2}$/.test(compact))
+      normalized = compact.replace(",", ".");
     else throw new PageStructureError("INVALID_FIELD", field);
   } else if (compact.includes(".")) {
-    if (/^\d+\.\d{1,2}$/.test(compact)) normalized = compact;
-    else if (/^\d{1,3}(?:\.\d{3}){2,}$/.test(compact))
+    if (/^\d{1,3}(?:\.\d{3})+$/.test(compact))
       normalized = compact.replace(/\./g, "");
+    else if (/^\d+\.\d{1,2}$/.test(compact)) normalized = compact;
     else throw new PageStructureError("INVALID_FIELD", field);
   } else normalized = compact;
 

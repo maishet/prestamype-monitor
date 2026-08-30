@@ -7,7 +7,7 @@ import {
 } from "../security/session-crypto.js";
 
 const OPPORTUNITIES_URL =
-  "https://prestamype.com/app/inversionista/oportunidades";
+  "https://www.prestamype.com/app/inversionista/oportunidades";
 const AUTHENTICATED_MARKER =
   '[data-opportunity-card], [data-page="opportunities"]';
 const CAPTCHA_MARKER = '[data-captcha], iframe[src*="captcha"], .g-recaptcha';
@@ -66,10 +66,10 @@ function assertAllowedUrl(rawUrl: string): void {
     throw new CaptureSessionError("Unexpected browser destination");
   }
   if (
-    url.origin !== "https://prestamype.com" ||
+    url.origin !== "https://www.prestamype.com" ||
     url.username !== "" ||
     url.password !== "" ||
-    !/^\/(?:app\/inversionista\/oportunidades|login|iniciar-sesion)\/?$/.test(
+    !/^\/(?:app\/inversionista\/oportunidades|iniciar-sesion)\/?$/.test(
       url.pathname,
     )
   ) {

@@ -10,6 +10,7 @@ import {
   scoreSupplierHistory,
   scoreTerm,
 } from "../../src/domain/scoring.js";
+import { possibleInvestmentCents } from "../../src/domain/investment-projection.js";
 import type {
   Opportunity,
   PaymentHistory,
@@ -135,25 +136,50 @@ describe("scoring components", () => {
     ).toBe(2);
     expect(
       scoreConcentration(opportunity, { ...portfolio, activeTotalCents: 0 }),
-    ).toBe(0);
+    ).toBe(2);
     expect(
       scoreConcentration(opportunity, {
         ...portfolio,
+        availableBalanceCents: 100_000,
         exposureByTaxId: { "20222222222": 340_000 },
       }),
     ).toBe(3);
     expect(
       scoreConcentration(opportunity, {
         ...portfolio,
+        availableBalanceCents: 100_000,
         exposureByTaxId: { "20222222222": 615_000 },
       }),
     ).toBe(1);
     expect(
       scoreConcentration(opportunity, {
         ...portfolio,
+        availableBalanceCents: 100_000,
         exposureByTaxId: { "20222222222": 835_000 },
       }),
     ).toBe(0);
+  });
+
+  it("uses available balance as the exact projected amount, including zero", () => {
+    const candidate = { ...opportunity, remainingAmountCents: 1_000_000 };
+    const base = {
+      ...portfolio,
+      activeTotalCents: 100_000,
+      exposureByTaxId: { "20222222222": 10_000 },
+    };
+    const zero = { ...base, availableBalanceCents: 0 };
+    const hundred = { ...base, availableBalanceCents: 10_000 };
+
+    expect(possibleInvestmentCents(candidate, zero)).toBe(0);
+    expect(possibleInvestmentCents(candidate, hundred)).toBe(10_000);
+    expect(scoreConcentration(candidate, zero)).toBe(5);
+    expect(scoreConcentration(candidate, hundred)).toBe(5);
+    expect(
+      scoreConcentration(candidate, {
+        ...base,
+        availableBalanceCents: Number.NaN,
+      }),
+    ).toBe(2);
   });
 
   it("does not award undue points for negative or non-finite data", () => {
@@ -180,7 +206,7 @@ describe("scoring components", () => {
         { ...opportunity, remainingAmountCents: -1 },
         portfolio,
       ),
-    ).toBe(2);
+    ).toBe(5);
     expect(
       scoreConcentration(opportunity, {
         ...portfolio,

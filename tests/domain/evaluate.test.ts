@@ -204,6 +204,17 @@ describe("evaluateOpportunity", () => {
     );
   });
 
+  it("provides two or three deterministic favorable reasons for alertable decisions", () => {
+    const first = evaluate(opportunity);
+    const second = evaluate(opportunity);
+    expect(first.decision).toBe("INVEST");
+    expect(first.reasons).toEqual(second.reasons);
+    expect(first.reasons.length).toBeGreaterThanOrEqual(2);
+    expect(first.reasons.length).toBeLessThanOrEqual(3);
+    expect(first.reasons.join(" ")).toMatch(/retorno/i);
+    expect(first.reasons.join(" ")).toMatch(/riesgo/i);
+  });
+
   it("does not let corrupt debtor exposure elevate a borderline decision", () => {
     const result = evaluate(
       {

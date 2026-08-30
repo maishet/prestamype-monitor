@@ -14,7 +14,9 @@ npm run lint
 npm run format:check
 ```
 
-El despliegue en AWS está aplazado. Los comandos locales no crean infraestructura ni recursos de AWS.
+La aplicación local está lista para la fase siguiente de despliegue y medición en AWS; esa infraestructura aún no forma parte de este paquete. Los comandos locales no crean recursos de AWS.
+
+El origen canónico es `https://www.prestamype.com`. El apex `https://prestamype.com` solo se admite como documento inicial de redirección; la aplicación, el inicio de sesión y los enlaces de alerta deben terminar en el host `www`. No se permiten otros subdominios ni recursos de terceros.
 
 ## Sesión autenticada
 
@@ -44,6 +46,8 @@ npm run dry-run -- --live
 
 El modo live descifra la sesión en memoria, abre un cliente Prestamype de solo lectura, consulta cartera y oportunidades y muestra mensajes prospectivos prefijados con `[NO ENVIADO]`. No acepta un notificador ni un repositorio, no reclama o guarda alertas y no escribe datos. Siempre intenta cerrar el navegador y aborta de forma segura al vencer el plazo.
 
+Cada escaneo comparte un único plazo total entre cartera y oportunidades. Los detalles se reabren cuando cambia la tarjeta visible o, de forma conservadora, cuando vence el refresco periódico (15 minutos por defecto, configurable con `detailRefreshIntervalMs`). Esto permite detectar cambios de historial, fechas, cobranza o score que no aparecen en la tarjeta.
+
 ## Límites de seguridad
 
 - La salida usa una lista permitida de campos financieros y aplica sanitización antes y después del formateo. Redacta patrones y campos sensibles conocidos: RUC de 11 dígitos, cabeceras de autorización/cookies, credenciales Basic/Bearer, JWT, tokens, contraseñas, claves API y sesiones. También elimina controles y limita líneas y tamaño. No es posible prometer la detección de cualquier secreto arbitrario sin forma reconocible; no introduzcas secretos en nombres, razones, fixtures o configuración visible.
@@ -51,5 +55,7 @@ El modo live descifra la sesión en memoria, abre un cliente Prestamype de solo 
 - El proyecto no resuelve ni evade CAPTCHA. Ante un desafío, expiración o bloqueo debe detenerse y requerir intervención manual.
 - Las recomendaciones son informativas. No sustituyen la decisión del usuario y no existe código para realizar inversiones.
 - Usa únicamente páginas visibles y navegación conservadora; no consume endpoints privados obtenidos por ingeniería inversa.
+- La política de recursos permite documentos, scripts y solicitudes de aplicación únicamente desde `https://www.prestamype.com`, más el documento inicial del apex para su redirección. Imágenes, fuentes, media, terceros y cualquier subdominio distinto de `www` se bloquean.
+- El plazo total por escaneo y el refresco periódico son límites conservadores, no garantías de disponibilidad. Un timeout, CAPTCHA, cambio de DOM, 403 o 429 detiene la recomendación; no hay reintentos rápidos ni fallback a selectores genéricos.
 
 Para desarrollar, usa `npm run test:watch`. Los fixtures deben permanecer ficticios y sanitizados.

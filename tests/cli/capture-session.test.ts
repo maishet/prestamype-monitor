@@ -28,7 +28,7 @@ function harness(
       if (mode === "gotoPending")
         return await new Promise<void>(() => undefined);
     },
-    url: () => "https://prestamype.com/app/inversionista/oportunidades",
+    url: () => "https://www.prestamype.com/app/inversionista/oportunidades",
     async waitForSelector(selector: string) {
       events.push(`wait:${selector}`);
       if (mode === "pending") return await new Promise<void>(() => undefined);
@@ -278,7 +278,7 @@ describe("captureSession", () => {
       await vi.waitFor(() =>
         expect(h.events).toContain(
           mode === "gotoPending"
-            ? "goto:https://prestamype.com/app/inversionista/oportunidades"
+            ? "goto:https://www.prestamype.com/app/inversionista/oportunidades"
             : "state",
         ),
       );

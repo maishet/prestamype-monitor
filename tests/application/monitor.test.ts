@@ -6,7 +6,10 @@ import type {
   Opportunity,
   PortfolioSnapshot,
 } from "../../src/domain/types.js";
-import { runMonitor } from "../../src/application/monitor.js";
+import {
+  materialAlertKeys,
+  runMonitor,
+} from "../../src/application/monitor.js";
 import { PageStructureError } from "../../src/browser/errors.js";
 import type {
   MonitorRepository,
@@ -54,6 +57,9 @@ function setup(
     warnings: [],
   };
   const source: OpportunitySource = {
+    beginScan: vi.fn(() => {
+      events.push("begin-scan");
+    }),
     getPortfolio: vi.fn(async () => {
       events.push("portfolio");
       return portfolio;
@@ -81,6 +87,9 @@ function setup(
     getOpportunityFingerprints: vi.fn(async () => {
       events.push("fingerprints");
       return {};
+    }),
+    addBlacklistEntries: vi.fn(async () => {
+      events.push("add-blacklist");
     }),
     saveOpportunity: vi.fn(async () => {
       events.push("save");
@@ -128,6 +137,38 @@ function setup(
 }
 
 describe("runMonitor", () => {
+  it("changes the alert key for hidden detail and evaluation changes", () => {
+    const evaluation: Evaluation = {
+      decision: "INVEST",
+      score: 90,
+      components: { risk: 10 },
+      reasons: [],
+      warnings: [],
+    };
+    const base = materialAlertKeys(opportunity, evaluation)[0];
+    for (const changed of [
+      { ...opportunity, closesAt: "2026-08-29T00:00:00.000Z" },
+      { ...opportunity, collectionProblem: true },
+      {
+        ...opportunity,
+        debtorHistory: {
+          totalAuctions: 1,
+          paidOnTime: 1,
+          paidLate: 0,
+          currentOnTime: 0,
+          overdue: 0,
+          averageDelayDays: 0,
+          delinquencyPct: 0,
+          historicalAmountCents: 100,
+        },
+      },
+    ]) {
+      expect(materialAlertKeys(changed, evaluation)[0]).not.toBe(base);
+    }
+    expect(
+      materialAlertKeys(opportunity, { ...evaluation, score: 91 })[0],
+    ).not.toBe(base);
+  });
   it("orchestrates a claimed alert in strict order", async () => {
     const context = setup();
     const result = await runMonitor(context.dependencies, {
@@ -142,13 +183,14 @@ describe("runMonitor", () => {
       "blacklist",
       "fingerprints",
       "source",
+      "begin-scan",
       "portfolio",
       "candidates",
       "evaluate",
-      "save",
       "claim",
       "send",
       "complete",
+      "save",
       "close",
       "release",
     ]);
@@ -295,7 +337,27 @@ describe("runMonitor", () => {
       }),
     ).rejects.toThrow("telegram down");
     expect(context.events).toContain("release-claim");
+    expect(context.repository.saveOpportunity).not.toHaveBeenCalled();
     expect(context.events.slice(-2)).toEqual(["close", "release"]);
+  });
+
+  it("retries on a later run after a pre-delivery failure without a saved fingerprint", async () => {
+    const context = setup();
+    vi.mocked(context.notifier.send)
+      .mockRejectedValueOnce(new Error("telegram down"))
+      .mockResolvedValueOnce(undefined);
+    const input = { owner: "run", lockTtlSeconds: 60, alertLeaseSeconds: 30 };
+    await expect(runMonitor(context.dependencies, input)).rejects.toThrow(
+      "telegram down",
+    );
+    expect(context.repository.saveOpportunity).not.toHaveBeenCalled();
+    await expect(
+      runMonitor(context.dependencies, input),
+    ).resolves.toMatchObject({
+      alertsSent: 1,
+    });
+    expect(context.notifier.send).toHaveBeenCalledTimes(2);
+    expect(context.repository.saveOpportunity).toHaveBeenCalledOnce();
   });
 
   it("does not release an ambiguous claim when completion fails after send", async () => {
@@ -340,6 +402,107 @@ describe("runMonitor", () => {
     });
     expect(result).toEqual({ acquired: true, evaluated: 1, alertsSent: 0 });
     expect(context.repository.claimAlert).not.toHaveBeenCalled();
+  });
+
+  it("adds both parties from portfolio collection conflicts before evaluation", async () => {
+    const context = setup();
+    const conflictPortfolio: PortfolioSnapshot = {
+      ...portfolio,
+      collectionConflicts: [
+        {
+          supplier: { legalName: "Proveedor SAC", taxId: "201" },
+          debtor: { legalName: "Pagador SAC", taxId: "202" },
+          status: "Cobranza administrativa I",
+          evidence: "Fila visible de cartera",
+        },
+      ],
+    };
+    vi.mocked(context.source.getPortfolio).mockResolvedValue(conflictPortfolio);
+    await runMonitor(context.dependencies, {
+      owner: "run",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+    expect(context.repository.addBlacklistEntries).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          taxId: "201",
+          source: "portfolio-collection",
+        }),
+        expect.objectContaining({
+          taxId: "202",
+          source: "portfolio-collection",
+        }),
+      ]),
+    );
+    expect(context.events.indexOf("add-blacklist")).toBeLessThan(
+      context.events.indexOf("candidates"),
+    );
+    expect(context.dependencies.evaluate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        blacklistEntries: expect.arrayContaining([
+          expect.objectContaining({ taxId: "201" }),
+          expect.objectContaining({ taxId: "202" }),
+        ]),
+      }),
+    );
+  });
+
+  it("enriches a name-only blacklist match with discovered RUC and stays idempotent", async () => {
+    const context = setup();
+    const existing = {
+      taxId: null,
+      normalizedName: "PROVEEDOR SAC",
+      reason: "Entrada manual",
+      source: "manual",
+      createdAt: "2026-08-01T00:00:00.000Z",
+    };
+    const conflictPortfolio: PortfolioSnapshot = {
+      ...portfolio,
+      collectionConflicts: [
+        {
+          supplier: {
+            legalName: "Proveedor S.A.C.",
+            taxId: "20123456789",
+          },
+          debtor: { legalName: "Pagador S.A.", taxId: "20987654321" },
+          status: "Cobranza legal",
+          evidence: "Fila auditada",
+        },
+      ],
+    };
+    vi.mocked(context.source.getPortfolio).mockResolvedValue(conflictPortfolio);
+    vi.mocked(context.repository.getBlacklist).mockResolvedValue([existing]);
+    await runMonitor(context.dependencies, {
+      owner: "run",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+    const added = vi.mocked(context.repository.addBlacklistEntries).mock
+      .calls[0]?.[0];
+    expect(added).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          taxId: "20123456789",
+          normalizedName: "PROVEEDOR SAC",
+          source: "portfolio-collection",
+          evidence: "Fila auditada",
+          createdAt: "2026-08-27T12:00:00.000Z",
+        }),
+        expect.objectContaining({ taxId: "20987654321" }),
+      ]),
+    );
+
+    vi.mocked(context.repository.getBlacklist).mockResolvedValue([
+      existing,
+      ...(added ?? []),
+    ]);
+    await runMonitor(context.dependencies, {
+      owner: "run-2",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+    expect(context.repository.addBlacklistEntries).toHaveBeenCalledTimes(1);
   });
 
   it("closes and releases on browser/parser and repository failures", async () => {

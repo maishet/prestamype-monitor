@@ -32,7 +32,7 @@ describe("parseOpportunityCards", () => {
     ]);
     expect(summaries[0]).toEqual({
       id: "opp-a-16",
-      url: "https://prestamype.com/app/inversionista/oportunidades/opp-a-16",
+      url: "https://www.prestamype.com/app/inversionista/oportunidades/opp-a-16",
       supplier: { legalName: "Textiles Aurora S.A.C.", taxId: "20600010001" },
       debtor: { legalName: "Mercados del Sur S.A.", taxId: "20500020002" },
       risk: "A",
@@ -63,19 +63,29 @@ describe("parseOpportunityCards", () => {
     );
   });
 
-  it.each([
-    ["ambiguous comma", "1,234"],
-    ["ambiguous dot", "1.234"],
-    ["mixed invalid", "1,23.456"],
-  ])("rejects %s numeric syntax", (_label, amount) => {
-    const html = validCard().replace("S/ 1.234,56", `S/ ${amount}`);
+  it.each([["mixed invalid", "1,23.456"]])(
+    "rejects %s numeric syntax",
+    (_label, amount) => {
+      const html = validCard().replace("S/ 1.234,56", `S/ ${amount}`);
 
-    expect(() => parseOpportunityCards(html)).toThrowError(
-      expect.objectContaining({
-        code: "INVALID_FIELD",
-        field: "remainingAmountCents",
-      }),
-    );
+      expect(() => parseOpportunityCards(html)).toThrowError(
+        expect.objectContaining({
+          code: "INVALID_FIELD",
+          field: "remainingAmountCents",
+        }),
+      );
+    },
+  );
+
+  it.each([
+    ["S/ 1.234,56", 123_456],
+    ["S/ 6,807.52", 680_752],
+    ["S/ 0.00", 0],
+    ["S/ 1.234", 123_400],
+    ["S/ 1,234", 123_400],
+  ])("parses observed and integer-thousands money %s", (amount, cents) => {
+    const html = validCard().replace("S/ 1.234,56", amount);
+    expect(parseOpportunityCards(html)[0]?.remainingAmountCents).toBe(cents);
   });
 
   it("accepts controlled English numeric formatting", () => {
@@ -182,7 +192,7 @@ describe("parseOpportunityDetail", () => {
 
     expect(opportunity).toEqual({
       id: "opp-a-16",
-      url: "https://prestamype.com/app/inversionista/oportunidades/opp-a-16",
+      url: "https://www.prestamype.com/app/inversionista/oportunidades/opp-a-16",
       supplier: { legalName: "Textiles Aurora S.A.C.", taxId: "20600010001" },
       debtor: { legalName: "Mercados del Sur S.A.", taxId: "20500020002" },
       risk: "A",
