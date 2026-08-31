@@ -62,7 +62,7 @@ docs/runbook.md
 - Implements: `MonitorRepository` and session/config usage records.
 - Produces: conditional lock, blacklist query, alert idempotency, opportunity persistence, and monthly usage counters.
 
-- [ ] **Step 1: Write failing AWS-command tests**
+- [x] **Step 1: Write failing AWS-command tests**
 
 Mock `DynamoDBDocumentClient.send` and assert:
 
@@ -72,15 +72,15 @@ Mock `DynamoDBDocumentClient.send` and assert:
 - Alert creation uses `attribute_not_exists(PK)`.
 - Session ciphertext is returned without logging.
 
-- [ ] **Step 2: Run and observe failure**
+- [x] **Step 2: Run and observe failure**
 
 Run: `npx vitest run tests/adapters/dynamodb-repository.test.ts`
 
-- [ ] **Step 3: Implement repository keys from the design spec**
+- [x] **Step 3: Implement repository keys from the design spec**
 
 Use a single table with `PK` and `SK`. Store blacklist records under `PK=BLACKLIST`, alert records under `PK=ALERT#<opportunity-id>`, config under `PK=CONFIG`, session under `PK=SESSION`, and usage under `PK=USAGE#<yyyy-mm>`. Use consistent reads for the lock and session only.
 
-- [ ] **Step 4: Add conditional-failure tests and commit**
+- [x] **Step 4: Add conditional-failure tests and commit**
 
 Translate `ConditionalCheckFailedException` during lock acquisition into `false`; rethrow other errors after redaction.
 
