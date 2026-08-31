@@ -1,0 +1,317 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "Prestamype read-only opportunity monitor",
+  "Parameters": {
+    "TelegramTokenParameterPath": {
+      "Type": "String",
+      "Default": "/prestamype/prod/telegram-token",
+      "AllowedPattern": "^/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+$",
+      "Description": "SSM Parameter Store path containing the Telegram bot token"
+    },
+    "TelegramChatIdParameterPath": {
+      "Type": "String",
+      "Default": "/prestamype/prod/telegram-chat-id",
+      "AllowedPattern": "^/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+$",
+      "Description": "SSM Parameter Store path containing the Telegram chat id"
+    },
+    "SessionKeyParameterPath": {
+      "Type": "String",
+      "Default": "/prestamype/prod/session-key",
+      "AllowedPattern": "^/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+$",
+      "Description": "SSM Parameter Store path containing the session encryption key"
+    }
+  },
+  "Resources": {
+    "DeadLetterQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "SqsManagedSseEnabled": true,
+        "MessageRetentionPeriod": 1209600
+      }
+    },
+    "ScanQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "SqsManagedSseEnabled": true,
+        "VisibilityTimeout": 120,
+        "MessageRetentionPeriod": 86400,
+        "RedrivePolicy": {
+          "deadLetterTargetArn": { "Fn::GetAtt": ["DeadLetterQueue", "Arn"] },
+          "maxReceiveCount": 5
+        }
+      }
+    },
+    "MonitorTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "BillingMode": "PROVISIONED",
+        "AttributeDefinitions": [
+          { "AttributeName": "PK", "AttributeType": "S" },
+          { "AttributeName": "SK", "AttributeType": "S" },
+          { "AttributeName": "GSI1PK", "AttributeType": "S" },
+          { "AttributeName": "GSI1SK", "AttributeType": "S" }
+        ],
+        "KeySchema": [
+          { "AttributeName": "PK", "KeyType": "HASH" },
+          { "AttributeName": "SK", "KeyType": "RANGE" }
+        ],
+        "ProvisionedThroughput": {
+          "ReadCapacityUnits": 1,
+          "WriteCapacityUnits": 1
+        },
+        "TimeToLiveSpecification": {
+          "AttributeName": "expiresAt",
+          "Enabled": true
+        },
+        "SSESpecification": { "SSEEnabled": true },
+        "GlobalSecondaryIndexes": [
+          {
+            "IndexName": "EntityTypeIndex",
+            "KeySchema": [
+              { "AttributeName": "GSI1PK", "KeyType": "HASH" },
+              { "AttributeName": "GSI1SK", "KeyType": "RANGE" }
+            ],
+            "Projection": { "ProjectionType": "ALL" },
+            "ProvisionedThroughput": {
+              "ReadCapacityUnits": 1,
+              "WriteCapacityUnits": 1
+            }
+          }
+        ]
+      }
+    },
+    "ScanFunctionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Service": ["lambda.amazonaws.com"] },
+              "Action": ["sts:AssumeRole"]
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "MonitorData",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:DeleteItem",
+                    "dynamodb:GetItem",
+                    "dynamodb:PutItem",
+                    "dynamodb:Query",
+                    "dynamodb:UpdateItem"
+                  ],
+                  "Resource": [
+                    { "Fn::GetAtt": ["MonitorTable", "Arn"] },
+                    { "Fn::Sub": "${MonitorTable.Arn}/index/EntityTypeIndex" }
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "sqs:ChangeMessageVisibility",
+                    "sqs:DeleteMessage",
+                    "sqs:GetQueueAttributes",
+                    "sqs:ReceiveMessage",
+                    "sqs:SendMessage"
+                  ],
+                  "Resource": { "Fn::GetAtt": ["ScanQueue", "Arn"] }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": ["ssm:GetParameters"],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${TelegramTokenParameterPath}"
+                    },
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${TelegramChatIdParameterPath}"
+                    },
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SessionKeyParameterPath}"
+                    }
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-scan:*"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "SupervisorFunctionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Service": ["lambda.amazonaws.com"] },
+              "Action": ["sts:AssumeRole"]
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "SupervisorData",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+                  "Resource": { "Fn::GetAtt": ["MonitorTable", "Arn"] }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": ["sqs:SendMessage"],
+                  "Resource": { "Fn::GetAtt": ["ScanQueue", "Arn"] }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-supervisor:*"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "ScanFunction": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "FunctionName": { "Fn::Sub": "${AWS::StackName}-scan" },
+        "CodeUri": ".",
+        "Handler": "handler.handler",
+        "Runtime": "nodejs22.x",
+        "Architectures": ["x86_64"],
+        "MemorySize": 1024,
+        "Timeout": 30,
+        "ReservedConcurrentExecutions": 1,
+        "Role": { "Fn::GetAtt": ["ScanFunctionRole", "Arn"] },
+        "Environment": {
+          "Variables": {
+            "TABLE_NAME": { "Ref": "MonitorTable" },
+            "QUEUE_URL": { "Ref": "ScanQueue" },
+            "TELEGRAM_TOKEN_PARAMETER": {
+              "Ref": "TelegramTokenParameterPath"
+            },
+            "TELEGRAM_CHAT_ID_PARAMETER": {
+              "Ref": "TelegramChatIdParameterPath"
+            },
+            "SESSION_KEY_PARAMETER": { "Ref": "SessionKeyParameterPath" }
+          }
+        },
+        "Events": {
+          "ScanQueue": {
+            "Type": "SQS",
+            "Properties": {
+              "Queue": { "Fn::GetAtt": ["ScanQueue", "Arn"] },
+              "BatchSize": 1,
+              "Enabled": true
+            }
+          }
+        }
+      },
+      "Metadata": {
+        "BuildMethod": "esbuild",
+        "BuildProperties": {
+          "Target": "es2022",
+          "Format": "esm",
+          "Minify": true,
+          "Sourcemap": false,
+          "EntryPoints": ["src/lambda/handler.ts"],
+          "External": ["@sparticuz/chromium", "playwright-core"],
+          "OutExtension": [".js=.mjs"],
+          "Banner": [
+            "js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);"
+          ]
+        }
+      }
+    },
+    "SupervisorFunction": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "FunctionName": { "Fn::Sub": "${AWS::StackName}-supervisor" },
+        "CodeUri": ".",
+        "Handler": "supervisor.supervisorHandler",
+        "Runtime": "nodejs22.x",
+        "Architectures": ["x86_64"],
+        "MemorySize": 1024,
+        "Timeout": 30,
+        "ReservedConcurrentExecutions": 1,
+        "Role": { "Fn::GetAtt": ["SupervisorFunctionRole", "Arn"] },
+        "Environment": {
+          "Variables": {
+            "TABLE_NAME": { "Ref": "MonitorTable" },
+            "QUEUE_URL": { "Ref": "ScanQueue" }
+          }
+        },
+        "Events": {
+          "Supervisor": {
+            "Type": "Schedule",
+            "Properties": {
+              "Schedule": "rate(10 minutes)",
+              "Enabled": true
+            }
+          }
+        }
+      },
+      "Metadata": {
+        "BuildMethod": "esbuild",
+        "BuildProperties": {
+          "Target": "es2022",
+          "Format": "esm",
+          "Minify": true,
+          "Sourcemap": false,
+          "EntryPoints": ["src/lambda/supervisor.ts"],
+          "External": [],
+          "OutExtension": [".js=.mjs"],
+          "Banner": [
+            "js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);"
+          ]
+        }
+      }
+    },
+    "ScanLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": { "Fn::Sub": "/aws/lambda/${AWS::StackName}-scan" },
+        "RetentionInDays": 7
+      }
+    },
+    "SupervisorLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}-supervisor"
+        },
+        "RetentionInDays": 7
+      }
+    }
+  },
+  "Outputs": {
+    "FunctionName": { "Value": { "Ref": "ScanFunction" } },
+    "TableName": { "Value": { "Ref": "MonitorTable" } },
+    "QueueUrl": { "Value": { "Ref": "ScanQueue" } },
+    "Region": { "Value": { "Ref": "AWS::Region" } }
+  }
+}

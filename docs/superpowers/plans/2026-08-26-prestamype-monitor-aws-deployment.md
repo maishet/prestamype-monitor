@@ -194,7 +194,7 @@ Commit: `git add src/lambda src/runtime tests/lambda && git commit -m "feat: run
 **Interfaces:**
 - Produces: deployable `sam build` and `sam deploy --guided` stack.
 
-- [ ] **Step 1: Write failing template assertions**
+- [x] **Step 1: Write failing template assertions**
 
 Parse YAML and assert:
 
@@ -206,11 +206,11 @@ Parse YAML and assert:
 - No VPC, NAT, public HTTP API, Secrets Manager, or plaintext secret parameters.
 - IAM actions are resource-scoped to the created table, queues, and named SSM parameters.
 
-- [ ] **Step 2: Create the SAM template**
+- [x] **Step 2: Create the SAM template**
 
 Use `AWS::Serverless::Function` with esbuild metadata targeting `es2022`. Include `@sparticuz/chromium` and `playwright-core` in the ZIP artifact, while excluding local full Playwright browser downloads.
 
-- [ ] **Step 3: Add stack outputs without secrets**
+- [x] **Step 3: Add stack outputs without secrets**
 
 Output function name, table name, queue URL, and region only. Do not output parameter values, session records, tokens, or encryption keys.
 
@@ -226,7 +226,7 @@ sam build --use-container
 
 Expected: all commands exit zero and the ZIP remains below Lambda limits.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit: `git add template.yaml samconfig.toml.example tests/infrastructure && git commit -m "infra: define free-tier AWS monitor stack"`
 

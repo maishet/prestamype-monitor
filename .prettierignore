@@ -1,3 +1,5 @@
 .aws-sam/
 node_modules/
 docs/
+samconfig.toml.example
+template.yaml
