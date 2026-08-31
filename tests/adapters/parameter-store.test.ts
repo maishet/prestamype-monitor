@@ -101,6 +101,144 @@ describe("runtime secrets Parameter Store adapter", () => {
     expect(send).toHaveBeenCalledTimes(2);
   });
 
+  it("rejects an already-aborted load without calling or caching SSM", async () => {
+    const send = vi.fn();
+    const load = createRuntimeSecretsLoader({ client: { send }, env: names });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(load({ signal: controller.signal })).rejects.toThrow();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("passes abortSignal to SSM and does not cache an aborted request", async () => {
+    const valid = {
+      Parameters: Object.values(names).map((Name, index) => ({
+        Name,
+        Value:
+          index === 0
+            ? "123456789:AbCdEf_0123456789"
+            : index === 1
+              ? "12345"
+              : key,
+      })),
+    };
+    let attempt = 0;
+    const send = vi.fn(
+      async (
+        _command: GetParametersCommand,
+        options?: { abortSignal?: AbortSignal },
+      ) => {
+        attempt += 1;
+        if (attempt > 1) return valid;
+        await new Promise<void>((_resolve, reject) =>
+          options?.abortSignal?.addEventListener(
+            "abort",
+            () => reject(new Error("aborted")),
+            { once: true },
+          ),
+        );
+        return valid;
+      },
+    );
+    const load = createRuntimeSecretsLoader({ client: { send }, env: names });
+    const controller = new AbortController();
+    const pending = load({ signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toThrow("Runtime secrets unavailable");
+    await expect(load()).resolves.toMatchObject({ telegramChatId: "12345" });
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["first", "second"] as const)(
+    "lets the %s waiter abort without cancelling the other waiter",
+    async (which) => {
+      let resolveSend!: (value: unknown) => void;
+      const send = vi.fn(
+        async (
+          _command: GetParametersCommand,
+          options?: { abortSignal?: AbortSignal },
+        ) =>
+          await new Promise<unknown>((resolve, reject) => {
+            resolveSend = resolve;
+            options?.abortSignal?.addEventListener(
+              "abort",
+              () => reject(new Error("internal aborted")),
+              { once: true },
+            );
+          }),
+      );
+      const load = createRuntimeSecretsLoader({ client: { send }, env: names });
+      const firstController = new AbortController();
+      const secondController = new AbortController();
+      const first = load({ signal: firstController.signal });
+      const second = load({ signal: secondController.signal });
+      (which === "first" ? firstController : secondController).abort();
+      resolveSend({
+        Parameters: Object.values(names).map((Name, index) => ({
+          Name,
+          Value:
+            index === 0
+              ? "123456789:AbCdEf_0123456789"
+              : index === 1
+                ? "12345"
+                : key,
+        })),
+      });
+      const aborted = which === "first" ? first : second;
+      const successful = which === "first" ? second : first;
+      await expect(aborted).rejects.toThrow("Runtime secrets unavailable");
+      await expect(successful).resolves.toMatchObject({
+        telegramChatId: "12345",
+      });
+      expect(send).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("aborts the shared SSM request when all waiters abort and permits a future retry", async () => {
+    let internalAborted = false;
+    const valid = {
+      Parameters: Object.values(names).map((Name, index) => ({
+        Name,
+        Value:
+          index === 0
+            ? "123456789:AbCdEf_0123456789"
+            : index === 1
+              ? "12345"
+              : key,
+      })),
+    };
+    const send = vi.fn(
+      async (
+        _command: GetParametersCommand,
+        options?: { abortSignal?: AbortSignal },
+      ) => {
+        if (send.mock.calls.length > 1) return valid;
+        return await new Promise<unknown>((_resolve, reject) =>
+          options?.abortSignal?.addEventListener(
+            "abort",
+            () => {
+              internalAborted = true;
+              reject(new Error("internal aborted"));
+            },
+            { once: true },
+          ),
+        );
+      },
+    );
+    const load = createRuntimeSecretsLoader({ client: { send }, env: names });
+    const a = new AbortController();
+    const b = new AbortController();
+    const first = load({ signal: a.signal });
+    const second = load({ signal: b.signal });
+    a.abort();
+    b.abort();
+    await expect(first).rejects.toThrow("Runtime secrets unavailable");
+    await expect(second).rejects.toThrow("Runtime secrets unavailable");
+    expect(internalAborted).toBe(true);
+    await expect(load()).resolves.toMatchObject({ telegramChatId: "12345" });
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     [{ ...names, TELEGRAM_TOKEN_PARAMETER: "secret-value".repeat(200) }],
     [{ ...names, SESSION_KEY_PARAMETER: names.TELEGRAM_TOKEN_PARAMETER }],

@@ -162,23 +162,23 @@ Commit: `git add src/adapters src/runtime tests && git commit -m "feat: schedule
 - Produces: `handler(event, context): Promise<void>`.
 - Produces: `runSupervisor(dependencies, now): Promise<SupervisorResult>`.
 
-- [ ] **Step 1: Write a failing scan-handler sequence test**
+- [x] **Step 1: Write a failing scan-handler sequence test**
 
 Assert the handler loads config, exits immediately when disabled/paused, checks cost, schedules the next SQS message, decrypts session, constructs the browser client, and calls `runMonitor`. Scheduling must occur before browser navigation.
 
-- [ ] **Step 2: Implement scan handling and typed errors**
+- [x] **Step 2: Implement scan handling and typed errors**
 
 Map `SessionExpiredError` and `SessionChallengeError` to indefinite pause; map `RateLimitError` to 6-hour, then 24-hour, then manual pauses; map `PageStructureError` to pause plus diagnostic alert. Store only error class, redacted message, timestamp, and request ID.
 
-- [ ] **Step 3: Write and implement supervisor tests**
+- [x] **Step 3: Write and implement supervisor tests**
 
 If enabled and `next_scan_at` is more than three minutes old with no active lock, send one immediate SQS scan. Otherwise do nothing. Use an idempotency marker so repeated ten-minute supervisor events do not create a flood.
 
-- [ ] **Step 4: Verify finally blocks and duplicate delivery**
+- [x] **Step 4: Verify finally blocks and duplicate delivery**
 
 Test SQS redelivery with the same message ID, lock contention, notifier failure, and a Lambda deadline with fewer than three seconds remaining.
 
-- [ ] **Step 5: Run and commit**
+- [x] **Step 5: Run and commit**
 
 Run: `npx vitest run tests/lambda` and `npm test`.
 

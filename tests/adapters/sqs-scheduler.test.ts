@@ -90,11 +90,24 @@ describe("SQS scan scheduler", () => {
 
   it("does not persist when SQS omits its acceptance identifier", async () => {
     const { loadConfig, saveConfig, scheduleNextScan } = setup({});
-    await expect(scheduleNextScan(() => 0.5)).rejects.toBeInstanceOf(
-      SqsSchedulerError,
+    const failure = await scheduleNextScan(() => 0.5).catch(
+      (error: unknown) => error,
     );
+    expect(failure).toMatchObject({ accepted: true });
     expect(loadConfig).not.toHaveBeenCalled();
     expect(saveConfig).not.toHaveBeenCalled();
+  });
+
+  it("marks failures after SQS acceptance without exposing the config error", async () => {
+    const { saveConfig, scheduleNextScan } = setup();
+    saveConfig.mockRejectedValueOnce(new Error("token=secret"));
+    const failure = await scheduleNextScan(() => 0.5).catch(
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(SqsSchedulerError);
+    expect(failure).toMatchObject({ accepted: true });
+    expect((failure as Error).cause).toBeUndefined();
+    expect(String(failure)).not.toContain("secret");
   });
 
   it("measures next_scan_at from SQS acceptance rather than invocation start", async () => {

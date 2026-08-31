@@ -19,7 +19,14 @@ function copySecrets(secrets: RuntimeSecrets): RuntimeSecrets {
 }
 
 interface ParameterStoreClientLike {
-  send(command: GetParametersCommand): Promise<unknown>;
+  send(
+    command: GetParametersCommand,
+    options?: { abortSignal?: AbortSignal },
+  ): Promise<unknown>;
+}
+
+export interface LoadRuntimeSecretsOptions {
+  readonly signal?: AbortSignal;
 }
 
 export interface RuntimeSecretsLoaderOptions {
@@ -80,14 +87,20 @@ function decodeCanonicalKey(value: string): Uint8Array {
 async function requestSecrets(
   client: ParameterStoreClientLike,
   env: Readonly<Record<string, string | undefined>>,
+  options?: LoadRuntimeSecretsOptions,
 ): Promise<RuntimeSecrets> {
   try {
+    options?.signal?.throwIfAborted();
     const names = parameterNames(env);
     const output = record(
       await client.send(
         new GetParametersCommand({ Names: [...names], WithDecryption: true }),
+        options?.signal === undefined
+          ? undefined
+          : { abortSignal: options.signal },
       ),
     );
+    options?.signal?.throwIfAborted();
     if (
       !Array.isArray(output?.Parameters) ||
       (Array.isArray(output.InvalidParameters) &&
@@ -130,21 +143,65 @@ async function requestSecrets(
 
 export function createRuntimeSecretsLoader(
   options: RuntimeSecretsLoaderOptions,
-): () => Promise<RuntimeSecrets> {
-  let cache: Promise<RuntimeSecrets> | undefined;
+): (loadOptions?: LoadRuntimeSecretsOptions) => Promise<RuntimeSecrets> {
+  let cached: RuntimeSecrets | undefined;
+  let inFlight:
+    | {
+        readonly controller: AbortController;
+        readonly promise: Promise<RuntimeSecrets>;
+        waiters: number;
+        settled: boolean;
+      }
+    | undefined;
   const reset = (): void => {
-    cache = undefined;
+    cached = undefined;
+    inFlight?.controller.abort();
+    inFlight = undefined;
   };
   resetters.add(reset);
-  return () => {
-    if (cache === undefined) {
-      const pending = requestSecrets(options.client, options.env);
-      cache = pending;
-      void pending.catch(() => {
-        if (cache === pending) cache = undefined;
+  return async (loadOptions) => {
+    if (loadOptions?.signal?.aborted === true) throw new RuntimeSecretsError();
+    if (cached !== undefined) return copySecrets(cached);
+    if (inFlight === undefined) {
+      const controller = new AbortController();
+      const state = {
+        controller,
+        promise: Promise.resolve(undefined as never) as Promise<RuntimeSecrets>,
+        waiters: 0,
+        settled: false,
+      };
+      state.promise = requestSecrets(options.client, options.env, {
+        signal: controller.signal,
       });
+      inFlight = state;
+      void state.promise.then(
+        (secrets) => {
+          state.settled = true;
+          cached = secrets;
+          if (inFlight === state) inFlight = undefined;
+        },
+        () => {
+          state.settled = true;
+          if (inFlight === state) inFlight = undefined;
+        },
+      );
     }
-    return cache.then(copySecrets);
+    const state = inFlight;
+    state.waiters += 1;
+    try {
+      const secrets = await new Promise<RuntimeSecrets>((resolve, reject) => {
+        const signal = loadOptions?.signal;
+        const abort = (): void => reject(new RuntimeSecretsError());
+        signal?.addEventListener("abort", abort, { once: true });
+        void state.promise
+          .then(resolve, reject)
+          .finally(() => signal?.removeEventListener("abort", abort));
+      });
+      return copySecrets(secrets);
+    } finally {
+      state.waiters -= 1;
+      if (state.waiters === 0 && !state.settled) state.controller.abort();
+    }
   };
 }
 
@@ -157,6 +214,8 @@ const defaultLoader = createRuntimeSecretsLoader({
   env: process.env,
 });
 
-export function loadRuntimeSecrets(): Promise<RuntimeSecrets> {
-  return defaultLoader();
+export function loadRuntimeSecrets(
+  options?: LoadRuntimeSecretsOptions,
+): Promise<RuntimeSecrets> {
+  return defaultLoader(options);
 }

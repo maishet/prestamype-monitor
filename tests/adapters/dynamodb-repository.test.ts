@@ -5,6 +5,7 @@ import {
   QueryCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -122,7 +123,7 @@ describe("DynamoRepository", () => {
     expect(failure).toMatchObject({
       name: "DynamoRepositoryError",
       message: "DynamoDB repository operation failed",
-      cause: {
+      metadata: {
         name: "ResourceNotFoundException",
         statusCode: 404,
         requestId: "req-123",
@@ -132,9 +133,10 @@ describe("DynamoRepository", () => {
       [
         String(failure),
         JSON.stringify(failure),
-        JSON.stringify((failure as Error).cause),
+        JSON.stringify((failure as DynamoRepositoryError).metadata),
       ].join(" "),
     ).not.toContain(canary);
+    expect((failure as Error).cause).toBeUndefined();
     await expect(
       new DynamoRepository({ client: failed, tableName }).acquireLock("a", 2),
     ).resolves.toBe(true);
@@ -176,6 +178,99 @@ describe("DynamoRepository", () => {
     aws.send.mockRejectedValueOnce(conditionalFailure());
     await expect(repository.releaseLock("other")).resolves.toBeUndefined();
   });
+
+  it("claims and owner-conditionally releases a per-message scheduling slot", async () => {
+    const aws = client({}, {});
+    const repository = new DynamoRepository({
+      client: aws,
+      tableName,
+      clock: () => new Date("2026-08-30T12:00:00.000Z"),
+    });
+    await expect(
+      repository.claimScheduleSlot("message-1", 1_788_091_320),
+    ).resolves.toBe(true);
+    const digest = createHash("sha256").update("message-1").digest("hex");
+    const key = `SCHEDULE#MESSAGE#${digest}`;
+    expect(aws.send.mock.calls[0]![0].input).toMatchObject({
+      Item: {
+        PK: key,
+        SK: key,
+        owner: "message-1",
+        expiresAt: 1_788_091_320,
+      },
+      ConditionExpression: "attribute_not_exists(PK) OR expiresAt <= :now",
+    });
+    await repository.releaseScheduleSlot("message-1");
+    expect(aws.send.mock.calls[1]![0]).toBeInstanceOf(DeleteCommand);
+    expect(aws.send.mock.calls[1]![0].input).toMatchObject({
+      Key: { PK: key, SK: key },
+      ConditionExpression: "#owner = :owner",
+    });
+  });
+
+  it.each(["top", "name", "metadata", "status", "request"] as const)(
+    "wraps hostile Dynamo error getters on %s without leaking or masking",
+    async (kind) => {
+      const canary = `SECRET-${kind}`;
+      let hostile: object;
+      if (kind === "top") {
+        hostile = new Proxy(
+          {},
+          {
+            getOwnPropertyDescriptor() {
+              throw new Error(canary);
+            },
+            getPrototypeOf() {
+              throw new Error(canary);
+            },
+          },
+        );
+      } else if (kind === "name") {
+        hostile = {};
+        Object.defineProperty(hostile, "name", {
+          get() {
+            throw new Error(canary);
+          },
+        });
+      } else {
+        const metadata = {};
+        const field = kind === "status" ? "httpStatusCode" : "requestId";
+        if (kind === "metadata")
+          Object.defineProperty(metadata, "unused", { value: true });
+        else
+          Object.defineProperty(metadata, field, {
+            get() {
+              throw new Error(canary);
+            },
+          });
+        hostile = {};
+        if (kind === "metadata")
+          Object.defineProperty(hostile, "$metadata", {
+            get() {
+              throw new Error(canary);
+            },
+          });
+        else Object.defineProperty(hostile, "$metadata", { value: metadata });
+      }
+      const aws = client();
+      aws.send.mockRejectedValue(hostile);
+      const repository = new DynamoRepository({ client: aws, tableName });
+      const failures = await Promise.all([
+        repository
+          .claimScheduleSlot("message-1", 2_000_000_000)
+          .catch((error: unknown) => error),
+        repository
+          .releaseScheduleSlot("message-1")
+          .catch((error: unknown) => error),
+      ]);
+      for (const failure of failures) {
+        expect(failure).toBeInstanceOf(DynamoRepositoryError);
+        expect((failure as Error).cause).toBeUndefined();
+        expect((failure as DynamoRepositoryError).metadata).toBeUndefined();
+        expect(JSON.stringify(failure)).not.toContain(canary);
+      }
+    },
+  );
 
   it("queries the deterministic blacklist partition and maps exact records", async () => {
     const entry: BlacklistEntry = {

@@ -37,9 +37,12 @@ export type ScheduleNextScan = (
 ) => Promise<ScheduleResult>;
 
 export class SqsSchedulerError extends Error {
-  constructor() {
+  readonly accepted: boolean;
+
+  constructor(accepted = false) {
     super("Unable to schedule the next scan");
     this.name = "SqsSchedulerError";
+    this.accepted = accepted;
   }
 }
 
@@ -87,6 +90,7 @@ export function createSqsScheduler(
     random = Math.random,
     scheduleOptions,
   ): Promise<ScheduleResult> {
+    let accepted = false;
     try {
       scheduleOptions?.signal?.throwIfAborted();
       const delaySeconds = delayFrom(random);
@@ -103,6 +107,7 @@ export function createSqsScheduler(
             : { abortSignal: scheduleOptions.signal },
         ),
       );
+      accepted = true;
       if (
         typeof output?.MessageId !== "string" ||
         output.MessageId.trim() === ""
@@ -121,8 +126,9 @@ export function createSqsScheduler(
       });
       return Object.freeze({ delaySeconds });
     } catch (error) {
-      if (error instanceof SqsSchedulerError) throw error;
-      throw new SqsSchedulerError();
+      if (error instanceof SqsSchedulerError)
+        throw accepted && !error.accepted ? new SqsSchedulerError(true) : error;
+      throw new SqsSchedulerError(accepted);
     }
   };
 }

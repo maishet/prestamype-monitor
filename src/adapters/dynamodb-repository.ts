@@ -47,12 +47,12 @@ export interface MonthlyUsage {
 }
 
 export class DynamoRepositoryError extends Error {
+  readonly metadata?: DynamoErrorMetadata;
+
   constructor(metadata?: DynamoErrorMetadata) {
-    super(
-      "DynamoDB repository operation failed",
-      metadata === undefined ? undefined : { cause: metadata },
-    );
+    super("DynamoDB repository operation failed");
     this.name = "DynamoRepositoryError";
+    if (metadata !== undefined) this.metadata = Object.freeze({ ...metadata });
   }
 }
 
@@ -193,36 +193,64 @@ function assertOpportunityIntegers(opportunity: Opportunity): void {
 }
 
 function isConditionalFailure(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "name" in error &&
-    error.name === "ConditionalCheckFailedException"
-  );
+  try {
+    return (
+      typeof error === "object" &&
+      error !== null &&
+      "name" in error &&
+      error.name === "ConditionalCheckFailedException"
+    );
+  } catch {
+    return false;
+  }
 }
 
 function wrap(error: unknown): never {
-  if (error instanceof DynamoRepositoryError) throw error;
-  const candidate = record(error);
-  const awsMetadata = record(candidate?.$metadata);
+  try {
+    if (error instanceof DynamoRepositoryError) throw error;
+  } catch (candidate) {
+    if (candidate instanceof DynamoRepositoryError) throw candidate;
+    throw new DynamoRepositoryError();
+  }
+  const ownData = (
+    value: unknown,
+    key: string,
+  ): { safe: boolean; value?: unknown } => {
+    try {
+      if (typeof value !== "object" || value === null) return { safe: true };
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined) return { safe: true };
+      if (!("value" in descriptor)) return { safe: false };
+      return { safe: true, value: descriptor.value };
+    } catch {
+      return { safe: false };
+    }
+  };
+  const nameRead = ownData(error, "name");
+  const metadataRead = ownData(error, "$metadata");
+  if (!nameRead.safe || !metadataRead.safe) throw new DynamoRepositoryError();
+  const statusRead = ownData(metadataRead.value, "httpStatusCode");
+  const requestRead = ownData(metadataRead.value, "requestId");
+  if (!statusRead.safe || !requestRead.safe) throw new DynamoRepositoryError();
+  const name = nameRead.value;
+  const status = statusRead.value;
+  const requestId = requestRead.value;
   const metadata: DynamoErrorMetadata = {
-    ...(typeof candidate?.name === "string" &&
-    SAFE_AWS_ERROR_NAMES.has(candidate.name)
-      ? { name: candidate.name }
+    ...(typeof name === "string" && SAFE_AWS_ERROR_NAMES.has(name)
+      ? { name }
       : {}),
-    ...(typeof awsMetadata?.httpStatusCode === "number" &&
-    Number.isInteger(awsMetadata.httpStatusCode) &&
-    awsMetadata.httpStatusCode >= 100 &&
-    awsMetadata.httpStatusCode <= 599
-      ? { statusCode: awsMetadata.httpStatusCode }
+    ...(typeof status === "number" &&
+    Number.isInteger(status) &&
+    status >= 100 &&
+    status <= 599
+      ? { statusCode: status }
       : {}),
-    ...(typeof awsMetadata?.requestId === "string" &&
-    /^[A-Za-z0-9-]{1,128}$/.test(awsMetadata.requestId)
-      ? { requestId: awsMetadata.requestId }
+    ...(typeof requestId === "string" && /^[A-Za-z0-9-]{1,128}$/.test(requestId)
+      ? { requestId }
       : {}),
   };
   throw new DynamoRepositoryError(
-    Object.keys(metadata).length === 0 ? undefined : metadata,
+    Object.keys(metadata).length ? metadata : undefined,
   );
 }
 
@@ -335,6 +363,57 @@ export class DynamoRepository implements MonitorRepository, SessionStore {
         new DeleteCommand({
           TableName: this.#tableName,
           Key: LOCK_KEY,
+          ConditionExpression: "#owner = :owner",
+          ExpressionAttributeNames: { "#owner": "owner" },
+          ExpressionAttributeValues: { ":owner": owner },
+        }),
+      );
+    } catch (error) {
+      if (isConditionalFailure(error)) return;
+      wrap(error);
+    }
+  }
+
+  async claimScheduleSlot(
+    owner: string,
+    expiresAtEpochSeconds: number,
+  ): Promise<boolean> {
+    assertBounded(owner, MAX_OWNER_LENGTH);
+    assertEpoch(expiresAtEpochSeconds);
+    const now = Math.floor(this.#clock().getTime() / 1_000);
+    const digest = createHash("sha256").update(owner, "utf8").digest("hex");
+    const key = {
+      PK: `SCHEDULE#MESSAGE#${digest}`,
+      SK: `SCHEDULE#MESSAGE#${digest}`,
+    };
+    try {
+      await this.#send(
+        new PutCommand({
+          TableName: this.#tableName,
+          Item: { ...key, owner, expiresAt: expiresAtEpochSeconds },
+          ConditionExpression: "attribute_not_exists(PK) OR expiresAt <= :now",
+          ExpressionAttributeValues: { ":now": now },
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (isConditionalFailure(error)) return false;
+      return wrap(error);
+    }
+  }
+
+  async releaseScheduleSlot(owner: string): Promise<void> {
+    assertBounded(owner, MAX_OWNER_LENGTH);
+    const digest = createHash("sha256").update(owner, "utf8").digest("hex");
+    const key = {
+      PK: `SCHEDULE#MESSAGE#${digest}`,
+      SK: `SCHEDULE#MESSAGE#${digest}`,
+    };
+    try {
+      await this.#send(
+        new DeleteCommand({
+          TableName: this.#tableName,
+          Key: key,
           ConditionExpression: "#owner = :owner",
           ExpressionAttributeNames: { "#owner": "owner" },
           ExpressionAttributeValues: { ":owner": owner },
