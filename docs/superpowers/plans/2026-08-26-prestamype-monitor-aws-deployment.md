@@ -99,19 +99,19 @@ Commit: `git add src/adapters tests/adapters && git commit -m "feat: persist mon
 - Produces: `loadRuntimeSecrets(): Promise<RuntimeSecrets>` with cold-start caching.
 - Implements: `Notifier.send(message)`.
 
-- [ ] **Step 1: Write failing Telegram tests**
+- [x] **Step 1: Write failing Telegram tests**
 
 Mock `fetch` and assert POST to `https://api.telegram.org/bot<TOKEN>/sendMessage` with `chat_id`, `parse_mode: 'HTML'`, and disabled link previews. Verify the token never appears in thrown messages.
 
-- [ ] **Step 2: Implement Parameter Store loading**
+- [x] **Step 2: Implement Parameter Store loading**
 
 Read three named parameters supplied by environment variables: Telegram token, Telegram chat ID, and base64 session key. Use `WithDecryption: true`, validate the key decodes to 32 bytes, and cache only inside the warm Lambda process.
 
-- [ ] **Step 3: Implement Telegram delivery and bounded retries**
+- [x] **Step 3: Implement Telegram delivery and bounded retries**
 
 Retry network errors and HTTP 429/5xx at most twice using the server-provided `retry_after` capped at five seconds. Do not retry other 4xx responses. Redact the bot token from every error.
 
-- [ ] **Step 4: Run and commit**
+- [x] **Step 4: Run and commit**
 
 Run: `npx vitest run tests/notifications/telegram-client.test.ts` and `npm run typecheck`.
 
