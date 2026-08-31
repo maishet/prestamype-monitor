@@ -129,23 +129,23 @@ Commit: `git add src/adapters src/notifications tests/notifications && git commi
 - Produces: `scheduleNextScan(random): Promise<{ delaySeconds: number }>`.
 - Produces: `assessMonthlyUsage(usage, limits): CostDecision`.
 
-- [ ] **Step 1: Write failing delay tests**
+- [x] **Step 1: Write failing delay tests**
 
 Assert `DelaySeconds` is an integer from 75 through 105 inclusive, message body contains only `{ "kind": "scan", "schemaVersion": 1 }`, and no session or token data is included.
 
-- [ ] **Step 2: Implement SQS scheduling**
+- [x] **Step 2: Implement SQS scheduling**
 
 Use one `SendMessageCommand`. Persist `next_scan_at` only after SQS accepts the message. Make the delay generator injectable for deterministic tests.
 
-- [ ] **Step 3: Write failing cost tests**
+- [x] **Step 3: Write failing cost tests**
 
 Cover usage below 70% (`CONTINUE`), 70–87.49% (`WARN`), 87.5% or higher (`PAUSE`), and 31,000 scans (`PAUSE`). Calculate projected GB-seconds as `invocations * configuredMemoryGb * averageDurationSeconds`.
 
-- [ ] **Step 4: Implement and run tests**
+- [x] **Step 4: Implement and run tests**
 
 Run: `npx vitest run tests/adapters/sqs-scheduler.test.ts tests/runtime/cost-guard.test.ts` and `npm run typecheck`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit: `git add src/adapters src/runtime tests && git commit -m "feat: schedule scans and guard free-tier usage"`
 
