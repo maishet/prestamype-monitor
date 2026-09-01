@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { load } from "cheerio";
 
 import type { OpportunitySource } from "../application/ports.js";
@@ -618,11 +619,16 @@ function parseOptionalPenCents(raw: string): number | null {
 
 const productionLauncher: BrowserLauncher = {
   async launch(): Promise<BrowserLike> {
-    const [{ chromium: playwrightChromium }, chromiumBinary] =
-      await Promise.all([
-        import("playwright-core"),
-        import("@sparticuz/chromium"),
-      ]);
+    // Lambda exposes layer packages through NODE_PATH. Node's ESM resolver does
+    // not search NODE_PATH, while createRequire does and also preserves the
+    // CommonJS default export used by @sparticuz/chromium.
+    const runtimeRequire = createRequire(import.meta.url);
+    const { chromium: playwrightChromium } = runtimeRequire(
+      "playwright-core",
+    ) as typeof import("playwright-core");
+    const chromiumBinary = runtimeRequire("@sparticuz/chromium") as {
+      default: typeof import("@sparticuz/chromium").default;
+    };
     const browser = await playwrightChromium.launch({
       args: chromiumBinary.default.args,
       executablePath: await chromiumBinary.default.executablePath(),

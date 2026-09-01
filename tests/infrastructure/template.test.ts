@@ -49,6 +49,9 @@ describe("SAM infrastructure", () => {
     }
 
     expect(resources.ScanFunction.Properties.Handler).toBe("handler.handler");
+    expect(resources.ScanFunction.Properties.Layers).toEqual([
+      { Ref: "BrowserDependenciesLayer" },
+    ]);
     expect(resources.SupervisorFunction.Properties.Handler).toBe(
       "supervisor.supervisorHandler",
     );
@@ -188,9 +191,43 @@ describe("SAM infrastructure", () => {
     ) as JsonObject;
     expect(packageJson.dependencies).toMatchObject({
       "@sparticuz/chromium": expect.any(String),
+      esbuild: expect.any(String),
       "playwright-core": expect.any(String),
     });
+    expect(packageJson.devDependencies.esbuild).toBeUndefined();
     expect(packageJson.dependencies.playwright).toBeUndefined();
+
+    const browserLayer = resource(
+      "AWS::Serverless::LayerVersion",
+      "BrowserDependenciesLayer",
+    );
+    expect(browserLayer.Properties).toMatchObject({
+      ContentUri: "layers/browser",
+      CompatibleRuntimes: ["nodejs22.x"],
+      CompatibleArchitectures: ["x86_64"],
+      RetentionPolicy: "Delete",
+    });
+    expect(browserLayer.Metadata.BuildMethod).toBe("makefile");
+    const layerPackage = JSON.parse(
+      readFileSync(resolve(root, "layers/browser/package.json"), "utf8"),
+    ) as JsonObject;
+    expect(layerPackage.dependencies).toEqual({
+      "@sparticuz/chromium": packageJson.dependencies["@sparticuz/chromium"],
+      "playwright-core": packageJson.dependencies["playwright-core"],
+    });
+    expect(layerPackage.dependencies.esbuild).toBeUndefined();
+    expect(layerPackage.dependencies.playwright).toBeUndefined();
+    const layerLock = JSON.parse(
+      readFileSync(resolve(root, "layers/browser/package-lock.json"), "utf8"),
+    ) as JsonObject;
+    expect(layerLock.packages[""].dependencies).toEqual(
+      layerPackage.dependencies,
+    );
+    const layerMakefile = readFileSync(
+      resolve(root, "layers/browser/Makefile"),
+      "utf8",
+    );
+    expect(layerMakefile).toContain("npm ci --omit=dev");
 
     const entrypoints = [
       ["ScanFunction", "src/lambda/handler.ts"],
@@ -219,6 +256,12 @@ describe("SAM infrastructure", () => {
           : "export async function supervisorHandler",
       );
     }
+    const browserClient = readFileSync(
+      resolve(root, "src/browser/prestamype-client.ts"),
+      "utf8",
+    );
+    expect(browserClient).toContain("createRequire(import.meta.url)");
+    expect(browserClient).not.toContain('await import("playwright-core")');
   });
 
   it("pairs Playwright with the Chromium major shipped by Sparticuz", () => {

@@ -206,6 +206,7 @@
         "MemorySize": 1024,
         "Timeout": 30,
         "ReservedConcurrentExecutions": 1,
+        "Layers": [{ "Ref": "BrowserDependenciesLayer" }],
         "Role": { "Fn::GetAtt": ["ScanFunctionRole", "Arn"] },
         "Environment": {
           "Variables": {
@@ -246,6 +247,17 @@
           ]
         }
       }
+    },
+    "BrowserDependenciesLayer": {
+      "Type": "AWS::Serverless::LayerVersion",
+      "Properties": {
+        "LayerName": { "Fn::Sub": "${AWS::StackName}-browser-dependencies" },
+        "ContentUri": "layers/browser",
+        "CompatibleRuntimes": ["nodejs22.x"],
+        "CompatibleArchitectures": ["x86_64"],
+        "RetentionPolicy": "Delete"
+      },
+      "Metadata": { "BuildMethod": "makefile" }
     },
     "SupervisorFunction": {
       "Type": "AWS::Serverless::Function",

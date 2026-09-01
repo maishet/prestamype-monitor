@@ -1,0 +1,9 @@
+{
+  "name": "prestamype-browser-lambda-layer",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@sparticuz/chromium": "149.0.0",
+    "playwright-core": "1.61.1"
+  }
+}

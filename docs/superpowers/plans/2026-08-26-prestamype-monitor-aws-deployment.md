@@ -214,7 +214,7 @@ Use `AWS::Serverless::Function` with esbuild metadata targeting `es2022`. Includ
 
 Output function name, table name, queue URL, and region only. Do not output parameter values, session records, tokens, or encryption keys.
 
-- [ ] **Step 4: Validate locally**
+- [x] **Step 4: Validate locally**
 
 Run:
 
@@ -274,7 +274,7 @@ Commit: `git add scripts docs/runbook.md && git commit -m "ops: add safe AWS mon
 **Interfaces:**
 - Produces: a deployed but initially disabled AWS stack, then a verified 24/7 monitor.
 
-- [ ] **Step 1: Run the complete local gate**
+- [x] **Step 1: Run the complete local gate**
 
 Run:
 

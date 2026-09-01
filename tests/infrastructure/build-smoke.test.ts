@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 const root = resolve(import.meta.dirname, "../..");
 
 describe("local Lambda build smoke", () => {
-  it("externalizes and copies browser runtimes without unresolved imports", () => {
+  it("resolves external browser runtimes from a separate Lambda layer", () => {
     const output = execFileSync(
       process.execPath,
       [resolve(root, "scripts/smoke-sam-build.mjs"), "--json"],
@@ -17,10 +17,17 @@ describe("local Lambda build smoke", () => {
       supervisorBundle: true,
       chromiumExternal: true,
       playwrightExternal: true,
-      chromiumBinCopied: true,
-      playwrightCoreCopied: true,
-      unresolvedImports: [],
+      createRequireLoader: true,
+      scanNodeModulesAbsent: true,
+      layerChromiumBin: true,
+      layerPlaywrightCore: true,
+      templateLayerLinked: true,
+      layerMakefileCi: true,
+      runtimeHandler: true,
+      runtimePlaywright: true,
+      runtimeChromiumArgs: true,
+      runtimeExecutableExists: true,
       temporaryArtifactRemoved: true,
     });
-  });
+  }, 15_000);
 });

@@ -1,5 +1,6 @@
 import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
@@ -62,6 +63,7 @@ export async function runSmokeBuild() {
   const temporaryRoot = await mkdtemp(join(tmpdir(), "prestamype-sam-smoke-"));
   const scanDirectory = join(temporaryRoot, "scan");
   const supervisorDirectory = join(temporaryRoot, "supervisor");
+  const layerDirectory = join(temporaryRoot, "layer");
   let result;
   try {
     const scan = await bundle(
@@ -75,7 +77,7 @@ export async function runSmokeBuild() {
       supervisorDirectory,
       "supervisor",
     );
-    const artifactModules = join(scanDirectory, "node_modules");
+    const artifactModules = join(layerDirectory, "nodejs", "node_modules");
     const copied = new Set();
     for (const dependency of browserExternals) {
       await copyPackageClosure(dependency, artifactModules, copied);
@@ -84,18 +86,45 @@ export async function runSmokeBuild() {
     const scanBundle = join(scanDirectory, "handler.mjs");
     const supervisorBundle = join(supervisorDirectory, "supervisor.mjs");
     const scanText = await readFile(scanBundle, "utf8");
-    const unresolvedImports = [];
-    for (const bundlePath of [scanBundle, supervisorBundle]) {
-      try {
-        await import(`${pathToFileURL(bundlePath).href}?smoke=${Date.now()}`);
-      } catch (error) {
-        unresolvedImports.push(
-          error instanceof Error
-            ? `${error.name}: ${error.message}`
-            : "UnknownImportError",
-        );
-      }
-    }
+    const runtimeProbe = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          [
+            "import { createRequire } from 'node:module';",
+            "import { existsSync } from 'node:fs';",
+            `const handler = await import(${JSON.stringify(pathToFileURL(scanBundle).href)});`,
+            "const runtimeRequire = createRequire(import.meta.url);",
+            "const playwright = runtimeRequire('playwright-core');",
+            "const chromium = runtimeRequire('@sparticuz/chromium').default;",
+            "const executable = await chromium.executablePath();",
+            "process.stdout.write(JSON.stringify({",
+            "handler: typeof handler.handler === 'function',",
+            "playwright: typeof playwright.chromium?.launch === 'function',",
+            "chromiumArgs: Array.isArray(chromium.args),",
+            "executableExists: existsSync(executable)",
+            "}));",
+          ].join(" "),
+        ],
+        {
+          cwd: scanDirectory,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            NODE_PATH: join(layerDirectory, "nodejs", "node_modules"),
+          },
+        },
+      ),
+    );
+    const template = JSON.parse(await readFile(join(root, "template.yaml")));
+    const scanLayers = template.Resources.ScanFunction.Properties.Layers;
+    const layer = template.Resources.BrowserDependenciesLayer;
+    const layerMakefile = await readFile(
+      join(root, "layers", "browser", "Makefile"),
+      "utf8",
+    );
     result = {
       scanBundle:
         existsSync(scanBundle) && Object.keys(scan.metafile.outputs).length > 0,
@@ -104,13 +133,24 @@ export async function runSmokeBuild() {
         Object.keys(supervisor.metafile.outputs).length > 0,
       chromiumExternal: scanText.includes("@sparticuz/chromium"),
       playwrightExternal: scanText.includes("playwright-core"),
-      chromiumBinCopied: existsSync(
+      createRequireLoader: scanText.includes("createRequire(import.meta.url)"),
+      scanNodeModulesAbsent: !existsSync(join(scanDirectory, "node_modules")),
+      layerChromiumBin: existsSync(
         join(artifactModules, "@sparticuz", "chromium", "bin", "chromium.br"),
       ),
-      playwrightCoreCopied: existsSync(
+      layerPlaywrightCore: existsSync(
         join(artifactModules, "playwright-core", "package.json"),
       ),
-      unresolvedImports,
+      templateLayerLinked:
+        JSON.stringify(scanLayers) ===
+          JSON.stringify([{ Ref: "BrowserDependenciesLayer" }]) &&
+        layer?.Properties?.ContentUri === "layers/browser" &&
+        layer?.Metadata?.BuildMethod === "makefile",
+      layerMakefileCi: layerMakefile.includes("npm ci --omit=dev"),
+      runtimeHandler: runtimeProbe.handler,
+      runtimePlaywright: runtimeProbe.playwright,
+      runtimeChromiumArgs: runtimeProbe.chromiumArgs,
+      runtimeExecutableExists: runtimeProbe.executableExists,
       temporaryArtifactRemoved: false,
     };
   } finally {
