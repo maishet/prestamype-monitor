@@ -243,23 +243,23 @@ Commit: `git add template.yaml samconfig.toml.example tests/infrastructure && gi
 **Interfaces:**
 - Produces: explicit operator commands that do not echo secrets.
 
-- [ ] **Step 1: Implement parameter bootstrap**
+- [x] **Step 1: Implement parameter bootstrap**
 
 Prompt securely for the Telegram bot token and chat ID, generate a 32-byte random session key locally, and write standard SecureString parameters. Never accept secrets as command-line arguments and never print their values.
 
-- [ ] **Step 2: Implement immutable initial blacklist seeding**
+- [x] **Step 2: Implement immutable initial blacklist seeding**
 
 Write LERIBE records for normalized name `CORPORACION LERIBE SAC` and RUC `20517854523`, reason `Cobranza administrativa I`, source `manual-initial`, and current timestamp. Make reruns idempotent and never remove existing entries.
 
-- [ ] **Step 3: Implement one-shot, activation, and deactivation scripts**
+- [x] **Step 3: Implement one-shot, activation, and deactivation scripts**
 
 `invoke-once.ps1` sends one scan message without enabling chaining. `activate-monitor.ps1` requires the user to type `ACTIVAR` before setting enabled state and sending the first delayed message. `deactivate-monitor.ps1` immediately sets disabled state without deleting data.
 
-- [ ] **Step 4: Write the runbook**
+- [x] **Step 4: Write the runbook**
 
 Document account setup, `sa-east-1`, billing alert email, SAM deployment, parameters, session capture, test message, one-shot scan, activation, pause reasons, reauthentication, cost review, rollback, and complete teardown resource list.
 
-- [ ] **Step 5: Run PowerShell syntax checks and commit**
+- [x] **Step 5: Run PowerShell syntax checks and commit**
 
 Run each script with its documented `-WhatIf` or validation mode. Confirm none writes or prints secrets during validation.
 
