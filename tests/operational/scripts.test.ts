@@ -10,6 +10,7 @@ const scripts = [
   "invoke-once.ps1",
   "activate-monitor.ps1",
   "deactivate-monitor.ps1",
+  "resume-monitor.ps1",
 ] as const;
 const shells = ["pwsh", "powershell"].map((name) => ({
   name,
@@ -71,6 +72,11 @@ describe("operational PowerShell scripts", () => {
       /\$(TelegramToken|TelegramChatId|SessionKey)\b/i,
     );
     expect(activationParameters).not.toMatch(/\$(Confirm|Confirmation)\b/i);
+    const resumeParameters = source("resume-monitor.ps1").split(
+      ")\nSet-StrictMode",
+      1,
+    )[0]!;
+    expect(resumeParameters).not.toMatch(/\$(Confirm|Confirmation)\b/i);
   });
 
   it("keeps one-shot and chained scan bodies distinct and blacklist writes immutable", () => {
@@ -142,6 +148,7 @@ describe("operational PowerShell scripts", () => {
       "invoke-once.ps1",
       "activate-monitor.ps1",
       "deactivate-monitor.ps1",
+      "resume-monitor.ps1",
     ]) {
       const text = source(name);
       expect(text).toContain("--cli-input-json");
@@ -149,5 +156,25 @@ describe("operational PowerShell scripts", () => {
         /& aws[^\r\n]+(?:--key|--message-body|--expression-attribute-values)/,
       );
     }
+  });
+
+  it("resumes only an exact disabled recoverable manual pause without enqueueing", () => {
+    const resume = source("resume-monitor.ps1");
+    expect(resume).toContain('Read-Host "Escribe exactamente REANUDAR');
+    expect(resume).toContain('$confirmation -cne "REANUDAR"');
+    expect(resume).toContain('paused_until.S -cne "manual"');
+    for (const reason of [
+      "SessionExpiredError",
+      "SessionChallengeError",
+      "PageStructureError",
+    ])
+      expect(resume).toContain(reason);
+    expect(resume).toContain("ConsistentRead = $true");
+    expect(resume).toContain("enabled = :disabled");
+    expect(resume).toContain("paused_until = :manual");
+    expect(resume).toContain("pause_reason = :reason");
+    expect(resume).toContain("REMOVE paused_until, pause_reason");
+    expect(resume).not.toContain("sqs send-message");
+    expect(resume).not.toContain("SET enabled = :enabled");
   });
 });

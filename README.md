@@ -41,6 +41,8 @@ La herramienta nunca solicita ni almacena la contraseña. El estado de sesión s
 
 Al activar el monitor, el primer mensaje SQS se acepta antes de persistir `next_scan_at`. Si esta segunda operación falla, el script desactiva la activación que posee y elimina su marcador; no reenvía el mensaje ni deja encadenamiento automático activo. Revisa la configuración y la cola antes de una nueva activación explícita para evitar procesar una ejecución pendiente.
 
+Si el runtime quedó pausado manualmente por sesión vencida, desafío de sesión o un cambio de estructura ya corregido, usa el flujo operacional seguro: desactiva, captura la sesión si corresponde, ejecuta `./scripts/resume-monitor.ps1`, prueba con `./scripts/invoke-once.ps1` y solo después activa. La reanudación exige escribir exactamente `REANUDAR`; valida configuración completa, conserva `enabled=false` y todos los demás datos, no envía SQS y rechaza expresamente pausas de coste, rate limit, temporales o de origen desconocido. Consulta [docs/runbook.md](docs/runbook.md) para el orden y las comprobaciones completas.
+
 ## Dry-run con fixtures
 
 ```powershell

@@ -2,7 +2,9 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { createScanHandler } from "../../src/lambda/handler.js";
+import { captureSession } from "../../src/cli/capture-session.js";
 
 const shells = ["pwsh", "powershell"].map(
   (name) =>
@@ -37,14 +39,14 @@ const fullConfig = {
 function run(shell: string, script: string, statePath: string, input?: string) {
   const scriptPath = resolve("scripts", script).replace(/'/g, "''");
   const arguments_ =
-    script === "activate-monitor.ps1"
+    script === "activate-monitor.ps1" || script === "resume-monitor.ps1"
       ? [
           "-NoProfile",
           "-NonInteractive",
           "-ExecutionPolicy",
           "Bypass",
           "-Command",
-          `function global:Read-Host { 'ACTIVAR' }; & '${scriptPath}'`,
+          `function global:Read-Host { '${script === "activate-monitor.ps1" ? "ACTIVAR" : "REANUDAR"}' }; & '${scriptPath}'`,
         ]
       : [
           "-NoProfile",
@@ -65,6 +67,35 @@ function run(shell: string, script: string, statePath: string, input?: string) {
     },
     timeout: 15_000,
   });
+}
+
+function runResumeWithConfirmation(
+  shell: string,
+  statePath: string,
+  confirmation: string,
+) {
+  const scriptPath = resolve("scripts/resume-monitor.ps1").replace(/'/g, "''");
+  return execFileSync(
+    shell,
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      `function global:Read-Host { '${confirmation.replace(/'/g, "''")}' }; & '${scriptPath}'`,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${fixturePath}${delimiter}${process.env.PATH}`,
+        FAKE_AWS_STATE: statePath,
+        REAL_NODE: process.execPath,
+      },
+      timeout: 15_000,
+    },
+  );
 }
 
 describe.each(shells)("stateful operational scripts in %s", (shell) => {
@@ -386,6 +417,416 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
             call.args[0] === "dynamodb" && call.args[1] === "update-item",
         ),
       ).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    "SessionExpiredError",
+    "SessionChallengeError",
+    "PageStructureError",
+  ])(
+    "resumes a disabled recoverable manual pause (%s) without sending",
+    (reason) => {
+      const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
+      const statePath = `${dir}\\state.json`;
+      const config = {
+        ...structuredClone(fullConfig),
+        paused_until: { S: "manual" },
+        pause_reason: { S: reason },
+        rate_limit_count: { N: "2" },
+        unrelated: { S: "preserve-me" },
+      };
+      try {
+        writeFileSync(
+          statePath,
+          JSON.stringify({ config, messages: [], blacklist: {}, calls: [] }),
+        );
+        run(shell, "resume-monitor.ps1", statePath);
+        const state = JSON.parse(readFileSync(statePath, "utf8"));
+        expect(state.config.paused_until).toBeUndefined();
+        expect(state.config.pause_reason).toBeUndefined();
+        expect(state.config.enabled).toEqual({ BOOL: false });
+        expect(state.config.rate_limit_count).toEqual({ N: "2" });
+        expect(state.config.unrelated).toEqual({ S: "preserve-me" });
+        expect(state.messages).toEqual([]);
+        expect(state.calls.at(-1).input.ConditionExpression).toContain(
+          "pause_reason = :reason",
+        );
+        for (const call of state.calls)
+          if (call.inputPath)
+            expect(() => readFileSync(call.inputPath)).toThrow();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
+    ["cost pause", "manual", "cost:MONTHLY_LIMIT", false],
+    ["rate limit manual pause", "manual", "RateLimitError", false],
+    ["other manual pause", "manual", "OperatorPause", false],
+    ["timed pause", "2026-09-01T12:00:00.000Z", "SessionExpiredError", false],
+    ["enabled pause", "manual", "SessionExpiredError", true],
+    ["missing reason", "manual", null, false],
+  ])(
+    "rejects %s without update or send",
+    (_label, pausedUntil, reason, enabled) => {
+      const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
+      const statePath = `${dir}\\state.json`;
+      const config: Record<string, unknown> = {
+        ...structuredClone(fullConfig),
+        enabled: { BOOL: enabled },
+        paused_until: { S: pausedUntil },
+      };
+      if (reason) config.pause_reason = { S: reason };
+      try {
+        writeFileSync(
+          statePath,
+          JSON.stringify({ config, messages: [], blacklist: {}, calls: [] }),
+        );
+        expect(() => run(shell, "resume-monitor.ps1", statePath)).toThrow();
+        const state = JSON.parse(readFileSync(statePath, "utf8"));
+        expect(state.config).toEqual(config);
+        expect(state.messages).toEqual([]);
+        expect(
+          state.calls.filter(
+            (call: { args: string[] }) =>
+              call.args[0] === "dynamodb" && call.args[1] === "update-item",
+          ),
+        ).toHaveLength(0);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("reports a generic failure when the pause changes between read and update", () => {
+    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
+    const statePath = `${dir}\\state.json`;
+    const config = {
+      ...structuredClone(fullConfig),
+      paused_until: { S: "manual" },
+      pause_reason: { S: "SessionExpiredError" },
+    };
+    try {
+      writeFileSync(
+        statePath,
+        JSON.stringify({
+          config,
+          messages: [],
+          blacklist: {},
+          calls: [],
+          failResumeCondition: true,
+        }),
+      );
+      expect(() => run(shell, "resume-monitor.ps1", statePath)).toThrow(
+        /cambio|Command failed/,
+      );
+      const state = JSON.parse(readFileSync(statePath, "utf8"));
+      expect(state.config).toEqual(config);
+      expect(state.messages).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["reanudar", " REANUDAR", "REANUDAR ", ""])(
+    "rejects non-exact confirmation %j before AWS",
+    (confirmation) => {
+      const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
+      const statePath = `${dir}\\state.json`;
+      try {
+        writeFileSync(statePath, JSON.stringify({ calls: [] }));
+        expect(() =>
+          runResumeWithConfirmation(shell, statePath, confirmation),
+        ).toThrow();
+        expect(JSON.parse(readFileSync(statePath, "utf8")).calls).toEqual([]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["ValidateOnly", "WhatIf"])(
+    "%s exits before prompt and AWS",
+    (mode) => {
+      const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
+      const statePath = `${dir}\\state.json`;
+      const marker = `${dir}\\prompted`;
+      const scriptPath = resolve("scripts/resume-monitor.ps1").replace(
+        /'/g,
+        "''",
+      );
+      try {
+        writeFileSync(statePath, JSON.stringify({ calls: [] }));
+        execFileSync(
+          shell,
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            `function global:Read-Host { Set-Content -LiteralPath '${marker.replace(/'/g, "''")}' -Value prompted; throw 'prompted' }; & '${scriptPath}' -${mode}`,
+          ],
+          {
+            env: {
+              ...process.env,
+              PATH: `${fixturePath}${delimiter}${process.env.PATH}`,
+              FAKE_AWS_STATE: statePath,
+              REAL_NODE: process.execPath,
+            },
+          },
+        );
+        expect(() => readFileSync(marker)).toThrow();
+        expect(JSON.parse(readFileSync(statePath, "utf8")).calls).toEqual([]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
+    ["missing output", []],
+    [
+      "duplicate output",
+      [
+        { OutputKey: "TableName", OutputValue: "MonitorTable" },
+        { OutputKey: "TableName", OutputValue: "OtherTable" },
+      ],
+    ],
+    ["unsafe output", [{ OutputKey: "TableName", OutputValue: "bad/table" }]],
+  ])("rejects %s without Dynamo mutation", (_label, stackOutputs) => {
+    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
+    const statePath = `${dir}\\state.json`;
+    const config = {
+      ...structuredClone(fullConfig),
+      paused_until: { S: "manual" },
+      pause_reason: { S: "SessionExpiredError" },
+    };
+    try {
+      writeFileSync(
+        statePath,
+        JSON.stringify({ config, stackOutputs, calls: [], messages: [] }),
+      );
+      expect(() => run(shell, "resume-monitor.ps1", statePath)).toThrow();
+      const state = JSON.parse(readFileSync(statePath, "utf8"));
+      expect(state.config).toEqual(config);
+      expect(
+        state.calls.filter(
+          (call: { args: string[] }) => call.args[0] === "dynamodb",
+        ),
+      ).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    [
+      "incomplete config",
+      {
+        PK: { S: "CONFIG" },
+        SK: { S: "MONITOR" },
+        enabled: { BOOL: false },
+        paused_until: { S: "manual" },
+        pause_reason: { S: "SessionExpiredError" },
+      },
+    ],
+    [
+      "wrong Dynamo attribute type",
+      {
+        ...structuredClone(fullConfig),
+        enabled: { S: "false" },
+        paused_until: { S: "manual" },
+        pause_reason: { S: "SessionExpiredError" },
+      },
+    ],
+    [
+      "activation owner",
+      {
+        ...structuredClone(fullConfig),
+        paused_until: { S: "manual" },
+        pause_reason: { S: "SessionExpiredError" },
+        activation_owner: { S: "foreign" },
+      },
+    ],
+  ])("rejects %s without update or send", (_label, config) => {
+    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
+    const statePath = `${dir}\\state.json`;
+    try {
+      writeFileSync(
+        statePath,
+        JSON.stringify({ config, calls: [], messages: [], blacklist: {} }),
+      );
+      expect(() => run(shell, "resume-monitor.ps1", statePath)).toThrow();
+      const state = JSON.parse(readFileSync(statePath, "utf8"));
+      expect(state.config).toEqual(config);
+      expect(state.messages).toEqual([]);
+      expect(
+        state.calls.filter(
+          (call: { args: string[] }) =>
+            call.args[0] === "dynamodb" && call.args[1] === "update-item",
+        ),
+      ).toEqual([]);
+      for (const call of state.calls)
+        if (call.inputPath)
+          expect(() => readFileSync(call.inputPath)).toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("supports the safe recovery sequence through one-shot execution and later activation", async () => {
+    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
+    const statePath = `${dir}\\state.json`;
+    const config = {
+      ...structuredClone(fullConfig),
+      enabled: { BOOL: true },
+      paused_until: { S: "manual" },
+      pause_reason: { S: "SessionExpiredError" },
+    };
+    try {
+      writeFileSync(
+        statePath,
+        JSON.stringify({
+          config,
+          messages: [],
+          blacklist: {},
+          calls: [],
+        }),
+      );
+      run(shell, "deactivate-monitor.ps1", statePath);
+      await captureSession({
+        key: new Uint8Array(32).fill(4),
+        output: vi.fn(),
+        store: {
+          loadEncryptedSession: vi.fn(async () => null),
+          saveEncryptedSession: vi.fn(async (session) => {
+            const stored = JSON.parse(readFileSync(statePath, "utf8"));
+            stored.session = session;
+            writeFileSync(statePath, JSON.stringify(stored));
+          }),
+        },
+        launcher: {
+          launch: vi.fn(async () => ({
+            newContext: async () => ({
+              newPage: async () => ({
+                goto: async () => undefined,
+                url: () =>
+                  "https://www.prestamype.com/app/inversionista/oportunidades",
+                waitForSelector: async () => undefined,
+                locator: () => ({ isVisible: async () => false }),
+              }),
+              storageState: async () => ({ cookies: [], origins: [] }),
+              close: async () => undefined,
+            }),
+            close: async () => undefined,
+          })),
+        },
+      });
+      let state = JSON.parse(readFileSync(statePath, "utf8"));
+      expect(state.config.enabled).toEqual({ BOOL: false });
+      expect(state.config.paused_until).toEqual({ S: "manual" });
+      expect(state.config.pause_reason).toEqual({ S: "SessionExpiredError" });
+      expect(state.session).toBeDefined();
+      run(shell, "resume-monitor.ps1", statePath);
+      state = JSON.parse(readFileSync(statePath, "utf8"));
+
+      const scheduleNextScan = vi.fn(async () => ({
+        messageId: "unused",
+        delaySeconds: 75,
+        scheduledAt: "2026-09-01T00:01:15.000Z",
+      }));
+      const runMonitor = vi.fn(async () => ({
+        acquired: true,
+        evaluated: 0,
+        alertsSent: 0,
+      }));
+      const runtimeConfig = {
+        enabled: state.config.enabled.BOOL,
+        monitor: {
+          allowedRisks: state.config.monitor.M.allowedRisks.L.map(
+            (entry: { S: string }) => entry.S,
+          ),
+          minimumAnnualReturnPct: Number(
+            state.config.monitor.M.minimumAnnualReturnPct.N,
+          ),
+          currency: state.config.monitor.M.currency.S,
+          minimumInvestmentCents: Number(
+            state.config.monitor.M.minimumInvestmentCents.N,
+          ),
+          highPriorityScore: Number(state.config.monitor.M.highPriorityScore.N),
+          reviewScore: Number(state.config.monitor.M.reviewScore.N),
+          detailRefreshIntervalMs: Number(
+            state.config.monitor.M.detailRefreshIntervalMs.N,
+          ),
+        },
+        costLimits: {
+          configuredMemoryGb: Number(
+            state.config.costLimits.M.configuredMemoryGb.N,
+          ),
+          monthlyGbSecondsLimit: Number(
+            state.config.costLimits.M.monthlyGbSecondsLimit.N,
+          ),
+        },
+      };
+      const handler = createScanHandler({
+        store: {
+          loadConfig: vi.fn(async () => runtimeConfig),
+          saveConfig: vi.fn(async () => undefined),
+          incrementMonthlyUsage: vi.fn(async () => ({
+            invocations: 1,
+            durationMs: 0,
+            scans: 0,
+          })),
+          loadEncryptedSession: vi.fn(async () => ({
+            version: 1,
+            iv: "AA==",
+            ciphertext: "AA==",
+            authTag: "AA==",
+          })),
+          claimScheduleSlot: vi.fn(async () => true),
+          releaseScheduleSlot: vi.fn(async () => undefined),
+        },
+        assessCost: vi.fn(() => ({
+          action: "CONTINUE" as const,
+          projectedGbSeconds: 0,
+          utilizationRatio: 0,
+          reason: "USAGE" as const,
+        })),
+        scheduleNextScan,
+        loadSecrets: vi.fn(async () => ({ sessionKey: new Uint8Array(32) })),
+        decryptSession: vi.fn(() => ({})),
+        createMonitorDependencies: vi.fn(async () => ({}) as never),
+        runMonitor,
+        notifyDiagnostic: vi.fn(async () => undefined),
+        clock: () => new Date("2026-09-01T00:00:00.000Z"),
+      });
+      await handler(
+        {
+          Records: [
+            {
+              messageId: "recovery-one-shot",
+              body: '{"kind":"scan-once","schemaVersion":1}',
+            },
+          ],
+        },
+        { getRemainingTimeInMillis: () => 30_000 },
+      );
+      expect(runMonitor).toHaveBeenCalledOnce();
+      expect(scheduleNextScan).not.toHaveBeenCalled();
+
+      run(shell, "activate-monitor.ps1", statePath);
+      state = JSON.parse(readFileSync(statePath, "utf8"));
+      expect(state.config.enabled).toEqual({ BOOL: true });
+      expect(state.messages).toEqual([
+        expect.objectContaining({
+          MessageBody: '{"kind":"scan","schemaVersion":1}',
+        }),
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

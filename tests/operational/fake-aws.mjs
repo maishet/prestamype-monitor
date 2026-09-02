@@ -20,22 +20,22 @@ const service = args[0],
   operation = args[1];
 if (service === "cloudformation") {
   save();
+  const outputs = state.stackOutputs ?? [
+    { OutputKey: "TableName", OutputValue: "MonitorTable" },
+    {
+      OutputKey: "QueueUrl",
+      OutputValue: "https://sqs.sa-east-1.amazonaws.com/123456789012/scan",
+    },
+  ];
   if (args.join(" ").includes("TableName"))
-    process.stdout.write("MonitorTable\n");
+    process.stdout.write(
+      `${outputs.find((entry) => entry.OutputKey === "TableName")?.OutputValue ?? "None"}\n`,
+    );
   else if (args.join(" ").includes("QueueUrl"))
     process.stdout.write(
       "https://sqs.sa-east-1.amazonaws.com/123456789012/scan\n",
     );
-  else
-    process.stdout.write(
-      JSON.stringify([
-        { OutputKey: "TableName", OutputValue: "MonitorTable" },
-        {
-          OutputKey: "QueueUrl",
-          OutputValue: "https://sqs.sa-east-1.amazonaws.com/123456789012/scan",
-        },
-      ]),
-    );
+  else process.stdout.write(JSON.stringify(outputs));
 } else if (service === "dynamodb" && operation === "get-item") {
   save();
   process.stdout.write(
@@ -53,7 +53,21 @@ if (service === "cloudformation") {
   process.stdout.write("{}");
 } else if (service === "dynamodb" && operation === "update-item") {
   const expression = input.UpdateExpression;
-  if (
+  if (expression === "REMOVE paused_until, pause_reason") {
+    const expectedReason = input.ExpressionAttributeValues[":reason"]?.S;
+    if (
+      state.failResumeCondition ||
+      state.config?.enabled?.BOOL !== false ||
+      state.config?.paused_until?.S !== "manual" ||
+      state.config?.pause_reason?.S !== expectedReason
+    ) {
+      save();
+      process.stderr.write("ConditionalCheckFailedException");
+      process.exit(255);
+    }
+    delete state.config.paused_until;
+    delete state.config.pause_reason;
+  } else if (
     expression.includes("activation_owner = :owner") &&
     expression.includes("SET enabled = :enabled")
   ) {

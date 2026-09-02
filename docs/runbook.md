@@ -30,7 +30,20 @@ Después ejecuta `./scripts/bootstrap-parameters.ps1`. Antes de solicitar secret
 
 ## Sesión autenticada
 
-La autenticación es manual. Define localmente `TABLE_NAME` con el output de CloudFormation y `SESSION_KEY_PARAMETER` con la ruta SSM de la clave de sesión; no guardes estos valores en archivos versionados. El comando `npm run auth:capture` usa de forma predeterminada el adaptador AWS incluido, abre Chromium de Playwright en modo visible, recupera la clave mediante SSM, cifra el estado y lo guarda como `PK=SESSION`, `SK=PRESTAMYPE` en DynamoDB. Si falta el navegador local, instala únicamente el Chromium compatible con `npx playwright install chromium`; la captura local no usa el Chromium de Sparticuz destinado a Lambda. Completa el login en la ventana visible y no exportes cookies a archivos, argumentos o stdout. `PRESTAMYPE_CAPTURE_ADAPTER` queda reservado como override opcional para un adaptador revisado, no es necesario en el flujo normal. Si vence la sesión, desactiva el monitor, vuelve a capturarla manualmente y realiza un escaneo único antes de reactivar.
+La autenticación es manual. Define localmente `TABLE_NAME` con el output de CloudFormation y `SESSION_KEY_PARAMETER` con la ruta SSM de la clave de sesión; no guardes estos valores en archivos versionados. El comando `npm run auth:capture` usa de forma predeterminada el adaptador AWS incluido, abre Chromium de Playwright en modo visible, recupera la clave mediante SSM, cifra el estado y lo guarda como `PK=SESSION`, `SK=PRESTAMYPE` en DynamoDB. Si falta el navegador local, instala únicamente el Chromium compatible con `npx playwright install chromium`; la captura local no usa el Chromium de Sparticuz destinado a Lambda. Completa el login en la ventana visible y no exportes cookies a archivos, argumentos o stdout. `PRESTAMYPE_CAPTURE_ADAPTER` queda reservado como override opcional para un adaptador revisado, no es necesario en el flujo normal. La captura reemplaza únicamente la sesión cifrada: nunca habilita el monitor ni elimina una pausa.
+
+Ante `SessionExpiredError` o `SessionChallengeError`, sigue este orden exacto:
+
+```powershell
+./scripts/deactivate-monitor.ps1
+npm run auth:capture
+./scripts/resume-monitor.ps1 -ValidateOnly
+./scripts/resume-monitor.ps1
+./scripts/invoke-once.ps1
+./scripts/activate-monitor.ps1
+```
+
+`resume-monitor.ps1` exige escribir exactamente `REANUDAR`, mantiene `enabled=false`, no envía mensajes y solo retira una pausa `manual` cuyo motivo exacto sea `SessionExpiredError`, `SessionChallengeError` o `PageStructureError`. También puede usarse para `PageStructureError`, pero únicamente después de corregir y desplegar el cambio de DOM y antes de probar con un escaneo único. La escritura es condicional: si otro proceso cambia el estado entre lectura y actualización, falla sin modificarlo. No lo uses para `RateLimitError`, motivos `cost:*`, pausas temporales ni pausas manuales de otro origen.
 
 ## Pruebas y operación
 
@@ -60,6 +73,7 @@ Puede quedar un mensaje ya en vuelo; confirma que no aparecen nuevos ciclos tras
 
 - Consulta logs de las funciones scan y supervisor, la edad/cantidad de mensajes SQS, la DLQ, throttles/errores Lambda, capacidad consumida DynamoDB y gasto/Budget. La supervisión corre cada diez minutos y solo recupera ciclos atrasados de forma idempotente.
 - `COST_PAUSE` requiere revisión del consumo mensual antes de reactivar. También pausa ante sesión vencida, CAPTCHA, rate limit o cambios de DOM que necesiten intervención. No fuerces reintentos ante CAPTCHA o rate limit.
+- Una pausa de coste o rate limit no se desbloquea con `resume-monitor.ps1`. Revisa consumo y presupuesto para coste; para rate limit espera la pausa temporal o realiza la intervención operativa aprobada. El script falla de forma cerrada ante esos motivos.
 - Los logs deben contener categorías y correlaciones sanitizadas, nunca token, chat ID, clave, cookies, cabeceras, HTML privado, errores crudos ni registros completos de DynamoDB. Retención prevista: siete días.
 - Revisa al menos semanalmente invocaciones, GB-segundos, solicitudes SQS/DynamoDB/SSM, logs ingeridos y presupuesto. Desactiva ante cualquier anomalía o correo de coste.
 
@@ -67,7 +81,7 @@ Puede quedar un mensaje ya en vuelo; confirma que no aparecen nuevos ciclos tras
 
 1. Ejecuta `./scripts/deactivate-monitor.ps1`.
 2. Corrige o vuelve a desplegar una versión conocida mediante SAM/CloudFormation con revisión del changeset.
-3. Realiza un escaneo único y revisa logs sanitizados.
+3. Si el motivo fue recuperable, ejecuta `./scripts/resume-monitor.ps1`, realiza un escaneo único y revisa logs sanitizados.
 4. Reactiva únicamente con autenticación vigente, coste normal y confirmación humana.
 
 ## Desmontaje completo
