@@ -224,7 +224,7 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
       expect(state.messages).toEqual([
         {
           QueueUrl: "https://sqs.sa-east-1.amazonaws.com/123456789012/scan",
-          MessageBody: '{"kind":"scan","schemaVersion":1}',
+          MessageBody: '{"kind":"scan-once","schemaVersion":1}',
         },
       ]);
       expect(state.config).toEqual(fullConfig);
@@ -255,6 +255,7 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
       expect(state.messages).toHaveLength(1);
       expect(state.config.enabled).toEqual({ BOOL: true });
       expect(state.config.activation_owner).toBeUndefined();
+      expect(Date.parse(state.config.next_scan_at.S)).not.toBeNaN();
       run(shell, "deactivate-monitor.ps1", statePath);
       state = JSON.parse(readFileSync(statePath, "utf8"));
       expect(state.config.enabled).toEqual({ BOOL: false });
@@ -286,6 +287,43 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
       expect(state.config.enabled).toEqual({ BOOL: false });
       expect(state.config.activation_owner).toBeUndefined();
       expect(state.config.monitor).toEqual(fullConfig.monitor);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("disables a partially activated monitor after SQS accepts but next_scan_at cannot persist", () => {
+    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
+    const statePath = `${dir}\\state.json`;
+    try {
+      writeFileSync(
+        statePath,
+        JSON.stringify({
+          config: structuredClone(fullConfig),
+          messages: [],
+          blacklist: {},
+          calls: [],
+          failActivationPersistence: true,
+        }),
+      );
+      expect(() =>
+        run(shell, "activate-monitor.ps1", statePath, "ACTIVAR\n"),
+      ).toThrow(/mensaje fue aceptado|Command failed/);
+      const state = JSON.parse(readFileSync(statePath, "utf8"));
+      expect(state.messages).toEqual([
+        expect.objectContaining({
+          MessageBody: '{"kind":"scan","schemaVersion":1}',
+        }),
+      ]);
+      expect(state.config.enabled).toEqual({ BOOL: false });
+      expect(state.config.activation_owner).toBeUndefined();
+      expect(state.config.next_scan_at).toBeUndefined();
+      expect(
+        state.calls.filter(
+          (call: { args: string[] }) =>
+            call.args[0] === "sqs" && call.args[1] === "send-message",
+        ),
+      ).toHaveLength(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

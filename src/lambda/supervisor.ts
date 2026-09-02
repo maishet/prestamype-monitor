@@ -100,7 +100,7 @@ export async function runSupervisor(
   if (!enabled(config)) return { scheduled: false, reason: "DISABLED" };
   if (paused(config, nowMs)) return { scheduled: false, reason: "PAUSED" };
   const next = nextScanEpoch(config);
-  if (!Number.isFinite(next) || next >= nowMs - 180_000)
+  if (Number.isFinite(next) && next >= nowMs - 180_000)
     return { scheduled: false, reason: "NOT_STALE" };
   options?.signal.throwIfAborted();
   if (await dependencies.hasActiveLock(Math.floor(nowMs / 1_000), options))

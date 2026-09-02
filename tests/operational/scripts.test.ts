@@ -73,9 +73,13 @@ describe("operational PowerShell scripts", () => {
     expect(activationParameters).not.toMatch(/\$(Confirm|Confirmation)\b/i);
   });
 
-  it("uses the exact scan body and immutable blacklist writes", () => {
-    for (const name of ["invoke-once.ps1", "activate-monitor.ps1"])
-      expect(source(name)).toContain('{"kind":"scan","schemaVersion":1}');
+  it("keeps one-shot and chained scan bodies distinct and blacklist writes immutable", () => {
+    expect(source("invoke-once.ps1")).toContain(
+      '{"kind":"scan-once","schemaVersion":1}',
+    );
+    expect(source("activate-monitor.ps1")).toContain(
+      '{"kind":"scan","schemaVersion":1}',
+    );
     const seed = source("seed-blacklist.ps1");
     expect(seed).toContain("CORPORACION LERIBE SAC");
     expect(seed).toContain("20517854523");

@@ -77,9 +77,15 @@ try {
         & aws dynamodb update-item --region $Region --cli-input-json ("file://" + $tempPath) --output json | Out-Null
         throw "La cola fallo; se intento revertir solamente esta activacion."
     }
-    $cleanup = @{ TableName = $tableName; Key = @{ PK = @{ S = "CONFIG" }; SK = @{ S = "MONITOR" } }; UpdateExpression = "REMOVE activation_owner"; ConditionExpression = "activation_owner = :owner AND enabled = :enabled"; ExpressionAttributeValues = @{ ":enabled" = @{ BOOL = $true }; ":owner" = @{ S = $owner } } }
+    $nextScanAt = [DateTime]::UtcNow.AddSeconds($delay).ToString("o")
+    $cleanup = @{ TableName = $tableName; Key = @{ PK = @{ S = "CONFIG" }; SK = @{ S = "MONITOR" } }; UpdateExpression = "SET next_scan_at = :next REMOVE activation_owner"; ConditionExpression = "activation_owner = :owner AND enabled = :enabled"; ExpressionAttributeValues = @{ ":enabled" = @{ BOOL = $true }; ":owner" = @{ S = $owner }; ":next" = @{ S = $nextScanAt } } }
     [IO.File]::WriteAllText($tempPath, ($cleanup | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding($false)))
     & aws dynamodb update-item --region $Region --cli-input-json ("file://" + $tempPath) --output json | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Activado, pero no se pudo limpiar el marcador; no reactive." }
+    if ($LASTEXITCODE -ne 0) {
+        $rollback = @{ TableName = $tableName; Key = @{ PK = @{ S = "CONFIG" }; SK = @{ S = "MONITOR" } }; UpdateExpression = "SET enabled = :disabled REMOVE activation_owner"; ConditionExpression = "activation_owner = :owner AND enabled = :enabled"; ExpressionAttributeValues = @{ ":disabled" = @{ BOOL = $false }; ":enabled" = @{ BOOL = $true }; ":owner" = @{ S = $owner } } }
+        [IO.File]::WriteAllText($tempPath, ($rollback | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding($false)))
+        & aws dynamodb update-item --region $Region --cli-input-json ("file://" + $tempPath) --output json | Out-Null
+        throw "El mensaje fue aceptado pero no se pudo persistir su marca; se intento desactivar sin reenviar."
+    }
 } finally { if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force } }
 Write-Output "Monitor activado y primer escaneo programado con demora aleatoria."

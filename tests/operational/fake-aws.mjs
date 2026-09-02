@@ -76,6 +76,18 @@ if (service === "cloudformation") {
     state.config.monitor = input.ExpressionAttributeValues[":monitor"];
     state.config.costLimits = input.ExpressionAttributeValues[":cost"];
     delete state.config.activation_owner;
+  } else if (expression.includes("SET next_scan_at = :next")) {
+    if (
+      state.failActivationPersistence ||
+      state.config?.activation_owner?.S !==
+        input.ExpressionAttributeValues[":owner"]?.S
+    ) {
+      save();
+      process.stderr.write("ConditionalCheckFailedException");
+      process.exit(255);
+    }
+    state.config.next_scan_at = input.ExpressionAttributeValues[":next"];
+    delete state.config.activation_owner;
   } else if (expression.includes("SET enabled = :disabled")) {
     if (
       input.ConditionExpression &&

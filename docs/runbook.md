@@ -30,7 +30,7 @@ Después ejecuta `./scripts/bootstrap-parameters.ps1`. Antes de solicitar secret
 
 ## Sesión autenticada
 
-La autenticación es manual. Configura localmente `PRESTAMYPE_CAPTURE_ADAPTER` con el adaptador autorizado y ejecuta `npm run auth:capture`. Completa el login en el navegador visible. El adaptador debe cifrar el estado con la clave de sesión recuperada de SSM y guardarlo como `PK=SESSION`, `SK=PRESTAMYPE` en DynamoDB; no exportes cookies a archivos, argumentos o stdout. Si vence la sesión, desactiva el monitor, vuelve a capturarla manualmente y realiza un escaneo único antes de reactivar.
+La autenticación es manual. Define localmente `TABLE_NAME` con el output de CloudFormation y `SESSION_KEY_PARAMETER` con la ruta SSM de la clave de sesión; no guardes estos valores en archivos versionados. El comando `npm run auth:capture` usa de forma predeterminada el adaptador AWS incluido, abre Chromium de Playwright en modo visible, recupera la clave mediante SSM, cifra el estado y lo guarda como `PK=SESSION`, `SK=PRESTAMYPE` en DynamoDB. Si falta el navegador local, instala únicamente el Chromium compatible con `npx playwright install chromium`; la captura local no usa el Chromium de Sparticuz destinado a Lambda. Completa el login en la ventana visible y no exportes cookies a archivos, argumentos o stdout. `PRESTAMYPE_CAPTURE_ADAPTER` queda reservado como override opcional para un adaptador revisado, no es necesario en el flujo normal. Si vence la sesión, desactiva el monitor, vuelve a capturarla manualmente y realiza un escaneo único antes de reactivar.
 
 ## Pruebas y operación
 

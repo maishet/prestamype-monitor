@@ -6,7 +6,7 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$body = '{"kind":"scan","schemaVersion":1}'
+$body = '{"kind":"scan-once","schemaVersion":1}'
 if ($ValidateOnly -or $WhatIfPreference) { Write-Output "Validación local correcta; AWS no fue invocado."; return }
 $queueUrl = & aws cloudformation describe-stacks --stack-name $StackName --region $Region --query "Stacks[0].Outputs[?OutputKey=='QueueUrl'].OutputValue | [0]" --output text
 if ($LASTEXITCODE -ne 0 -or $queueUrl -notmatch '^https://sqs\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?/\d{12}/[A-Za-z0-9_-]+$') { throw "No se pudo resolver QueueUrl de forma segura." }

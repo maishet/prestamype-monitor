@@ -56,6 +56,11 @@ export interface CaptureOptions {
   signal?: AbortSignal;
 }
 
+export interface CaptureCliOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
 export type CaptureModuleLoader = (specifier: string) => Promise<unknown>;
 
 function assertAllowedUrl(rawUrl: string): void {
@@ -346,27 +351,54 @@ export async function runCaptureSessionCli(
   environment: Readonly<Record<string, string | undefined>> = process.env,
   moduleLoader: CaptureModuleLoader = (specifier) =>
     import(specifier) as Promise<unknown>,
+  options: CaptureCliOptions = {},
 ): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+    throw new CaptureSessionError("Invalid session capture timeout");
+  const controller = new AbortController();
+  const forwardAbort = () => controller.abort("external");
+  options.signal?.addEventListener("abort", forwardAbort, { once: true });
+  if (options.signal?.aborted) controller.abort("external");
+  const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
+  const started = Date.now();
   const specifier = environment.PRESTAMYPE_CAPTURE_ADAPTER;
-  if (specifier === undefined || specifier.trim() === "") {
-    throw new CaptureSessionError("Session capture is not configured");
+  try {
+    const loaded = await raceWithAbort(
+      moduleLoader(
+        specifier === undefined || specifier.trim() === ""
+          ? new URL("./aws-capture-adapter.js", import.meta.url).href
+          : specifier,
+      ),
+      controller.signal,
+    );
+    if (
+      typeof loaded !== "object" ||
+      loaded === null ||
+      !("createCaptureDependencies" in loaded) ||
+      typeof loaded.createCaptureDependencies !== "function"
+    ) {
+      throw new CaptureSessionError("Session capture adapter is invalid");
+    }
+    const factory = loaded.createCaptureDependencies as (options?: {
+      signal?: AbortSignal;
+    }) => Promise<unknown> | unknown;
+    const dependencies = await raceWithAbort(
+      Promise.resolve().then(() => factory({ signal: controller.signal })),
+      controller.signal,
+    );
+    if (!isCaptureDependencies(dependencies))
+      throw new CaptureSessionError("Session capture adapter is invalid");
+    const remainingMs = timeoutMs - (Date.now() - started);
+    if (remainingMs <= 0) throw abortError(controller.signal);
+    await captureSession(
+      { ...dependencies, output: dependencies.output ?? console.log },
+      { timeoutMs: remainingMs, signal: controller.signal },
+    );
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", forwardAbort);
   }
-  const loaded = await moduleLoader(specifier);
-  if (
-    typeof loaded !== "object" ||
-    loaded === null ||
-    !("createCaptureDependencies" in loaded) ||
-    typeof loaded.createCaptureDependencies !== "function"
-  ) {
-    throw new CaptureSessionError("Session capture adapter is invalid");
-  }
-  const dependencies = (await loaded.createCaptureDependencies()) as unknown;
-  if (!isCaptureDependencies(dependencies))
-    throw new CaptureSessionError("Session capture adapter is invalid");
-  await captureSession({
-    ...dependencies,
-    output: dependencies.output ?? console.log,
-  });
 }
 
 if (

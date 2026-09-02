@@ -96,6 +96,24 @@ describe("supervisor", () => {
       f.schedule.mock.invocationCallOrder[0] as number,
     );
   });
+  it.each([undefined, "not-a-date"])(
+    "recovers a missing or invalid next scan marker exactly once",
+    async (next_scan_at) => {
+      const f = fixture({
+        enabled: true,
+        ...(next_scan_at === undefined ? {} : { next_scan_at }),
+      });
+      const [first, second] = await Promise.all([
+        runSupervisor(f.dependencies, NOW),
+        runSupervisor(f.dependencies, NOW),
+      ]);
+      expect([first.reason, second.reason].sort()).toEqual([
+        "DUPLICATE",
+        "SCHEDULED",
+      ]);
+      expect(f.schedule).toHaveBeenCalledOnce();
+    },
+  );
   it("releases a claim after SQS failure so a retry can recover", async () => {
     const f = fixture({ enabled: true, next_scan_at: "2020-01-01T00:00:00Z" });
     f.schedule.mockRejectedValueOnce(new Error("SQS unavailable"));

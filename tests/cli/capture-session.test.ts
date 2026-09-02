@@ -376,9 +376,55 @@ describe("capture CLI composition", () => {
     expect(h.saved).toHaveLength(1);
   });
 
-  it("fails safely without a configured adapter", async () => {
-    await expect(runCaptureSessionCli({}, vi.fn())).rejects.toThrow(
-      "Session capture is not configured",
+  it("uses the bundled AWS adapter when no override is configured", async () => {
+    const h = harness();
+    const loader = vi.fn(async () => ({
+      createCaptureDependencies: async () => ({
+        launcher: h.launcher,
+        store: h.store,
+        key,
+      }),
+    }));
+    await runCaptureSessionCli({}, loader);
+    expect(loader).toHaveBeenCalledWith(
+      expect.stringMatching(/aws-capture-adapter\.js$/),
     );
+    expect(h.saved).toHaveLength(1);
+  });
+
+  it("bounds adapter creation before any browser or session write", async () => {
+    vi.useFakeTimers();
+    try {
+      const launch = vi.fn();
+      const save = vi.fn();
+      const createCaptureDependencies = vi.fn(
+        async (options?: { signal?: AbortSignal }) =>
+          await new Promise<never>((_resolve, reject) => {
+            options?.signal?.addEventListener(
+              "abort",
+              () => reject(new Error("ssm pending")),
+              { once: true },
+            );
+          }),
+      );
+      const run = runCaptureSessionCli(
+        {},
+        async () => ({ createCaptureDependencies }),
+        { timeoutMs: 20 },
+      );
+      const rejected = expect(run).rejects.toThrow(
+        "Authentication was not completed in time",
+      );
+      await vi.advanceTimersByTimeAsync(20);
+      await rejected;
+      expect(createCaptureDependencies).toHaveBeenCalledWith({
+        signal: expect.any(AbortSignal),
+      });
+      expect(launch).not.toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

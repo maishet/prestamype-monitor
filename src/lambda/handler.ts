@@ -107,31 +107,37 @@ export interface LambdaContextLike {
   getRemainingTimeInMillis(): number;
 }
 
-function validEvent(event: unknown): event is SQSEvent {
+type ScanInvocationKind = "scan" | "scan-once";
+
+function invocationKind(event: unknown): ScanInvocationKind | undefined {
   try {
-    if (typeof event !== "object" || event === null) return false;
+    if (typeof event !== "object" || event === null) return undefined;
     const records = (event as { Records?: unknown }).Records;
-    if (!Array.isArray(records) || records.length !== 1) return false;
+    if (!Array.isArray(records) || records.length !== 1) return undefined;
     const record = records[0] as Record<string, unknown>;
     if (
       typeof record !== "object" ||
       record === null ||
       typeof record.messageId !== "string" ||
       !/^[A-Za-z0-9-]{1,128}$/.test(record.messageId) ||
+      (record.eventSource !== undefined && record.eventSource !== "aws:sqs") ||
       typeof record.body !== "string" ||
       record.body.length > 1_024
     )
-      return false;
+      return undefined;
     const body = JSON.parse(record.body) as unknown;
-    return (
+    if (
       typeof body === "object" &&
       body !== null &&
-      (body as Record<string, unknown>).kind === "scan" &&
+      ((body as Record<string, unknown>).kind === "scan" ||
+        (body as Record<string, unknown>).kind === "scan-once") &&
       (body as Record<string, unknown>).schemaVersion === 1 &&
       Object.keys(body as object).length === 2
-    );
+    )
+      return (body as { kind: ScanInvocationKind }).kind;
+    return undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -285,7 +291,8 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
     event: unknown,
     context: LambdaContextLike,
   ): Promise<void> {
-    if (!validEvent(event) || typeof context !== "object" || context === null)
+    const kind = invocationKind(event);
+    if (kind === undefined || typeof context !== "object" || context === null)
       throw new LambdaRuntimeError("Invalid scan invocation");
     const initialRemaining = remainingMillis(context);
     if (initialRemaining < 3_000) return;
@@ -304,7 +311,9 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
           throw new LambdaRuntimeError("Runtime alert delivery failed");
         config = await dependencies.store.loadConfig();
       }
-      if (!enabled(config) || isPaused(config, now)) return;
+      if (config === null || typeof config !== "object") return;
+      if ((kind === "scan" && !enabled(config)) || isPaused(config, now))
+        return;
       assertRuntimeConfig(config);
       const messageId = (event as SQSEvent).Records[0]?.messageId ?? "unknown";
       if (config.last_message_id === messageId) return;
@@ -371,6 +380,7 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
         config = (await dependencies.store.loadConfig()) ?? config;
       }
       const successorAccepted =
+        kind === "scan-once" ||
         config.successor_scheduled_for_message_id === messageId ||
         (config.successor_scheduled_for_message_id === undefined &&
           typeof config.next_scan_at === "string" &&
@@ -393,7 +403,10 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
           }
         }
       }
-      if (config.successor_scheduled_for_message_id !== messageId)
+      if (
+        kind === "scan" &&
+        config.successor_scheduled_for_message_id !== messageId
+      )
         await savePatch(config, {
           successor_scheduled_for_message_id: messageId,
         });

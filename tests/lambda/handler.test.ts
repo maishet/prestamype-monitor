@@ -19,6 +19,11 @@ const EVENT = {
     { messageId: "message-1", body: '{"kind":"scan","schemaVersion":1}' },
   ],
 };
+const ONE_SHOT_EVENT = {
+  Records: [
+    { messageId: "one-shot-1", body: '{"kind":"scan-once","schemaVersion":1}' },
+  ],
+};
 const CONFIG: ScanRuntimeConfig = {
   enabled: true,
   monitor: {
@@ -218,6 +223,43 @@ describe("scan Lambda handler", () => {
     await f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 });
     expect(f.dependencies.scheduleNextScan).not.toHaveBeenCalled();
     expect(f.store.incrementMonthlyUsage).not.toHaveBeenCalled();
+  });
+  it("runs the exact one-shot SQS contract while disabled and never chains", async () => {
+    const f = fixture();
+    f.store.loadConfig.mockResolvedValue({ ...CONFIG, enabled: false });
+    await f.handler(ONE_SHOT_EVENT, {
+      getRemainingTimeInMillis: () => 30_000,
+    });
+    expect(f.dependencies.runMonitor).toHaveBeenCalledOnce();
+    expect(f.dependencies.scheduleNextScan).not.toHaveBeenCalled();
+    expect(f.store.claimScheduleSlot).not.toHaveBeenCalled();
+  });
+  it("keeps one-shot subject to pause and rejects extra or malformed SQS bodies", async () => {
+    const f = fixture();
+    f.store.loadConfig.mockResolvedValue({ ...CONFIG, paused_until: "manual" });
+    await f.handler(ONE_SHOT_EVENT, {
+      getRemainingTimeInMillis: () => 30_000,
+    });
+    expect(f.dependencies.runMonitor).not.toHaveBeenCalled();
+    await expect(
+      f.handler(
+        {
+          Records: [
+            {
+              messageId: "one-shot-2",
+              body: '{"kind":"scan-once","schemaVersion":1,"extra":true}',
+            },
+          ],
+        },
+        { getRemainingTimeInMillis: () => 30_000 },
+      ),
+    ).rejects.toThrow("Invalid scan invocation");
+    await expect(
+      f.handler(
+        { Records: [{ messageId: "one-shot-3", body: "not-json" }] },
+        { getRemainingTimeInMillis: () => 30_000 },
+      ),
+    ).rejects.toThrow("Invalid scan invocation");
   });
   it("rejects hostile events and exits before three seconds", async () => {
     const f = fixture();

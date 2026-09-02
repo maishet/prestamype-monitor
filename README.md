@@ -20,13 +20,26 @@ El origen canónico es `https://www.prestamype.com`. El apex `https://prestamype
 
 ## Sesión autenticada
 
-La autenticación se realiza manualmente en un navegador visible. Un adaptador local, fuera del repositorio, debe exportar `createCaptureDependencies` y proporcionar el navegador, el almacén de sesión y una clave de 32 bytes. Configura su ruta mediante `PRESTAMYPE_CAPTURE_ADAPTER` y ejecuta:
+La autenticación se realiza manualmente en un navegador visible. Por defecto, `auth:capture` usa el adaptador AWS incluido: lee la clave de sesión (32 bytes, codificada en Base64) desde Parameter Store con descifrado, cifra el estado con AES-256-GCM y lo guarda en DynamoDB. Antes de ejecutarlo, inicia sesión en AWS con credenciales que puedan leer ese parámetro y escribir la tabla, y define los valores del stack:
 
 ```powershell
+$env:TABLE_NAME = "prestamype-monitor"
+$env:SESSION_KEY_PARAMETER = "/prestamype/monitor/session-key"
+npm run auth:capture
+```
+
+Se abrirá Chromium de forma visible. Inicia sesión tú mismo, completa cualquier verificación legítima y espera a que carguen las oportunidades. Si Chromium no puede iniciarse, instala el navegador de Playwright con `npx playwright install chromium` y vuelve a ejecutar el comando; no copies cookies, contraseñas, tokens ni claves al terminal.
+
+Para un adaptador local alternativo, exporta `createCaptureDependencies` y configúralo explícitamente mediante `PRESTAMYPE_CAPTURE_ADAPTER`:
+
+```powershell
+$env:PRESTAMYPE_CAPTURE_ADAPTER = "./capture-adapter.js"
 npm run auth:capture
 ```
 
 La herramienta nunca solicita ni almacena la contraseña. El estado de sesión se cifra con AES-256-GCM antes de guardarse. No incluyas claves, cookies, tokens ni contenido de sesión en el repositorio, variables impresas, ejemplos, registros o reportes de errores.
+
+Al activar el monitor, el primer mensaje SQS se acepta antes de persistir `next_scan_at`. Si esta segunda operación falla, el script desactiva la activación que posee y elimina su marcador; no reenvía el mensaje ni deja encadenamiento automático activo. Revisa la configuración y la cola antes de una nueva activación explícita para evitar procesar una ejecución pendiente.
 
 ## Dry-run con fixtures
 
