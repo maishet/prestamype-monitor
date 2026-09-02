@@ -493,7 +493,19 @@ export class PrestamypeClient implements OpportunitySource {
             .isVisible(),
           deadline,
         );
-    if (!opportunitiesHeading)
+    const opportunityCards =
+      legacyMarker || opportunitiesHeading
+        ? true
+        : await this.withDeadline(
+            page
+              .locator("[data-opportunity-card], article.opportunity-card")
+              .isVisible(),
+            deadline,
+          );
+    const lambdaProtectedRoute =
+      process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined &&
+      new URL(page.url()).pathname === OPPORTUNITIES_PATH;
+    if (!opportunitiesHeading && !opportunityCards && !lambdaProtectedRoute)
       throw new PageStructureError("MISSING_FIELD", "authenticatedPage");
   }
 
