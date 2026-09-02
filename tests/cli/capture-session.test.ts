@@ -14,6 +14,9 @@ function harness(
   mode:
     | "success"
     | "captcha"
+    | "cookieChallenge"
+    | "invisibleCaptcha"
+    | "visibleOpportunities"
     | "pending"
     | "gotoPending"
     | "statePending" = "success",
@@ -22,6 +25,8 @@ function harness(
   const state = { cookies: [], origins: [] };
   let launchOptions: object | undefined;
   let visibilityChecks = 0;
+  let cookieConsentVisible = mode === "cookieChallenge";
+  let cookieConsentChecks = 0;
   const page = {
     async goto(url: string) {
       events.push(`goto:${url}`);
@@ -31,13 +36,29 @@ function harness(
     url: () => "https://www.prestamype.com/app/inversionista/oportunidades",
     async waitForSelector(selector: string) {
       events.push(`wait:${selector}`);
+      if (
+        mode === "visibleOpportunities" &&
+        !selector.includes("text=Oportunidades")
+      )
+        throw new Error("legacy authenticated marker is absent");
       if (mode === "pending") return await new Promise<void>(() => undefined);
     },
     locator(selector: string) {
       return {
         async isVisible() {
           visibilityChecks += 1;
-          return mode === "captcha" && selector.includes("captcha");
+          if (selector.includes("Permitir la selección")) {
+            cookieConsentChecks += 1;
+            if (mode === "cookieChallenge" && cookieConsentChecks > 1)
+              cookieConsentVisible = false;
+            return cookieConsentVisible;
+          }
+          if (mode === "invisibleCaptcha")
+            return selector.includes('iframe[src*="captcha"]');
+          return (
+            selector.includes("captcha") &&
+            (mode === "captcha" || cookieConsentVisible)
+          );
         },
       };
     },
@@ -200,6 +221,17 @@ describe("captureSession", () => {
     ]);
   });
 
+  it("recognizes the visible oportunidades page when legacy data markers are absent", async () => {
+    const h = harness("visibleOpportunities");
+    await captureSession({
+      launcher: h.launcher,
+      store: h.store,
+      key,
+      output: vi.fn(),
+    });
+    expect(h.saved).toHaveLength(1);
+  });
+
   it("detects CAPTCHA and never saves", async () => {
     const h = harness("captcha");
     await expect(
@@ -212,6 +244,28 @@ describe("captureSession", () => {
     ).rejects.toThrow("Authentication challenge detected");
     expect(h.saved).toHaveLength(0);
     expect(h.events.slice(-2)).toEqual(["context.close", "browser.close"]);
+  });
+
+  it("does not treat an invisible generic CAPTCHA iframe as a challenge", async () => {
+    const h = harness("invisibleCaptcha");
+    await captureSession({
+      launcher: h.launcher,
+      store: h.store,
+      key,
+      output: vi.fn(),
+    });
+    expect(h.saved).toHaveLength(1);
+  });
+
+  it("waits for the visible cookie choice to be dismissed before checking for a challenge", async () => {
+    const h = harness("cookieChallenge");
+    await captureSession({
+      launcher: h.launcher,
+      store: h.store,
+      key,
+      output: vi.fn(),
+    });
+    expect(h.saved).toHaveLength(1);
   });
 
   it("times out waiting for explicit authentication marker", async () => {

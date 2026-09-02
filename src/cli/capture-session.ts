@@ -8,9 +8,10 @@ import {
 
 const OPPORTUNITIES_URL =
   "https://www.prestamype.com/app/inversionista/oportunidades";
-const AUTHENTICATED_MARKER =
-  '[data-opportunity-card], [data-page="opportunities"]';
-const CAPTCHA_MARKER = '[data-captcha], iframe[src*="captcha"], .g-recaptcha';
+const AUTHENTICATED_MARKER = "text=Oportunidades";
+const CAPTCHA_MARKER =
+  '[data-captcha], .g-recaptcha, iframe[src*="recaptcha/api2/bframe"], iframe[src*="hcaptcha.com"]';
+const COOKIE_CONSENT_MARKER = 'button:has-text("Permitir la selección")';
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 export class CaptureSessionError extends Error {
@@ -199,6 +200,17 @@ async function waitForAuthentication(
   }
 }
 
+async function waitForCookieConsentDismissal(
+  page: CapturePage,
+  signal: AbortSignal,
+): Promise<void> {
+  while (
+    await raceWithAbort(page.locator(COOKIE_CONSENT_MARKER).isVisible(), signal)
+  ) {
+    await abortableDelay(100, signal);
+  }
+}
+
 export async function captureSession(
   dependencies: CaptureDependencies,
   options: CaptureOptions = {},
@@ -287,6 +299,7 @@ export async function captureSession(
     await raceWithAbort(page.goto(OPPORTUNITIES_URL), controller.signal);
     assertAllowedUrl(page.url());
     dependencies.output("Inicia sesión manualmente y vuelve aquí");
+    await waitForCookieConsentDismissal(page, controller.signal);
     if (
       await raceWithAbort(
         page.locator(CAPTCHA_MARKER).isVisible(),
