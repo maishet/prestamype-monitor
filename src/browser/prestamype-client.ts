@@ -336,7 +336,7 @@ export class PrestamypeClient implements OpportunitySource {
       "Ordenar por: Recomendado",
       deadline,
     );
-    await this.clickAccessible(page, "option", "Retorno mayor", deadline);
+    await this.clickAccessible(page, "button", "Retorno mayor", deadline);
     this.ensureDeadline(deadline);
     const sortState = page.locator('[data-state="sort-return-desc"]');
     if (

@@ -288,7 +288,7 @@ describe("PrestamypeClient", () => {
       { role: "checkbox", name: "C", exact: true },
       { role: "button", name: "Aplicar filtros", exact: true },
       { role: "button", name: "Ordenar por: Recomendado", exact: true },
-      { role: "option", name: "Retorno mayor", exact: true },
+      { role: "button", name: "Retorno mayor", exact: true },
     ]);
   });
 
