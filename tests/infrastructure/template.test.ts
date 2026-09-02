@@ -36,7 +36,9 @@ describe("SAM infrastructure", () => {
       expect(properties.Architectures).toEqual(["x86_64"]);
       expect(properties.MemorySize).toBe(1024);
       expect(properties.Timeout).toBe(30);
-      expect(properties.ReservedConcurrentExecutions).toBe(1);
+      expect(properties.ReservedConcurrentExecutions).toEqual({
+        "Fn::If": ["UseReservedConcurrency", 1, { Ref: "AWS::NoValue" }],
+      });
       expect(properties.Role).toEqual({
         "Fn::GetAtt": [`${logicalId}Role`, "Arn"],
       });
@@ -47,6 +49,14 @@ describe("SAM infrastructure", () => {
       });
       expect(properties.Events.Api).toBeUndefined();
     }
+
+    expect(template.Parameters.EnableReservedConcurrency).toMatchObject({
+      Default: "false",
+      AllowedValues: ["false", "true"],
+    });
+    expect(template.Conditions.UseReservedConcurrency).toEqual({
+      "Fn::Equals": [{ Ref: "EnableReservedConcurrency" }, "true"],
+    });
 
     expect(resources.ScanFunction.Properties.Handler).toBe("handler.handler");
     expect(resources.ScanFunction.Properties.Layers).toEqual([
@@ -128,6 +138,7 @@ describe("SAM infrastructure", () => {
       TelegramTokenParameterPath: expect.objectContaining({ Type: "String" }),
       TelegramChatIdParameterPath: expect.objectContaining({ Type: "String" }),
       SessionKeyParameterPath: expect.objectContaining({ Type: "String" }),
+      EnableReservedConcurrency: expect.objectContaining({ Type: "String" }),
     });
     expect(
       resources.ScanFunction.Properties.Environment.Variables,

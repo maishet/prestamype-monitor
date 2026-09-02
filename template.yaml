@@ -20,6 +20,17 @@
       "Default": "/prestamype/prod/session-key",
       "AllowedPattern": "^/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+$",
       "Description": "SSM Parameter Store path containing the session encryption key"
+    },
+    "EnableReservedConcurrency": {
+      "Type": "String",
+      "Default": "false",
+      "AllowedValues": ["false", "true"],
+      "Description": "Set to true only after the account has Lambda concurrency quota above the default minimum"
+    }
+  },
+  "Conditions": {
+    "UseReservedConcurrency": {
+      "Fn::Equals": [{ "Ref": "EnableReservedConcurrency" }, "true"]
     }
   },
   "Resources": {
@@ -205,7 +216,9 @@
         "Architectures": ["x86_64"],
         "MemorySize": 1024,
         "Timeout": 30,
-        "ReservedConcurrentExecutions": 1,
+        "ReservedConcurrentExecutions": {
+          "Fn::If": ["UseReservedConcurrency", 1, { "Ref": "AWS::NoValue" }]
+        },
         "Layers": [{ "Ref": "BrowserDependenciesLayer" }],
         "Role": { "Fn::GetAtt": ["ScanFunctionRole", "Arn"] },
         "Environment": {
@@ -269,7 +282,9 @@
         "Architectures": ["x86_64"],
         "MemorySize": 1024,
         "Timeout": 30,
-        "ReservedConcurrentExecutions": 1,
+        "ReservedConcurrentExecutions": {
+          "Fn::If": ["UseReservedConcurrency", 1, { "Ref": "AWS::NoValue" }]
+        },
         "Role": { "Fn::GetAtt": ["SupervisorFunctionRole", "Arn"] },
         "Environment": {
           "Variables": {
