@@ -281,11 +281,14 @@ describe("PrestamypeClient", () => {
       ),
     ).toBe(false);
     expect(h.page.accessibleActions).toEqual([
-      { role: "button", name: "Retorno mayor", exact: true },
+      { role: "button", name: "Filtros", exact: true },
       { role: "checkbox", name: "A+", exact: true },
       { role: "checkbox", name: "A", exact: true },
       { role: "checkbox", name: "B", exact: true },
       { role: "checkbox", name: "C", exact: true },
+      { role: "button", name: "Aplicar filtros", exact: true },
+      { role: "button", name: "Ordenar por: Recomendado", exact: true },
+      { role: "option", name: "Retorno mayor", exact: true },
     ]);
   });
 

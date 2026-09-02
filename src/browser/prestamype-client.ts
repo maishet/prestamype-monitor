@@ -37,7 +37,16 @@ const PROTECTED_PATHS = [
   "/app/inversionista/dashboard",
 ] as const;
 const PROHIBITED_ACTION = /invertir|reservar|pagar|confirmar/i;
-const ALLOWED_ACTIONS = new Set(["Retorno mayor", "A+", "A", "B", "C"]);
+const ALLOWED_ACTIONS = new Set([
+  "Filtros",
+  "Aplicar filtros",
+  "Ordenar por: Recomendado",
+  "Retorno mayor",
+  "A+",
+  "A",
+  "B",
+  "C",
+]);
 
 export interface LocatorLike {
   click(): Promise<void>;
@@ -314,12 +323,20 @@ export class PrestamypeClient implements OpportunitySource {
     const page = await this.getPage(deadline);
     await this.navigate(page, OPPORTUNITIES_PATH, deadline);
     await this.assertAuthenticated(page, deadline);
-    await this.clickAccessible(page, "button", "Retorno mayor", deadline);
+    await this.clickAccessible(page, "button", "Filtros", deadline);
     for (const risk of ["A+", "A", "B", "C"] as const) {
       if (config.allowedRisks.includes(risk)) {
         await this.clickAccessible(page, "checkbox", risk, deadline);
       }
     }
+    await this.clickAccessible(page, "button", "Aplicar filtros", deadline);
+    await this.clickAccessible(
+      page,
+      "button",
+      "Ordenar por: Recomendado",
+      deadline,
+    );
+    await this.clickAccessible(page, "option", "Retorno mayor", deadline);
     this.ensureDeadline(deadline);
     const sortState = page.locator('[data-state="sort-return-desc"]');
     if (
@@ -501,9 +518,12 @@ export class PrestamypeClient implements OpportunitySource {
     const lambdaProtectedRoute =
       process.env.AWS_LAMBDA_FUNCTION_NAME === "prestamype-monitor-scan" &&
       process.env.LAMBDA_TASK_ROOT !== undefined &&
-      PROTECTED_PATHS.includes(
+      (PROTECTED_PATHS.includes(
         new URL(page.url()).pathname as (typeof PROTECTED_PATHS)[number],
-      );
+      ) ||
+        /^\/app\/inversionista\/oportunidades\/[A-Za-z0-9_-]+$/.test(
+          new URL(page.url()).pathname,
+        ));
     if (!opportunitiesHeading)
       console.error(
         "Sanitized auth page markers",
@@ -520,7 +540,7 @@ export class PrestamypeClient implements OpportunitySource {
 
   private async clickAccessible(
     page: PageLike,
-    role: "button" | "checkbox",
+    role: "button" | "checkbox" | "option",
     name: string,
     deadline: number,
   ): Promise<void> {
