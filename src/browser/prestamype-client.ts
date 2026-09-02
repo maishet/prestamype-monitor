@@ -28,7 +28,14 @@ import {
 export const ORIGIN = "https://www.prestamype.com";
 const APEX_ORIGIN = "https://prestamype.com";
 const OPPORTUNITIES_PATH = "/app/inversionista/oportunidades";
-const PORTFOLIO_PATH = "/app/inversionista/portafolio";
+const PORTFOLIO_PATH = "/app/inversionista/mis-inversiones";
+const PROTECTED_PATHS = [
+  OPPORTUNITIES_PATH,
+  PORTFOLIO_PATH,
+  "/app/inversionista/estado-cuenta",
+  "/app/inversionista/reportes",
+  "/app/inversionista/dashboard",
+] as const;
 const PROHIBITED_ACTION = /invertir|reservar|pagar|confirmar/i;
 const ALLOWED_ACTIONS = new Set(["Retorno mayor", "A+", "A", "B", "C"]);
 
@@ -487,25 +494,27 @@ export class PrestamypeClient implements OpportunitySource {
       ? true
       : await this.withDeadline(
           page
-            .locator(
-              'h1:has-text("Oportunidades"), h2:has-text("Oportunidades"), h3:has-text("Oportunidades"), [role="heading"]:has-text("Oportunidades")',
-            )
+            .getByRole("heading", { name: "Oportunidades", exact: true })
             .isVisible(),
           deadline,
         );
-    const opportunityCards =
-      legacyMarker || opportunitiesHeading
-        ? true
-        : await this.withDeadline(
-            page
-              .locator("[data-opportunity-card], article.opportunity-card")
-              .isVisible(),
-            deadline,
-          );
     const lambdaProtectedRoute =
-      process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined &&
-      new URL(page.url()).pathname === OPPORTUNITIES_PATH;
-    if (!opportunitiesHeading && !opportunityCards && !lambdaProtectedRoute)
+      process.env.AWS_LAMBDA_FUNCTION_NAME === "prestamype-monitor-scan" &&
+      process.env.LAMBDA_TASK_ROOT !== undefined &&
+      PROTECTED_PATHS.includes(
+        new URL(page.url()).pathname as (typeof PROTECTED_PATHS)[number],
+      );
+    if (!opportunitiesHeading)
+      console.error(
+        "Sanitized auth page markers",
+        JSON.stringify({
+          url: new URL(page.url()).pathname,
+          legacyMarker,
+          opportunitiesHeading,
+          lambdaProtectedRoute,
+        }),
+      );
+    if (!opportunitiesHeading && !lambdaProtectedRoute)
       throw new PageStructureError("MISSING_FIELD", "authenticatedPage");
   }
 
@@ -620,8 +629,9 @@ function isAllowedNavigation(url: URL): boolean {
   if (url.origin !== ORIGIN || url.username !== "" || url.password !== "")
     return false;
   return (
-    url.pathname === PORTFOLIO_PATH ||
-    url.pathname === OPPORTUNITIES_PATH ||
+    PROTECTED_PATHS.includes(
+      url.pathname as (typeof PROTECTED_PATHS)[number],
+    ) ||
     /^\/app\/inversionista\/oportunidades\/[A-Za-z0-9_-]+$/.test(
       url.pathname,
     ) ||

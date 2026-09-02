@@ -79,7 +79,7 @@ class FakeLocator implements LocatorLike {
 }
 
 class FakePage implements PageLike {
-  currentUrl = "https://www.prestamype.com/app/inversionista/portafolio";
+  currentUrl = "https://www.prestamype.com/app/inversionista/mis-inversiones";
   html =
     '<main data-page="portfolio"><span data-field="available-balance">S/ 50,00</span></main>';
   readonly visits: string[] = [];
@@ -140,6 +140,8 @@ class FakePage implements PageLike {
     options: { name: string; exact: boolean },
   ): LocatorLike {
     this.accessibleActions.push({ role, ...options });
+    if (role === "heading" && options.name === "Oportunidades")
+      return new FakeLocator(this.authenticated, options.name);
     return new FakeLocator(true, options.name);
   }
   async route(
@@ -377,13 +379,13 @@ describe("PrestamypeClient", () => {
     const safe = harness();
     await expect(safe.client.getPortfolio()).resolves.toBeDefined();
     expect(safe.page.visits[0]).toBe(
-      "https://www.prestamype.com/app/inversionista/portafolio",
+      "https://www.prestamype.com/app/inversionista/mis-inversiones",
     );
 
     const evil = harness();
     evil.page.goto = async () => {
       evil.page.currentUrl =
-        "https://evil.prestamype.com/app/inversionista/portafolio";
+        "https://evil.prestamype.com/app/inversionista/mis-inversiones";
       return { status: () => 200 };
     };
     await expect(evil.client.getPortfolio()).rejects.toBeInstanceOf(
