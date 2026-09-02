@@ -8,7 +8,8 @@ import {
 
 const OPPORTUNITIES_URL =
   "https://www.prestamype.com/app/inversionista/oportunidades";
-const AUTHENTICATED_MARKER = "text=Oportunidades";
+const AUTHENTICATED_MARKER =
+  'h1:has-text("Oportunidades"), h2:has-text("Oportunidades"), h3:has-text("Oportunidades"), [role="heading"]:has-text("Oportunidades")';
 const CAPTCHA_MARKER =
   '[data-captcha], .g-recaptcha, iframe[src*="recaptcha/api2/bframe"], iframe[src*="hcaptcha.com"]';
 const COOKIE_CONSENT_MARKER = 'button:has-text("Permitir la selección")';
@@ -72,7 +73,9 @@ function assertAllowedUrl(rawUrl: string): void {
     throw new CaptureSessionError("Unexpected browser destination");
   }
   if (
-    url.origin !== "https://www.prestamype.com" ||
+    !["https://www.prestamype.com", "https://prestamype.com"].includes(
+      url.origin,
+    ) ||
     url.username !== "" ||
     url.password !== "" ||
     !/^\/(?:app\/inversionista\/oportunidades|iniciar-sesion)\/?$/.test(
@@ -320,6 +323,7 @@ export async function captureSession(
       context.storageState(),
       controller.signal,
     );
+    dependencies.output("Guardando sesión cifrada");
     await raceWithAbort(
       dependencies.store.saveEncryptedSession(
         encryptSession(storageState, dependencies.key),
@@ -327,6 +331,7 @@ export async function captureSession(
       ),
       controller.signal,
     );
+    dependencies.output("Sesión cifrada guardada");
   } catch (error) {
     primaryError = error;
   }

@@ -17,6 +17,7 @@ function harness(
     | "cookieChallenge"
     | "invisibleCaptcha"
     | "visibleOpportunities"
+    | "canonicalDomain"
     | "pending"
     | "gotoPending"
     | "statePending" = "success",
@@ -33,12 +34,15 @@ function harness(
       if (mode === "gotoPending")
         return await new Promise<void>(() => undefined);
     },
-    url: () => "https://www.prestamype.com/app/inversionista/oportunidades",
+    url: () =>
+      mode === "canonicalDomain"
+        ? "https://prestamype.com/app/inversionista/oportunidades"
+        : "https://www.prestamype.com/app/inversionista/oportunidades",
     async waitForSelector(selector: string) {
       events.push(`wait:${selector}`);
       if (
         mode === "visibleOpportunities" &&
-        !selector.includes("text=Oportunidades")
+        !selector.includes("Oportunidades")
       )
         throw new Error("legacy authenticated marker is absent");
       if (mode === "pending") return await new Promise<void>(() => undefined);
@@ -114,6 +118,15 @@ function harness(
 }
 
 describe("captureSession", () => {
+  it("accepts Prestamype's canonical domain after redirect", async () => {
+    const h = harness("canonicalDomain");
+    const output = vi.fn();
+
+    await captureSession({ launcher: h.launcher, store: h.store, key, output });
+
+    expect(h.saved).toHaveLength(1);
+  });
+
   it("times out even when browser launch never settles", async () => {
     vi.useFakeTimers();
     try {
@@ -207,10 +220,11 @@ describe("captureSession", () => {
     const output = vi.fn();
     await captureSession({ launcher: h.launcher, store: h.store, key, output });
 
-    expect(output).toHaveBeenCalledTimes(1);
-    expect(output).toHaveBeenCalledWith(
+    expect(output.mock.calls.map(([message]) => message)).toEqual([
       "Inicia sesión manualmente y vuelve aquí",
-    );
+      "Guardando sesión cifrada",
+      "Sesión cifrada guardada",
+    ]);
     expect(JSON.stringify(output.mock.calls)).not.toContain("secret");
     expect(h.getLaunchOptions()).toEqual({ headless: false });
     expect(h.saved).toHaveLength(1);
@@ -230,6 +244,9 @@ describe("captureSession", () => {
       output: vi.fn(),
     });
     expect(h.saved).toHaveLength(1);
+    expect(h.events).toContain(
+      'wait:h1:has-text("Oportunidades"), h2:has-text("Oportunidades"), h3:has-text("Oportunidades"), [role="heading"]:has-text("Oportunidades")',
+    );
   });
 
   it("detects CAPTCHA and never saves", async () => {
