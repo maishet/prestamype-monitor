@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { load } from "cheerio";
 
 import type { OpportunitySource } from "../application/ports.js";
@@ -478,12 +479,21 @@ export class PrestamypeClient implements OpportunitySource {
     )
       throw new SessionChallengeError();
     if (isLoginPath(new URL(page.url()))) throw new SessionExpiredError();
-    if (
-      !(await this.withDeadline(
-        page.locator('[data-page="authenticated"]').isVisible(),
-        deadline,
-      ))
-    )
+    const legacyMarker = await this.withDeadline(
+      page.locator('[data-page="authenticated"]').isVisible(),
+      deadline,
+    );
+    const opportunitiesHeading = legacyMarker
+      ? true
+      : await this.withDeadline(
+          page
+            .locator(
+              'h1:has-text("Oportunidades"), h2:has-text("Oportunidades"), h3:has-text("Oportunidades"), [role="heading"]:has-text("Oportunidades")',
+            )
+            .isVisible(),
+          deadline,
+        );
+    if (!opportunitiesHeading)
       throw new PageStructureError("MISSING_FIELD", "authenticatedPage");
   }
 
@@ -626,12 +636,12 @@ const productionLauncher: BrowserLauncher = {
     const { chromium: playwrightChromium } = runtimeRequire(
       "playwright-core",
     ) as typeof import("playwright-core");
-    const chromiumBinary = runtimeRequire("@sparticuz/chromium") as {
-      default: typeof import("@sparticuz/chromium").default;
-    };
+    const chromiumModule = (await import(
+      pathToFileURL(runtimeRequire.resolve("@sparticuz/chromium")).href
+    )) as typeof import("@sparticuz/chromium");
     const browser = await playwrightChromium.launch({
-      args: chromiumBinary.default.args,
-      executablePath: await chromiumBinary.default.executablePath(),
+      args: chromiumModule.default.args,
+      executablePath: await chromiumModule.default.executablePath(),
       headless: true,
     });
     return browser as unknown as BrowserLike;

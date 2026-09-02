@@ -273,6 +273,9 @@ describe("SAM infrastructure", () => {
     );
     expect(browserClient).toContain("createRequire(import.meta.url)");
     expect(browserClient).not.toContain('await import("playwright-core")');
+    expect(browserClient).toContain(
+      'runtimeRequire.resolve("@sparticuz/chromium")',
+    );
   });
 
   it("pairs Playwright with the Chromium major shipped by Sparticuz", () => {

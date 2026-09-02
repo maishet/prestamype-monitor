@@ -459,6 +459,7 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
         safeNow(dependencies.clock),
         requestIdFrom(context),
       );
+      console.error("Sanitized monitor failure", JSON.stringify(savedError));
       const current = await dependencies.store.loadConfig();
       const messageId = (event as SQSEvent).Records[0]?.messageId ?? "unknown";
       if (current === null) throw error;
