@@ -77,7 +77,7 @@ function parseOpportunityTable($: CheerioAPI): OpportunitySummary[] {
       if (cells.length < 5) throw new PageStructureError("MISSING_FIELD", "opportunityTable");
       const client = cells[0] ?? "";
       const risk = parseRisk(cells[1] ?? $(element).find(".badge-risk").first().text());
-      const amountRaw = cells[2] ?? "";
+      const amountRaw = $(element).find(".amount-label").first().text().trim() || cells[2] || "";
       const currency: Currency = /(?:US\$|USD|\$)/i.test(amountRaw) ? "USD" : "PEN";
       const amount = parseCents(amountRaw, "remainingAmountCents", currency);
       const annualReturnPct = parsePercentage(cells[4] ?? "", "annualReturnPct");

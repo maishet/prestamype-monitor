@@ -99,6 +99,29 @@ describe("parseOpportunityCards", () => {
     });
   });
 
+  it("parses a live table amount without its adjacent funding percentage", () => {
+    const summaries = parseOpportunityCards(`<table><tbody>
+      <tr class="row_table">
+        <td><div class="cell-content client"><span class="label">Cliente S.A.C.</span></div></td>
+        <td><div class="badge-risk">A</div></td>
+        <td><div class="cell-content"><div class="label amount-label">S/ 194,596.10</div><span class="percentage-number">0%</span></div></td>
+        <td>Factoring</td>
+        <td><div class="tir-column">16.08 %</div></td>
+        <td>08 nov. 2026</td>
+      </tr>
+    </tbody></table>`);
+
+    expect(summaries).toEqual([
+      expect.objectContaining({
+        risk: "A",
+        currency: "PEN",
+        annualReturnPct: 16.08,
+        remainingAmountCents: 19_459_610,
+        rowIndex: 0,
+      }),
+    ]);
+  });
+
   it.each([
     [
       "subdomain",

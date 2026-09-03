@@ -13,14 +13,16 @@ function Has-Property([object]$Value, [string]$Name) {
     return $null -ne $Value -and @($Value.PSObject.Properties | ForEach-Object { $_.Name }) -contains $Name
 }
 
-function Is-CompleteDisabledConfig([object]$Item) {
+function Is-CompleteConfig([object]$Item) {
     try {
-        if ($Item.PK.S -cne "CONFIG" -or $Item.SK.S -cne "MONITOR" -or $Item.enabled.BOOL -ne $false) { return $false }
+        if ($Item.PK.S -cne "CONFIG" -or $Item.SK.S -cne "MONITOR" -or $Item.enabled.BOOL -notin @($true, $false)) { return $false }
         $monitor = $Item.monitor.M
         $cost = $Item.costLimits.M
-        foreach ($name in @("allowedRisks", "minimumAnnualReturnPct", "currency", "minimumInvestmentCents", "highPriorityScore", "reviewScore", "detailRefreshIntervalMs")) {
+        foreach ($name in @("allowedRisks", "minimumAnnualReturnPct", "minimumInvestmentCents", "highPriorityScore", "reviewScore", "detailRefreshIntervalMs")) {
             if (-not (Has-Property $monitor $name)) { return $false }
         }
+        $currencies = if (Has-Property $monitor "allowedCurrencies") { @($monitor.allowedCurrencies.L | ForEach-Object { $_.S }) } elseif (Has-Property $monitor "currency") { @($monitor.currency.S) } else { @() }
+        if ($currencies.Count -eq 0 -or @($currencies | Where-Object { $_ -notin @("PEN", "USD") }).Count -gt 0) { return $false }
         foreach ($name in @("configuredMemoryGb", "monthlyGbSecondsLimit")) {
             if (-not (Has-Property $cost $name)) { return $false }
         }
@@ -39,7 +41,7 @@ function Is-CompleteDisabledConfig([object]$Item) {
         $refresh = [long]$monitor.detailRefreshIntervalMs.N
         $memory = [double]$cost.configuredMemoryGb.N
         $monthly = [double]$cost.monthlyGbSecondsLimit.N
-        if ($monitor.currency.S -notin @("PEN", "USD") -or $annual -lt 0 -or $minimum -le 0 -or $review -lt 0 -or $high -gt 100 -or $high -lt $review -or $refresh -le 0 -or $memory -le 0 -or $monthly -le 0) { return $false }
+        if ($annual -lt 0 -or $minimum -le 0 -or $review -lt 0 -or $high -gt 100 -or $high -lt $review -or $refresh -le 0 -or $memory -le 0 -or $monthly -le 0) { return $false }
         if (Has-Property $Item "activation_owner") { return $false }
         return $true
     } catch { return $false }
@@ -67,8 +69,8 @@ try {
     $readText = & aws dynamodb get-item --region $Region --cli-input-json ("file://" + $tempPath) --output json
     if ($LASTEXITCODE -ne 0) { throw "No se pudo leer la configuracion." }
     $response = $readText | ConvertFrom-Json
-    if (-not (Has-Property $response "Item") -or -not (Is-CompleteDisabledConfig $response.Item)) {
-        throw "No se puede reanudar: la configuracion falta, es invalida o no esta deshabilitada."
+    if (-not (Has-Property $response "Item") -or -not (Is-CompleteConfig $response.Item)) {
+        throw "No se puede reanudar: la configuracion falta o es invalida."
     }
     $item = $response.Item
     if (-not (Has-Property $item "paused_until") -or $item.paused_until.S -cne "manual" -or -not (Has-Property $item "pause_reason")) {
@@ -83,9 +85,8 @@ try {
         TableName = $tableName
         Key = @{ PK = @{ S = "CONFIG" }; SK = @{ S = "MONITOR" } }
         UpdateExpression = "REMOVE paused_until, pause_reason"
-        ConditionExpression = "enabled = :disabled AND paused_until = :manual AND pause_reason = :reason"
+        ConditionExpression = "paused_until = :manual AND pause_reason = :reason"
         ExpressionAttributeValues = @{
-            ":disabled" = @{ BOOL = $false }
             ":manual" = @{ S = "manual" }
             ":reason" = @{ S = $reason }
         }
@@ -102,4 +103,4 @@ try {
     if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force }
 }
 
-Write-Output "Pausa recuperable retirada; el monitor sigue deshabilitado y no se envio ningun mensaje."
+Write-Output "Pausa recuperable retirada; se preservo el estado de activacion existente y no se envio ningun mensaje."
