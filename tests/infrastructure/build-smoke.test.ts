@@ -18,6 +18,7 @@ describe("local Lambda build smoke", () => {
       chromiumExternal: true,
       playwrightExternal: true,
       createRequireLoader: true,
+      dynamicChromiumLoader: true,
       scanNodeModulesAbsent: true,
       layerChromiumBin: true,
       layerPlaywrightCore: true,

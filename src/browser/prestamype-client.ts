@@ -27,21 +27,18 @@ import {
 
 export const ORIGIN = "https://www.prestamype.com";
 const APEX_ORIGIN = "https://prestamype.com";
-const API_ORIGIN = "https://api.prestamype.com";
-const CDN_ORIGIN = "https://d14bodb4yrsx8y.cloudfront.net";
 const OPPORTUNITIES_PATH = "/app/inversionista/oportunidades";
 const PORTFOLIO_PATH = "/app/inversionista/mis-inversiones";
-const PROTECTED_PATHS = [
+const PROTECTED_PATHS = new Set([
   OPPORTUNITIES_PATH,
   PORTFOLIO_PATH,
   "/app/inversionista/estado-cuenta",
   "/app/inversionista/reportes",
   "/app/inversionista/dashboard",
-] as const;
+]);
 const PROHIBITED_ACTION = /invertir|reservar|pagar|confirmar/i;
 const ALLOWED_ACTIONS = new Set([
   "Filtros",
-  "Limpiar",
   "Aplicar filtros",
   "Ordenar por: Recomendado",
   "Retorno mayor",
@@ -51,18 +48,11 @@ const ALLOWED_ACTIONS = new Set([
   "C",
 ]);
 
-function isAlreadyClosedBrowserError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /(?:Target\.disposeBrowserContext|Failed to find context|Target page, context or browser has been closed|browserContext\.close)/i.test(
-    message,
-  );
-}
-
 export interface LocatorLike {
   click(): Promise<void>;
   isVisible(): Promise<boolean>;
+  isChecked?(): Promise<boolean>;
   textContent(): Promise<string | null>;
-  locator?(selector: string): LocatorLike;
   nth?(index: number): LocatorLike;
   first?(): LocatorLike;
 }
@@ -72,8 +62,8 @@ export interface PageLike {
   url(): string;
   content(): Promise<string>;
   locator(selector: string): LocatorLike;
+  getByText?(text: string, options: { exact: true }): LocatorLike;
   getByRole(role: string, options: { name: string; exact: boolean }): LocatorLike;
-  getByText?(text: string, options: { exact: boolean }): LocatorLike;
   route(
     pattern: string,
     handler: (
@@ -125,13 +115,7 @@ export function shouldBlockResource(
   } catch {
     return true;
   }
-  // The SPA serves its data API from the apex host while the UI is on www.
-  // Keep scripts and navigations constrained, but allow same-site API calls.
-  if (url.origin === APEX_ORIGIN)
-    return !["document", "xhr", "fetch"].includes(resourceType);
-  if (url.origin === API_ORIGIN)
-    return !["xhr", "fetch"].includes(resourceType);
-  if (url.origin === CDN_ORIGIN) return resourceType !== "script";
+  if (url.origin === APEX_ORIGIN) return resourceType !== "document";
   if (url.origin !== ORIGIN) return true;
   return !["document", "script", "xhr", "fetch"].includes(resourceType);
 }
@@ -176,7 +160,6 @@ export function opportunityFingerprint(opportunity: Opportunity): string {
 }
 
 export class PrestamypeClient implements OpportunitySource {
-  private static readonly MAX_DETAILS_PER_SCAN = 3;
   private readonly launcher: BrowserLauncher;
   private readonly now: () => number;
   private readonly deadlineMs: number;
@@ -344,181 +327,35 @@ export class PrestamypeClient implements OpportunitySource {
     const page = await this.getPage(deadline);
     await this.navigate(page, OPPORTUNITIES_PATH, deadline);
     await this.assertAuthenticated(page, deadline);
-    try {
-      await this.clickAccessible(page, "button", "Filtros", deadline);
-      try {
-        await this.clickAccessible(page, "button", "Limpiar", deadline);
-      } catch {
-        // The UI disables Limpiar when no filters are active; that is already
-        // the desired clean state, so continue without treating it as fatal.
-      }
-      for (const risk of ["A+", "A", "B", "C"] as const) {
-        if (config.allowedRisks.includes(risk)) {
-          await this.clickAccessible(page, "checkbox", risk, deadline);
-        }
-      }
-      await this.clickAccessible(page, "button", "Aplicar filtros", deadline);
-    } catch (error) {
-      if (!(error instanceof PageStructureError)) throw error;
-      console.error("Sanitized optional filter interaction unavailable");
+    await this.clickAccessible(page, "button", "Filtros", deadline);
+    for (const risk of ["A+", "A", "B", "C"] as const) {
+      await this.ensureRiskCheckbox(page, risk, config.allowedRisks.includes(risk), deadline);
     }
-    let sortControlsAvailable = true;
-    try {
-      await this.clickAccessible(
-        page,
-        "button",
-        "Ordenar por: Recomendado",
-        deadline,
-      );
-      await this.clickAccessible(page, "button", "Retorno mayor", deadline);
-    } catch (error) {
-      if (!(error instanceof PageStructureError)) throw error;
-      sortControlsAvailable = false;
-      console.error("Sanitized optional sort interaction unavailable");
+    await this.clickAccessible(page, "button", "Aplicar filtros", deadline);
+    const currentHtml = await this.withDeadline(page.content(), deadline);
+    if (!/Ordenar por:\s*Retorno mayor/iu.test(currentHtml)) {
+      await this.clickAccessible(page, "button", "Ordenar por: Recomendado", deadline);
+      await this.clickAccessible(page, "option", "Retorno mayor", deadline);
     }
-    if (sortControlsAvailable) {
-      this.ensureDeadline(deadline);
-      const sortState = page.locator('[data-state="sort-return-desc"]');
-      if (
-        !(await this.withDeadline(sortState.isVisible(), deadline)) ||
-        (await this.withDeadline(sortState.textContent(), deadline))?.trim() !==
-          "Retorno mayor"
-      ) {
-        throw new PageStructureError("MISSING_FIELD", "sortConfirmation");
-      }
+    this.ensureDeadline(deadline);
+    const sortState = page.locator('[data-state="sort-return-desc"]');
+    if (
+      !(await this.withDeadline(sortState.isVisible(), deadline)) ||
+      (await this.withDeadline(sortState.textContent(), deadline))?.trim() !==
+        "Retorno mayor"
+    ) {
+      throw new PageStructureError("MISSING_FIELD", "sortConfirmation");
     }
 
-    const html = await this.waitForOpportunityTable(page, deadline);
-    const diagnostics = load(html);
-    console.error(
-      "Sanitized opportunities DOM diagnostics",
-      JSON.stringify({
-        url: new URL(page.url()).pathname,
-        htmlLength: html.length,
-        cards: diagnostics("[data-opportunity-card]").length,
-        articles: diagnostics("article").length,
-        rows: diagnostics("tr").length,
-        links: diagnostics("a").length,
-        buttons: diagnostics("button").length,
-        pagination: diagnostics(
-          '[aria-label*="pagin" i], [class*="pagin" i], [data-pagination]',
-        ).length,
-        linkPaths: diagnostics("a")
-          .toArray()
-          .map((element) => {
-            const href = diagnostics(element).attr("href");
-            try {
-              return href === undefined ? null : new URL(href, ORIGIN).pathname;
-            } catch {
-              return null;
-            }
-          })
-          .filter((path): path is string => path !== null)
-          .slice(0, 20),
-        buttonLabels: diagnostics("button")
-          .toArray()
-          .map((element) => diagnostics(element).text().replaceAll(/\s+/gu, " ").trim().slice(0, 80))
-          .filter((label) => label !== "")
-          .slice(0, 20),
-        structuredNodes: diagnostics("*")
-          .toArray()
-          .map((element) => {
-            const node = diagnostics(element);
-            const raw = element as {
-              attribs?: Record<string, string>;
-              tagName?: string;
-            };
-            const attrs = Object.fromEntries(
-              Object.entries(raw.attribs ?? {}).filter(([name]) =>
-                /(?:data|aria|class|href)/i.test(name),
-              ),
-            );
-            return {
-              tag: raw.tagName,
-              attrs,
-              textLength: node.text().trim().length,
-            };
-          })
-          .filter(({ attrs }) =>
-            Object.keys(attrs).some((name) =>
-              /(?:field|opportun|risk|return|currency|amount|pagination|page)/i.test(
-                name,
-              ) ||
-              /(?:field|opportun|risk|return|currency|amount|pagination|page)/i.test(
-                String(attrs[name]),
-              ),
-            ),
-          )
-          .slice(0, 120),
-        articleShapes: diagnostics("article")
-          .toArray()
-          .slice(0, 20)
-          .map((element) => {
-            const node = diagnostics(element);
-            return {
-              className: node.attr("class") ?? "",
-              dataAttrs: Object.keys((element as { attribs?: Record<string, string> }).attribs ?? {})
-                .filter((name) => name.startsWith("data-"))
-                .slice(0, 10),
-              childClasses: node
-                .find("*")
-                .toArray()
-                .map((child) => diagnostics(child).attr("class") ?? "")
-                .filter((name) => name !== "")
-                .filter((name, index, all) => all.indexOf(name) === index)
-                .slice(0, 30),
-              childLinkPaths: node
-                .find("a")
-                .toArray()
-                .map((child) => diagnostics(child).attr("href") ?? "")
-                .filter((href) => href !== "")
-                .slice(0, 10),
-            };
-          }),
-        rowShapes: diagnostics(".row_table:not(.row_table--loading)")
-          .toArray()
-          .slice(0, 3)
-          .map((element) => {
-            const node = diagnostics(element);
-            const raw = element as { attribs?: Record<string, string>; tagName?: string };
-            return {
-              tag: raw.tagName,
-              attrNames: Object.keys(raw.attribs ?? {}).filter((name) => /^(data|aria|class|href|id)/i.test(name)),
-              childClasses: node.find("*").toArray().map((child) => diagnostics(child).attr("class") ?? "").filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).slice(0, 40),
-              childTags: node.find("*").toArray().map((child) => (child as { tagName?: string }).tagName ?? "").filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).slice(0, 20),
-            };
-          }),
-        relevantClasses: (() => {
-          const counts = new Map<string, number>();
-          for (const element of diagnostics("*").toArray()) {
-            for (const value of (diagnostics(element).attr("class") ?? "").split(/\s+/u)) {
-              if (/(?:opportun|invest|factoring|risk|return|amount|table|row|card)/i.test(value))
-                counts.set(value, (counts.get(value) ?? 0) + 1);
-            }
-          }
-          return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 80);
-        })(),
-      }),
+    const summaries = parseOpportunityCards(
+      await this.withDeadline(page.content(), deadline),
     );
-    const summaries = parseOpportunityCards(html);
-    console.error(
-      "Sanitized opportunities parsed",
-      JSON.stringify({ count: summaries.length }),
-    );
-    if (!sortControlsAvailable)
-      summaries.sort((left, right) => right.annualReturnPct - left.annualReturnPct);
     const results: Opportunity[] = [];
-    let detailsFetched = 0;
-    for (let summary of summaries) {
-      if (summary.rowIndex !== undefined && new URL(page.url()).pathname !== OPPORTUNITIES_PATH) {
-        await this.navigate(page, OPPORTUNITIES_PATH, deadline);
-        await this.assertAuthenticated(page, deadline);
-        await this.waitForOpportunityTable(page, deadline);
-      }
+    for (const [summaryIndex, summary] of summaries.entries()) {
       if (summary.annualReturnPct < config.minimumAnnualReturnPct) break;
       if (
         !config.allowedRisks.includes(summary.risk) ||
-        !(config.allowedCurrencies ?? [config.currency]).includes(summary.currency)
+        summary.currency !== config.currency
       )
         continue;
       const known = knownFingerprints[summary.id];
@@ -532,61 +369,21 @@ export class PrestamypeClient implements OpportunitySource {
         recentlyChecked
       )
         continue;
-      if (detailsFetched >= PrestamypeClient.MAX_DETAILS_PER_SCAN) break;
-      detailsFetched += 1;
-      let detailPath = new URL(summary.url).pathname;
-      if (summary.rowIndex !== undefined) {
-        const row = page.locator("tr.row_table:not(.row_table--loading)").nth?.(summary.rowIndex);
-        if (row === undefined) continue;
-        const rowTarget =
-          row.locator?.(".client")?.first?.() ??
-          row.locator?.("td")?.first?.() ??
-          row;
-        await this.withDeadline(rowTarget.click(), deadline);
-        await this.waitForDetailNavigation(page, deadline);
-        const landed = new URL(page.url());
-        const detailRoute = /^\/app\/inversionista\/oportunidades\/[A-Za-z0-9_-]+$/.test(landed.pathname);
-        if (!detailRoute) {
-          try {
-            const detailVisible = await page.locator('[data-page="opportunity-detail"], .opportunity-detail-page').isVisible();
-            const panelVisible = await page.getByText?.("Detalle de inversión", { exact: true })?.isVisible();
-            if (!detailVisible && !panelVisible) continue;
-          } catch {
-            continue;
-          }
-        } else {
-          detailPath = landed.pathname;
-          summary = { ...summary, id: landed.pathname.split("/").at(-1)!, url: landed.href };
-        }
+      const rows = page.locator("tr.row_table:not(.row_table--loading)");
+      const row = rows.nth?.(summaryIndex);
+      if (row !== undefined && (await this.withDeadline(row.isVisible(), deadline))) {
+        await this.withDeadline(row.click(), deadline);
+        this.ensureDeadline(deadline);
       } else {
-        await this.navigate(page, detailPath, deadline);
+        await this.navigate(page, new URL(summary.url).pathname, deadline);
       }
       await this.assertAuthenticated(page, deadline);
-      results.push(
-        parseOpportunityDetail(
-          await this.withDeadline(page.content(), deadline),
-          summary,
-        ),
-      );
+      results.push(parseOpportunityDetail(await this.withDeadline(page.content(), deadline), summary));
+      const closePanel = page.locator('button[aria-label="Cerrar"], button[aria-label="Close"]');
+      if (await this.withDeadline(closePanel.isVisible(), deadline))
+        await this.withDeadline(closePanel.click(), deadline);
     }
     return results;
-  }
-
-  private async waitForDetailNavigation(page: PageLike, deadline: number): Promise<void> {
-    for (;;) {
-      const path = new URL(page.url()).pathname;
-      if (/^\/app\/inversionista\/oportunidades\/[A-Za-z0-9_-]+$/.test(path)) return;
-      // The SPA can render the detail view as an in-place panel without changing URL.
-      try {
-        if (await page.locator('[data-page="opportunity-detail"], .opportunity-detail-page').isVisible()) return;
-        if (await page.getByText?.("Detalle de inversión", { exact: true })?.isVisible()) return;
-      } catch {
-        // Keep polling until the bounded scan deadline.
-      }
-      const remaining = deadline - this.now();
-      if (remaining <= 250) return;
-      await this.withDeadline(new Promise<void>((resolve) => setTimeout(resolve, 250)), deadline);
-    }
   }
 
   async close(): Promise<void> {
@@ -633,8 +430,7 @@ export class PrestamypeClient implements OpportunitySource {
       ]);
       const failure = results.find(
         (result): result is PromiseRejectedResult =>
-          result.status === "rejected" &&
-          !isAlreadyClosedBrowserError(result.reason),
+          result.status === "rejected",
       );
       if (failure !== undefined) throw failure.reason;
     })();
@@ -700,27 +496,6 @@ export class PrestamypeClient implements OpportunitySource {
       throw new PageStructureError("INVALID_URL", "navigationResult");
   }
 
-  private async waitForOpportunityTable(
-    page: PageLike,
-    deadline: number,
-  ): Promise<string> {
-    let html = await this.withDeadline(page.content(), deadline);
-    for (;;) {
-      const $ = load(html);
-      const rows = $(".row_table").length;
-      const loadingRows = $(".row_table--loading").length;
-      if ((rows > 1 && loadingRows === 0) || $("[data-opportunity-card]").length > 0)
-        return html;
-      const remaining = deadline - this.now();
-      if (remaining <= 250) return html;
-      await this.withDeadline(
-        new Promise<void>((resolve) => setTimeout(resolve, 250)),
-        deadline,
-      );
-      html = await this.withDeadline(page.content(), deadline);
-    }
-  }
-
   private async assertAuthenticated(
     page: PageLike,
     deadline: number,
@@ -733,39 +508,13 @@ export class PrestamypeClient implements OpportunitySource {
     )
       throw new SessionChallengeError();
     if (isLoginPath(new URL(page.url()))) throw new SessionExpiredError();
-    const legacyMarker = await this.withDeadline(
-      page.locator('[data-page="authenticated"]').isVisible(),
-      deadline,
-    );
-    const opportunitiesHeading = legacyMarker
-      ? true
-      : await this.withDeadline(
-          page
-            .getByRole("heading", { name: "Oportunidades", exact: true })
-            .isVisible(),
-          deadline,
-        );
-    const lambdaProtectedRoute =
-      process.env.AWS_LAMBDA_FUNCTION_NAME === "prestamype-monitor-scan" &&
-      process.env.LAMBDA_TASK_ROOT !== undefined &&
-      (PROTECTED_PATHS.includes(
-        new URL(page.url()).pathname as (typeof PROTECTED_PATHS)[number],
-      ) ||
-        /^\/app\/inversionista\/oportunidades\/[A-Za-z0-9_-]+$/.test(
-          new URL(page.url()).pathname,
-        ));
-    if (!opportunitiesHeading)
-      console.error(
-        "Sanitized auth page markers",
-        JSON.stringify({
-          url: new URL(page.url()).pathname,
-          legacyMarker,
-          opportunitiesHeading,
-          lambdaProtectedRoute,
-        }),
-      );
-    if (!opportunitiesHeading && !lambdaProtectedRoute)
-      throw new PageStructureError("MISSING_FIELD", "authenticatedPage");
+    if (await this.withDeadline(page.locator('[data-page="authenticated"]').isVisible(), deadline)) return;
+    const path = new URL(page.url()).pathname;
+    if (PROTECTED_PATHS.has(path)) {
+      const html = await this.withDeadline(page.content(), deadline);
+      if (/row_table|data-page=["']portfolio["']|Oportunidades|Inversionista/iu.test(html)) return;
+    }
+    throw new PageStructureError("MISSING_FIELD", "authenticatedPage");
   }
 
   private async clickAccessible(
@@ -776,35 +525,38 @@ export class PrestamypeClient implements OpportunitySource {
   ): Promise<void> {
     this.ensureDeadline(deadline);
     assertAllowedInteraction({ kind: "click", name });
-    // The live UI renders the active-filter count in the accessible name
-    // (for example, "Filtros 4"). Keep exact matching for every action except
-    // this control so the selector remains stable as the count changes.
-    let locator = page.getByRole(role, {
-      name,
-      exact: !(role === "button" && name === "Filtros"),
-    });
-    locator = locator.first?.() ?? locator;
-    let visible = await this.withDeadline(locator.isVisible(), deadline);
-    if (!visible && name === "Filtros") {
-      locator = page.locator(
-        'button:has-text("Filtros"), [role="button"]:has-text("Filtros"), [aria-label*="Filtros"]',
-      );
-      locator = locator.first?.() ?? locator;
-      visible = await this.withDeadline(locator.isVisible(), deadline);
-      if (!visible && page.getByText !== undefined) {
-        locator = page.getByText("Filtros", { exact: false });
-        locator = locator.first?.() ?? locator;
-        visible = await this.withDeadline(locator.isVisible(), deadline);
+    let locator = page.getByRole(role, { name, exact: true });
+    if (!(await this.withDeadline(locator.isVisible(), deadline))) {
+      const fuzzy = page.getByRole(role, { name, exact: false });
+      locator = fuzzy.first?.() ?? fuzzy;
+      if (!(await this.withDeadline(locator.isVisible(), deadline))) {
+        let found: LocatorLike | undefined;
+        for (const index of [1, 2, 3]) {
+          const candidate = fuzzy.nth?.(index);
+          if (candidate !== undefined && await this.withDeadline(candidate.isVisible(), deadline)) { found = candidate; break; }
+        }
+        if (found === undefined) {
+          const textLocator = page.getByText?.(name, { exact: true });
+          if (textLocator !== undefined && await this.withDeadline(textLocator.isVisible(), deadline)) locator = textLocator;
+          else throw new PageStructureError("MISSING_FIELD", `interaction.${role}.${name}`);
+        } else locator = found;
       }
     }
-    if (!visible) {
-      console.error(
-        "Sanitized missing interaction",
-        JSON.stringify({ role, name }),
-      );
-      throw new PageStructureError("MISSING_FIELD", "interaction");
-    }
     await this.withDeadline(locator.click(), deadline);
+  }
+
+  private async ensureRiskCheckbox(
+    page: PageLike,
+    risk: "A+" | "A" | "B" | "C",
+    shouldBeChecked: boolean,
+    deadline: number,
+  ): Promise<void> {
+    const locator = page.getByRole("checkbox", { name: risk, exact: true });
+    if (!(await this.withDeadline(locator.isVisible(), deadline)))
+      throw new PageStructureError("MISSING_FIELD", `interaction.checkbox.${risk}`);
+    const checked = locator.isChecked === undefined ? undefined : await this.withDeadline(locator.isChecked(), deadline);
+    if (checked === undefined || checked !== shouldBeChecked)
+      await this.withDeadline(locator.click(), deadline);
   }
 
   private ensureDeadline(deadline: number): void {
@@ -904,9 +656,7 @@ function isAllowedNavigation(url: URL): boolean {
   if (url.origin !== ORIGIN || url.username !== "" || url.password !== "")
     return false;
   return (
-    PROTECTED_PATHS.includes(
-      url.pathname as (typeof PROTECTED_PATHS)[number],
-    ) ||
+    PROTECTED_PATHS.has(url.pathname) ||
     /^\/app\/inversionista\/oportunidades\/[A-Za-z0-9_-]+$/.test(
       url.pathname,
     ) ||
@@ -933,12 +683,15 @@ const productionLauncher: BrowserLauncher = {
     const { chromium: playwrightChromium } = runtimeRequire(
       "playwright-core",
     ) as typeof import("playwright-core");
-    const chromiumModule = (await import(
+    const chromiumModule = await import(
       pathToFileURL(runtimeRequire.resolve("@sparticuz/chromium")).href
-    )) as typeof import("@sparticuz/chromium");
+    );
+    const chromiumBinary = chromiumModule as {
+      default: typeof import("@sparticuz/chromium").default;
+    };
     const browser = await playwrightChromium.launch({
-      args: chromiumModule.default.args,
-      executablePath: await chromiumModule.default.executablePath(),
+      args: chromiumBinary.default.args,
+      executablePath: await chromiumBinary.default.executablePath(),
       headless: true,
     });
     return browser as unknown as BrowserLike;

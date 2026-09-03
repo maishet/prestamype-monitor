@@ -44,7 +44,7 @@ export class RuntimeSecretsError extends Error {
 const resetters = new Set<() => void>();
 const PARAMETER_NAME = /^\/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+$/;
 const TOKEN = /^\d{6,12}:[A-Za-z0-9_-]{16,128}$/;
-const CHAT_ID = /^-?\d{1,20}$/;
+const CHAT_ID = /^-?\d{1,20}(?:\s*,\s*-?\d{1,20})*$/;
 
 function fail(): never {
   throw new RuntimeSecretsError();
@@ -82,16 +82,6 @@ function decodeCanonicalKey(value: string): Uint8Array {
   const decoded = Buffer.from(value, "base64");
   if (decoded.length !== 32 || decoded.toString("base64") !== value) fail();
   return new Uint8Array(decoded);
-}
-
-function validChatIdList(value: string): boolean {
-  const ids = value.split(",").map((item) => item.trim());
-  return (
-    ids.length >= 1 &&
-    ids.length <= 10 &&
-    ids.every((id) => CHAT_ID.test(id)) &&
-    new Set(ids).size === ids.length
-  );
 }
 
 async function requestSecrets(
@@ -138,7 +128,7 @@ async function requestSecrets(
       telegramChatId === undefined ||
       rawKey === undefined ||
       !TOKEN.test(telegramToken) ||
-      !validChatIdList(telegramChatId)
+      !CHAT_ID.test(telegramChatId)
     )
       fail();
     return Object.freeze({

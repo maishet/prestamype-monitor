@@ -54,51 +54,15 @@ export interface OpportunitySummary {
   currency: Currency;
   annualReturnPct: number;
   remainingAmountCents: number;
-  /** Index in the live table when the SPA does not expose a detail href. */
-  rowIndex?: number;
 }
 
 type SelectorAlternatives = readonly string[];
 
 export function parseOpportunityCards(html: string): OpportunitySummary[] {
   const $ = load(html);
-  const cards = findAllByPriority($, PRESTAMYPE_SELECTORS.opportunityCard)
+  return findAllByPriority($, PRESTAMYPE_SELECTORS.opportunityCard)
     .toArray()
     .map((element) => parseOpportunityCard($(element)));
-  if (cards.length > 0) return cards;
-  return parseOpportunityTable($);
-}
-
-function parseOpportunityTable($: CheerioAPI): OpportunitySummary[] {
-  return $("tr.row_table:not(.row_table--loading)")
-    .toArray()
-    .flatMap((element, rowIndex) => {
-      const cells = $(element).find("td").toArray().map((cell) => $(cell).text().replaceAll(/\s+/gu, " ").trim());
-      if (cells.length < 5) throw new PageStructureError("MISSING_FIELD", "opportunityTable");
-      const client = cells[0] ?? "";
-      const riskCell = cells[1] || $(element).find(".badge-risk").first().text();
-      const normalizedRiskCell = riskCell.toUpperCase().replaceAll(/\s+/gu, " ").trim();
-      const riskToken = normalizedRiskCell.match(/(?:^|\s)(A\+|[A-E])(?:\s|$)/)?.[1]
-        ?? normalizedRiskCell.match(/A\+|[A-E]/g)?.at(-1);
-      if (riskToken === undefined) return [];
-      const risk = parseRisk(riskToken);
-      const amountRaw = $(element).find(".amount-label").first().text().trim() || cells[2] || "";
-      const currency: Currency = /(?:US\$|USD|\$)/i.test(amountRaw) ? "USD" : "PEN";
-      const amount = parseCents(amountRaw, "remainingAmountCents", currency);
-      const annualReturnPct = parsePercentage(cells[4] ?? "", "annualReturnPct");
-      const identity: PartyIdentity = { legalName: client || `Oportunidad ${rowIndex + 1}`, taxId: null };
-      return [{
-        id: `table-row-${rowIndex}`,
-        url: `${PRESTAMYPE_ORIGIN}/app/inversionista/oportunidades/table-row-${rowIndex}`,
-        supplier: identity,
-        debtor: identity,
-        risk,
-        currency,
-        annualReturnPct,
-        remainingAmountCents: amount,
-        rowIndex,
-      }];
-    });
 }
 
 export function parseOpportunityDetail(
@@ -108,24 +72,18 @@ export function parseOpportunityDetail(
   const $ = load(html);
   const page = findFirst($.root(), PRESTAMYPE_SELECTORS.detailPage);
   if (page.length === 0) {
-    const panelHeading = $("*").filter((_, element) => $(element).text().trim() === "Detalle de inversión").first();
-    if (panelHeading.length === 0) throw new PageStructureError("MISSING_FIELD", "detailPage");
+    const heading = $("*").filter((_, element) => $(element).text().trim() === "Detalle de inversión").first();
+    if (heading.length === 0) throw new PageStructureError("MISSING_FIELD", "detailPage");
     return parseLiveInvestmentPanel($, summary);
   }
 
   const currency = parseOptionalCurrency(page) ?? summary.currency;
-  let detailRisk = summary.risk;
-  try {
-    detailRisk = parseOptionalRisk(page) ?? summary.risk;
-  } catch (error) {
-    if (!(error instanceof PageStructureError) || error.code !== "UNSUPPORTED_VALUE") throw error;
-  }
   return {
     id: summary.id,
     url: validateOpportunityUrl(summary.url).url,
     supplier: parseIdentity(page, "supplier", summary.supplier),
     debtor: parseIdentity(page, "debtor", summary.debtor),
-    risk: detailRisk,
+    risk: parseOptionalRisk(page) ?? summary.risk,
     currency,
     annualReturnPct:
       parseOptionalPercentage(
@@ -179,23 +137,30 @@ export function parseOpportunityDetail(
 }
 
 function parseLiveInvestmentPanel($: CheerioAPI, summary: OpportunitySummary): Opportunity {
-  const text = $("body").text().replaceAll(/\s+/gu, " ").trim();
-  const capture = (label: string, field: string): number => {
-    const match = text.match(new RegExp(`${label}\\s*(?:S\\/|PEN)?\\s*([\\d.,]+)`, "iu"));
-    if (!match?.[1]) throw new PageStructureError("INVALID_FIELD", field);
-    return parseCents(match[1], field, summary.currency);
+  const text = $.root().text().replace(/\s+/gu, " ").trim();
+  const capture = (label: string): string => {
+    const match = text.match(new RegExp(`${label}\\s+([^]+?)(?=\\s+(?:Monto|Recaudado|Restante|Retorno|Cierre|Fecha|Riesgo|Código|$))`, "iu"));
+    if (!match?.[1]) throw new PageStructureError("MISSING_FIELD", label);
+    return match[1].trim();
   };
+  const parseMoney = (label: string): number => parseCents(capture(label), label, summary.currency);
   const annual = text.match(/Retorno\s+([\d.,]+)\s*%\s*anual/iu);
   const monthly = text.match(/([\d.,]+)\s*%\s*mensual/iu);
   const risk = text.match(/Riesgo\s*([A-E](?:\+)?)/iu)?.[1]?.toUpperCase();
+  if (!annual?.[1]) throw new PageStructureError("MISSING_FIELD", "annualReturnPct");
+  if (!risk || !["A+", "A", "B", "C", "D", "E"].includes(risk)) throw new PageStructureError("UNSUPPORTED_VALUE", "risk");
   return {
-    ...summary,
-    risk: risk && ["A+", "A", "B", "C", "D", "E"].includes(risk) ? risk as Opportunity["risk"] : summary.risk,
-    annualReturnPct: annual?.[1] ? parsePercentage(`${annual[1]}%`, "annualReturnPct") : summary.annualReturnPct,
-    monthlyReturnPct: monthly?.[1] ? parsePercentage(`${monthly[1]}%`, "monthlyReturnPct") : null,
-    totalAmountCents: capture("Monto de la subasta", "totalAmountCents"),
-    fundedAmountCents: capture("Recaudado", "fundedAmountCents"),
-    remainingAmountCents: capture("Restante", "remainingAmountCents"),
+    id: summary.id,
+    url: validateOpportunityUrl(summary.url).url,
+    supplier: summary.supplier,
+    debtor: summary.debtor,
+    risk: risk as RiskGrade,
+    currency: summary.currency,
+    annualReturnPct: parseNumber(annual[1], "annualReturnPct"),
+    monthlyReturnPct: monthly?.[1] ? parseNumber(monthly[1], "monthlyReturnPct") : null,
+    totalAmountCents: parseMoney("Monto de la subasta"),
+    fundedAmountCents: parseMoney("Recaudado"),
+    remainingAmountCents: parseMoney("Restante"),
     closesAt: null,
     dueAt: null,
     debtorHistory: null,
@@ -270,9 +235,10 @@ function parseTaxId(raw: string, role: string): string {
 }
 
 function parseRisk(raw: string): RiskGrade {
-  const normalized = raw.replaceAll(/\s+/gu, " ").trim().toUpperCase();
-  const value = normalized.match(/(?:^|\s)(A\+|[A-E])(?:\s|$)/)?.[1] ?? normalized;
-  if (!["A+", "A", "B", "C", "D", "E"].includes(value)) {
+  const normalized = raw.trim().toUpperCase();
+  const matches = normalized.match(/(?:^|\s)(A\+|A|B|C|D|E)(?=\s|$)/g) ?? [];
+  const value = matches?.[0]?.trim();
+  if (value === undefined || matches.length !== 1) {
     throw new PageStructureError("UNSUPPORTED_VALUE", "risk");
   }
   return value as RiskGrade;
@@ -528,9 +494,7 @@ function parseRequiredCents(
   field: string,
   currency: Currency,
 ): number {
-  const raw = requiredText(scope, selectors, field);
-  const money = raw.match(/(?:S\/|PEN|US\$|USD)\s*[\d.,]+/i)?.[0] ?? raw;
-  return parseCents(money, field, currency);
+  return parseCents(requiredText(scope, selectors, field), field, currency);
 }
 
 function parseOptionalCents(
@@ -544,23 +508,17 @@ function parseOptionalCents(
 }
 
 function parseCents(raw: string, field: string, currency: Currency): number {
-  // Live table cells append funding percentages after the monetary amount.
   const hasPen = /(?:S\/|\bPEN\b)/i.test(raw);
   const hasUsd = /(?:US\$|\bUSD\b)/i.test(raw);
-  if (!hasPen && !hasUsd && /^\s*[\d.,]+\s*%\s*$/u.test(raw))
-    throw new PageStructureError("INVALID_FIELD", field);
   if (
-    (currency === "PEN" && hasUsd) ||
-    (currency === "USD" && hasPen)
+    (currency === "PEN" && (!hasPen || hasUsd)) ||
+    (currency === "USD" && (!hasUsd || hasPen))
   ) {
     throw new PageStructureError("INVALID_FIELD", field);
   }
   const moneyPart = raw.split(/\s*%/u, 1)[0]!;
-  const amountToken = moneyPart.match(
-    /(?:S\/|\bPEN\b|US\$|\bUSD\b)\s*[\d.,]+/iu,
-  )?.[0] ?? moneyPart.match(/[\d][\d.,]*/u)?.[0] ?? moneyPart;
   const value = parseNumber(
-    amountToken.replace(/\bPEN\b|\bUSD\b|US\$|S\//gi, ""),
+    moneyPart.replace(/\bPEN\b|\bUSD\b|US\$|S\//gi, ""),
     field,
   );
   const cents = Math.round(value * 100);

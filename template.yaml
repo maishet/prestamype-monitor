@@ -45,7 +45,7 @@
       "Type": "AWS::SQS::Queue",
       "Properties": {
         "SqsManagedSseEnabled": true,
-        "VisibilityTimeout": 180,
+        "VisibilityTimeout": 120,
         "MessageRetentionPeriod": 86400,
         "RedrivePolicy": {
           "deadLetterTargetArn": { "Fn::GetAtt": ["DeadLetterQueue", "Arn"] },
@@ -153,6 +153,13 @@
                 },
                 {
                   "Effect": "Allow",
+                  "Action": ["kms:Decrypt"],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/c7669c81-cf9d-4eca-8335-82efbd04282b"
+                  }
+                },
+                {
+                  "Effect": "Allow",
                   "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
                   "Resource": {
                     "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-scan:*"
@@ -215,7 +222,7 @@
         "Runtime": "nodejs22.x",
         "Architectures": ["x86_64"],
         "MemorySize": 1024,
-        "Timeout": 120,
+        "Timeout": 30,
         "ReservedConcurrentExecutions": {
           "Fn::If": ["UseReservedConcurrency", 1, { "Ref": "AWS::NoValue" }]
         },
@@ -281,7 +288,7 @@
         "Runtime": "nodejs22.x",
         "Architectures": ["x86_64"],
         "MemorySize": 1024,
-        "Timeout": 120,
+        "Timeout": 30,
         "ReservedConcurrentExecutions": {
           "Fn::If": ["UseReservedConcurrency", 1, { "Ref": "AWS::NoValue" }]
         },

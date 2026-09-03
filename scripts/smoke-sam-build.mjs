@@ -134,6 +134,9 @@ export async function runSmokeBuild() {
       chromiumExternal: scanText.includes("@sparticuz/chromium"),
       playwrightExternal: scanText.includes("playwright-core"),
       createRequireLoader: scanText.includes("createRequire(import.meta.url)"),
+      dynamicChromiumLoader:
+        scanText.includes("pathToFileURL") &&
+        scanText.includes("@sparticuz/chromium"),
       scanNodeModulesAbsent: !existsSync(join(scanDirectory, "node_modules")),
       layerChromiumBin: existsSync(
         join(artifactModules, "@sparticuz", "chromium", "bin", "chromium.br"),

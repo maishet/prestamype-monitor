@@ -79,7 +79,7 @@ class FakeLocator implements LocatorLike {
 }
 
 class FakePage implements PageLike {
-  currentUrl = "https://www.prestamype.com/app/inversionista/mis-inversiones";
+  currentUrl = "https://www.prestamype.com/app/inversionista/portafolio";
   html =
     '<main data-page="portfolio"><span data-field="available-balance">S/ 50,00</span></main>';
   readonly visits: string[] = [];
@@ -131,22 +131,15 @@ class FakePage implements PageLike {
         this.sortConfirmation !== "",
         this.sortConfirmation,
       );
-    if (selector === "text=Filtros") return new FakeLocator(true, "Filtros");
     if (selector.startsWith('[data-filter-risk="'))
       return new FakeLocator(true, selector);
     return new FakeLocator(false);
-  }
-  getByText(text: string, options: { exact: boolean }): LocatorLike {
-    this.accessibleActions.push({ role: "text", name: text, exact: options.exact });
-    return new FakeLocator(true, text);
   }
   getByRole(
     role: string,
     options: { name: string; exact: boolean },
   ): LocatorLike {
     this.accessibleActions.push({ role, ...options });
-    if (role === "heading" && options.name === "Oportunidades")
-      return new FakeLocator(this.authenticated, options.name);
     return new FakeLocator(true, options.name);
   }
   async route(
@@ -218,22 +211,9 @@ describe("safe browser policy", () => {
     expect(shouldBlockResource("script", "https://prestamype.com/app.js")).toBe(
       true,
     );
-    for (const kind of ["xhr", "fetch"])
-      expect(shouldBlockResource(kind, "https://prestamype.com/api/opportunities")).toBe(
-        false,
-      );
     expect(shouldBlockResource("xhr", "https://api.prestamype.com/x")).toBe(
-      false,
+      true,
     );
-    expect(shouldBlockResource("fetch", "https://api.prestamype.com/x")).toBe(
-      false,
-    );
-    expect(
-      shouldBlockResource(
-        "script",
-        "https://d14bodb4yrsx8y.cloudfront.net/assets/app.js",
-      ),
-    ).toBe(false);
   });
 
   it("rejects unsafe navigation and prohibited interaction names", () => {
@@ -299,15 +279,14 @@ describe("PrestamypeClient", () => {
       ),
     ).toBe(false);
     expect(h.page.accessibleActions).toEqual([
-      { role: "button", name: "Filtros", exact: false },
-      { role: "button", name: "Limpiar", exact: true },
+      { role: "button", name: "Filtros", exact: true },
       { role: "checkbox", name: "A+", exact: true },
       { role: "checkbox", name: "A", exact: true },
       { role: "checkbox", name: "B", exact: true },
       { role: "checkbox", name: "C", exact: true },
       { role: "button", name: "Aplicar filtros", exact: true },
       { role: "button", name: "Ordenar por: Recomendado", exact: true },
-      { role: "button", name: "Retorno mayor", exact: true },
+      { role: "option", name: "Retorno mayor", exact: true },
     ]);
   });
 
@@ -407,7 +386,7 @@ describe("PrestamypeClient", () => {
     const evil = harness();
     evil.page.goto = async () => {
       evil.page.currentUrl =
-        "https://evil.prestamype.com/app/inversionista/mis-inversiones";
+        "https://evil.prestamype.com/app/inversionista/portafolio";
       return { status: () => 200 };
     };
     await expect(evil.client.getPortfolio()).rejects.toBeInstanceOf(

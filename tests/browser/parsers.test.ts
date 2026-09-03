@@ -12,33 +12,6 @@ const fixture = (name: string) =>
   readFile(new URL(`../fixtures/${name}`, import.meta.url), "utf8");
 
 describe("parseOpportunityCards", () => {
-  it("parses money amounts when the live cell appends display text", () => {
-    const html = `<table><tr class="row_table"><td>REDONDOS</td><td>A</td><td><div class="amount-label">S/ 14,283.88 100% disponible</div></td><td>Factoring</td><td>9.51 %</td></tr></table>`;
-    expect(parseOpportunityCards(html)[0]?.remainingAmountCents).toBe(1_428_388);
-  });
-
-  it("accepts a detail amount without a repeated currency marker", () => {
-    const summary = {
-      id: "detail-no-currency",
-      url: "https://www.prestamype.com/app/inversionista/oportunidades/detail-no-currency",
-      supplier: { legalName: "Proveedor", taxId: null },
-      debtor: { legalName: "Deudor", taxId: null },
-      risk: "A" as const,
-      currency: "PEN" as const,
-      annualReturnPct: 10,
-      remainingAmountCents: 100_000,
-    };
-    const detail = `<div data-page="opportunity-detail"><span data-field="total-amount">2.000,00</span><span data-field="funded-amount">1.000,00</span><span data-field="remaining-amount">1.000,00</span></div>`;
-    expect(parseOpportunityDetail(detail, summary).remainingAmountCents).toBe(100_000);
-  });
-
-  it("ignores protected rows whose risk column contains only the shield icon", () => {
-    const html = `<table><tr class="row_table"><td>PLUZ ENERGÍA PERÚ</td><td><span class="protected-icon">🛡</span></td><td><div class="amount-label">S/ 216.996,97</div></td><td>Factoring</td><td>7,31 %</td></tr><tr class="row_table"><td>REDONDOS</td><td>A</td><td><div class="amount-label">S/ 14.283,88</div></td><td>Factoring</td><td>9,51 %</td></tr></table>`;
-    const summaries = parseOpportunityCards(html);
-    expect(summaries).toHaveLength(1);
-    expect(summaries[0]?.risk).toBe("A");
-  });
-
   it("parses exact values, cents, percentages, identities, and stable link IDs", async () => {
     const summaries = parseOpportunityCards(
       await fixture("opportunities.html"),
@@ -124,36 +97,6 @@ describe("parseOpportunityCards", () => {
       annualReturnPct: 16.25,
       remainingAmountCents: 123_456,
     });
-  });
-
-  it("parses a live table amount without its adjacent funding percentage", () => {
-    const summaries = parseOpportunityCards(`<table><tbody>
-      <tr class="row_table">
-        <td><div class="cell-content client"><span class="label">Cliente S.A.C.</span></div></td>
-        <td><div class="badge-risk">A</div></td>
-        <td><div class="cell-content"><div class="label amount-label">S/ 194,596.10</div><span class="percentage-number">0%</span></div></td>
-        <td>Factoring</td>
-        <td><div class="tir-column">16.08 %</div></td>
-        <td>08 nov. 2026</td>
-      </tr>
-    </tbody></table>`);
-
-    expect(summaries).toEqual([
-      expect.objectContaining({
-        risk: "A",
-        currency: "PEN",
-        annualReturnPct: 16.08,
-        remainingAmountCents: 19_459_610,
-        rowIndex: 0,
-      }),
-    ]);
-  });
-
-  it("extracts the grade when the table risk cell contains auxiliary text", () => {
-    const summaries = parseOpportunityCards(`<table><tbody><tr class="row_table">
-      <td>Cliente</td><td>Riesgo D</td><td><span class="amount-label">S/ 100,00</span> 0%</td><td>Factoring</td><td>12,00 %</td>
-    </tr></tbody></table>`);
-    expect(summaries[0]?.risk).toBe("D");
   });
 
   it.each([
@@ -331,58 +274,6 @@ describe("parseOpportunityDetail", () => {
     expect(parseOpportunityDetail(html, summary).remainingAmountCents).toBe(
       123_456,
     );
-  });
-
-  it("parses the in-place investment detail panel", () => {
-    const summary = parseOpportunityCards(validCard())[0]!;
-    const html = `<main><h2>Detalle de inversión</h2>
-      <p>Riesgo C</p><p>Monto de la subasta S/250.990,68</p>
-      <p>Recaudado S/47.314,25</p><p>Restante S/203.676,43</p>
-      <p>Retorno 14,84% anual</p><p>1,16% mensual</p></main>`;
-    const parsed = parseOpportunityDetail(html, summary);
-    expect(parsed.totalAmountCents).toBe(25_099_068);
-    expect(parsed.fundedAmountCents).toBe(4_731_425);
-    expect(parsed.remainingAmountCents).toBe(20_367_643);
-    expect(parsed.annualReturnPct).toBe(14.84);
-    expect(parsed.monthlyReturnPct).toBe(1.16);
-  });
-
-  it("extracts the money portion when a live detail amount includes funding percent", () => {
-    const summary = parseOpportunityCards(validCard())[0]!;
-    const html = `<main data-page="opportunity-detail">
-      <span data-field="total-amount">S/ 2.000,00 80%</span>
-      <span data-field="funded-amount">S/ 1.600,00 80%</span>
-      <span data-field="remaining-amount">S/ 400,00 20%</span>
-    </main>`;
-    expect(parseOpportunityDetail(html, summary).remainingAmountCents).toBe(40_000);
-  });
-
-  it("extracts a numeric amount when the live detail adds a label suffix", () => {
-    const summary = parseOpportunityCards(validCard())[0]!;
-    const html = `<main data-page="opportunity-detail">
-      <span data-field="total-amount">Monto total: 2.000,00</span>
-      <span data-field="funded-amount">Financiado: 1.600,00</span>
-      <span data-field="remaining-amount">Disponible: 400,00</span>
-    </main>`;
-    expect(parseOpportunityDetail(html, summary).remainingAmountCents).toBe(40_000);
-  });
-
-  it("accepts auxiliary text around the risk grade on a live detail page", () => {
-    const summary = parseOpportunityCards(validCard())[0]!;
-    const html = `<main data-page="opportunity-detail">
-      <span data-field="risk">Riesgo D</span>
-      ${validDetailBody()}
-    </main>`;
-    expect(parseOpportunityDetail(html, summary).risk).toBe("D");
-  });
-
-  it("falls back to the validated table risk when detail risk text is unavailable", () => {
-    const summary = parseOpportunityCards(validCard())[0]!;
-    const html = `<main data-page="opportunity-detail">
-      <span data-field="risk">Riesgo no disponible</span>
-      ${validDetailBody()}
-    </main>`;
-    expect(parseOpportunityDetail(html, summary).risk).toBe(summary.risk);
   });
 
   it("requires an explicit detail container", () => {

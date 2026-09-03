@@ -29,7 +29,7 @@ const MAX_RESPONSE_BYTES = 16_384;
 const MIN_RETRY_MS = 100;
 const MAX_RETRY_MS = 5_000;
 const TOKEN = /^\d{6,12}:[A-Za-z0-9_-]{16,128}$/;
-const CHAT_ID = /^-?\d{1,20}$/;
+const CHAT_ID = /^-?\d{1,20}(?:\s*,\s*-?\d{1,20})*$/;
 
 function fail(): never {
   throw new TelegramDeliveryError();
@@ -146,13 +146,12 @@ export class TelegramClient implements Notifier {
   readonly #timeoutMs: number;
 
   constructor(options: TelegramClientOptions) {
-    const chatIds = options.chatId.split(",").map((id) => id.trim()).filter(Boolean);
-    if (!TOKEN.test(options.token) || chatIds.length === 0 || !chatIds.every((id) => CHAT_ID.test(id))) fail();
+    if (!TOKEN.test(options.token) || !CHAT_ID.test(options.chatId)) fail();
     const timeoutMs = options.timeoutMs ?? 10_000;
     if (!Number.isFinite(timeoutMs) || timeoutMs < 100 || timeoutMs > 60_000)
       fail();
     this.#url = `https://api.telegram.org/bot${options.token}/sendMessage`;
-    this.#chatIds = chatIds;
+    this.#chatIds = options.chatId.split(",").map((id) => id.trim());
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#sleep =
       options.sleep ??
@@ -173,13 +172,22 @@ export class TelegramClient implements Notifier {
       message.length > MAX_MESSAGE_LENGTH
     )
       fail();
-    for (const chatId of this.#chatIds) {
-      await this.sendToChat(chatId, message, options);
-    }
+    for (const chatId of this.#chatIds)
+      await this.sendToChat(message, chatId, options);
   }
 
-  private async sendToChat(chatId: string, message: string, options: TelegramSendOptions): Promise<void> {
-    const body = JSON.stringify({ chat_id: chatId, text: message, parse_mode: "HTML", link_preview_options: { is_disabled: true }, disable_web_page_preview: true });
+  private async sendToChat(
+    message: string,
+    chatId: string,
+    options: TelegramSendOptions,
+  ): Promise<void> {
+    const body = JSON.stringify({
+      chat_id: chatId,
+      text: message,
+      parse_mode: "HTML",
+      link_preview_options: { is_disabled: true },
+      disable_web_page_preview: true,
+    });
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
       if (options.signal?.aborted === true) fail();
