@@ -122,6 +122,13 @@ describe("parseOpportunityCards", () => {
     ]);
   });
 
+  it("extracts the grade when the table risk cell contains auxiliary text", () => {
+    const summaries = parseOpportunityCards(`<table><tbody><tr class="row_table">
+      <td>Cliente</td><td>Riesgo D</td><td><span class="amount-label">S/ 100,00</span> 0%</td><td>Factoring</td><td>12,00 %</td>
+    </tr></tbody></table>`);
+    expect(summaries[0]?.risk).toBe("D");
+  });
+
   it.each([
     [
       "subdomain",

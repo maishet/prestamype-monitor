@@ -57,6 +57,8 @@ $tableOutputs = @($outputs | Where-Object OutputKey -eq "TableName")
 if ($tableOutputs.Count -ne 1) { throw "Output TableName invalido." }
 $tableName = $tableOutputs[0].OutputValue
 if ($tableName -notmatch '^[A-Za-z0-9_.-]{3,255}$') { throw "Output TableName invalido." }
+$queueUrl = & aws cloudformation describe-stacks --stack-name $StackName --region $Region --query "Stacks[0].Outputs[?OutputKey=='QueueUrl'].OutputValue | [0]" --output text
+if ($LASTEXITCODE -ne 0 -or $queueUrl -notmatch '^https://sqs\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?/\d{12}/[A-Za-z0-9_-]+$') { throw "Output QueueUrl invalido." }
 
 $tempPath = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 try {
@@ -99,8 +101,18 @@ try {
         $updateExit = $LASTEXITCODE
     } finally { $ErrorActionPreference = $oldPreference }
     if ($updateExit -ne 0) { throw "No se pudo reanudar porque el estado cambio; vuelva a inspeccionarlo." }
+    $delay = 75 + (Get-Random -Minimum 0 -Maximum 31)
+    $next = [DateTime]::UtcNow.AddSeconds($delay).ToString("o")
+    $send = @{ QueueUrl = $queueUrl; DelaySeconds = $delay; MessageBody = '{"kind":"scan","schemaVersion":1}' }
+    [IO.File]::WriteAllText($tempPath, ($send | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding($false)))
+    & aws sqs send-message --region $Region --cli-input-json ("file://" + $tempPath) --output json | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Pausa retirada pero no se pudo programar el siguiente escaneo." }
+    $mark = @{ TableName = $tableName; Key = @{ PK = @{ S = "CONFIG" }; SK = @{ S = "MONITOR" } }; UpdateExpression = "SET next_scan_at = :next"; ExpressionAttributeValues = @{ ":next" = @{ S = $next } } }
+    [IO.File]::WriteAllText($tempPath, ($mark | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding($false)))
+    & aws dynamodb update-item --region $Region --cli-input-json ("file://" + $tempPath) --output json | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Escaneo programado pero no se pudo actualizar next_scan_at." }
 } finally {
     if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force }
 }
 
-Write-Output "Pausa recuperable retirada; se preservo el estado de activacion existente y no se envio ningun mensaje."
+Write-Output "Pausa recuperable retirada y siguiente escaneo programado en $next."
