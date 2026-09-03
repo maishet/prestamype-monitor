@@ -3,6 +3,7 @@ param(
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$')][string]$StackName = "prestamype-monitor",
     [ValidatePattern('^[a-z]{2}-[a-z]+-\d$')][string]$Region = "sa-east-1",
     [string]$AllowedRisks,
+    [string]$AllowedCurrencies,
     [ValidateRange(0, 100)][double]$MinimumAnnualReturnPct,
     [ValidateSet("PEN", "USD")][string]$Currency,
     [ValidateRange(1, 9223372036854775807)][long]$MinimumInvestmentCents,
@@ -17,6 +18,11 @@ if ($PSBoundParameters.ContainsKey("AllowedRisks")) {
     $risks = @($AllowedRisks -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
     if ($risks.Count -eq 0 -or @($risks | Where-Object { $_ -notin @("A+", "A", "B", "C", "D", "E") }).Count -gt 0) { throw "AllowedRisks debe contener riesgos A+, A, B, C, D o E separados por comas." }
     $updates["monitor.allowedRisks"] = @{ L = @($risks | ForEach-Object { @{ S = $_ } }) }
+}
+if ($PSBoundParameters.ContainsKey("AllowedCurrencies")) {
+    $currencies = @($AllowedCurrencies -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+    if ($currencies.Count -eq 0 -or @($currencies | Where-Object { $_ -notin @("PEN", "USD") }).Count -gt 0) { throw "AllowedCurrencies debe contener PEN o USD separados por comas." }
+    $updates["monitor.allowedCurrencies"] = @{ L = @($currencies | Select-Object -Unique | ForEach-Object { @{ S = $_ } }) }
 }
 if ($PSBoundParameters.ContainsKey("MinimumAnnualReturnPct")) { $updates["monitor.minimumAnnualReturnPct"] = @{ N = $MinimumAnnualReturnPct.ToString([Globalization.CultureInfo]::InvariantCulture) } }
 if ($PSBoundParameters.ContainsKey("Currency")) { $updates["monitor.currency"] = @{ S = $Currency } }

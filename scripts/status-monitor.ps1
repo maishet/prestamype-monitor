@@ -25,6 +25,7 @@ if ($null -ne $monitor) {
     Write-Output "Riesgos: $risks"
     Write-Output "Rentabilidad mínima (%): $($monitor.minimumAnnualReturnPct.N)"
     Write-Output "Moneda: $($monitor.currency.S)"
+    if ($monitor.PSObject.Properties.Name -contains "allowedCurrencies") { Write-Output "Monedas permitidas: $((@($monitor.allowedCurrencies.L | ForEach-Object { $_.S })) -join ',')" }
     Write-Output "Inversión mínima (centavos): $($monitor.minimumInvestmentCents.N)"
 }
 if ($item.PSObject.Properties.Name -contains "next_scan_at") { Write-Output "Próximo escaneo (UTC): $($item.next_scan_at.S)" }

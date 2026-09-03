@@ -176,6 +176,12 @@ function assertRuntimeConfig(config: ScanRuntimeConfig): void {
       !monitor.allowedRisks.every((risk) =>
         ["A+", "A", "B", "C", "D", "E"].includes(risk),
       ) ||
+      (monitor.allowedCurrencies !== undefined &&
+        (!Array.isArray(monitor.allowedCurrencies) ||
+          monitor.allowedCurrencies.length === 0 ||
+          !monitor.allowedCurrencies.every((currency) =>
+            ["PEN", "USD"].includes(currency),
+          ))) ||
       !Number.isFinite(monitor.minimumAnnualReturnPct) ||
       !Number.isSafeInteger(monitor.minimumInvestmentCents) ||
       monitor.minimumInvestmentCents < 0 ||

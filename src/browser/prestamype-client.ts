@@ -379,7 +379,7 @@ export class PrestamypeClient implements OpportunitySource {
       if (summary.annualReturnPct < config.minimumAnnualReturnPct) break;
       if (
         !config.allowedRisks.includes(summary.risk) ||
-        summary.currency !== config.currency
+        !(config.allowedCurrencies ?? [config.currency]).includes(summary.currency)
       )
         continue;
       const known = knownFingerprints[summary.id];

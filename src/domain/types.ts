@@ -71,6 +71,7 @@ export interface MonitorConfig {
   allowedRisks: readonly RiskGrade[];
   minimumAnnualReturnPct: number;
   currency: Currency;
+  allowedCurrencies?: readonly Currency[];
   minimumInvestmentCents: number;
   highPriorityScore: number;
   reviewScore: number;
