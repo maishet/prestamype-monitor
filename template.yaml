@@ -221,7 +221,7 @@
         "Handler": "handler.handler",
         "Runtime": "nodejs22.x",
         "Architectures": ["x86_64"],
-        "MemorySize": 1024,
+        "MemorySize": 2048,
         "Timeout": 30,
         "ReservedConcurrentExecutions": {
           "Fn::If": ["UseReservedConcurrency", 1, { "Ref": "AWS::NoValue" }]
@@ -247,6 +247,7 @@
             "Properties": {
               "Queue": { "Fn::GetAtt": ["ScanQueue", "Arn"] },
               "BatchSize": 1,
+              "ScalingConfig": { "MaximumConcurrency": 2 },
               "Enabled": true
             }
           }

@@ -11,6 +11,7 @@ import {
 import {
   PrestamypeClient,
   assertAllowedInteraction,
+  configureChromiumForServerless,
   opportunityFingerprint,
   shouldBlockResource,
   summaryFingerprint,
@@ -20,6 +21,12 @@ import {
   type LocatorLike,
   type PageLike,
 } from "../../src/browser/prestamype-client.js";
+
+it("disables Chromium graphics for the serverless scanner", () => {
+  const chromium = { setGraphicsMode: true };
+  configureChromiumForServerless(chromium);
+  expect(chromium.setGraphicsMode).toBe(false);
+});
 
 const config: MonitorConfig = {
   allowedRisks: ["A+", "A", "B", "C"],

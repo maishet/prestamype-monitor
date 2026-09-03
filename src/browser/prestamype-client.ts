@@ -433,11 +433,18 @@ export class PrestamypeClient implements OpportunitySource {
       ]);
       const failure = results.find(
         (result): result is PromiseRejectedResult =>
-          result.status === "rejected",
+          result.status === "rejected" && !this.isClosedResourceError(result.reason),
       );
       if (failure !== undefined) throw failure.reason;
     })();
     return this.resourcesClosePromise;
+  }
+
+  private isClosedResourceError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /target page|context or browser has been closed|disposebrowsercontext|failed to find context/i.test(
+      message,
+    );
   }
 
   private async getPage(deadline: number): Promise<PageLike> {
@@ -692,6 +699,15 @@ function parseOptionalPenCents(raw: string): number | null {
   return parseVisibleMoneyCents(compact, "PEN", "portfolioAmount");
 }
 
+export function configureChromiumForServerless(chromium: {
+  setGraphicsMode: boolean;
+}): void {
+  // The opportunities board has no WebGL requirement. Disabling SwiftShader
+  // avoids an extra graphics process and makes Chromium materially more stable
+  // in Lambda's constrained runtime.
+  chromium.setGraphicsMode = false;
+}
+
 const productionLauncher: BrowserLauncher = {
   async launch(): Promise<BrowserLike> {
     // Lambda exposes layer packages through NODE_PATH. Node's ESM resolver does
@@ -707,6 +723,7 @@ const productionLauncher: BrowserLauncher = {
     const chromiumBinary = chromiumModule as {
       default: typeof import("@sparticuz/chromium").default;
     };
+    configureChromiumForServerless(chromiumBinary.default);
     const browser = await playwrightChromium.launch({
       args: chromiumBinary.default.args,
       executablePath: await chromiumBinary.default.executablePath(),
