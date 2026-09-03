@@ -11,6 +11,7 @@ const scripts = [
   "activate-monitor.ps1",
   "deactivate-monitor.ps1",
   "resume-monitor.ps1",
+  "status-monitor.ps1",
 ] as const;
 const shells = ["pwsh", "powershell"].map((name) => ({
   name,
