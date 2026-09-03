@@ -60,9 +60,49 @@ type SelectorAlternatives = readonly string[];
 
 export function parseOpportunityCards(html: string): OpportunitySummary[] {
   const $ = load(html);
-  return findAllByPriority($, PRESTAMYPE_SELECTORS.opportunityCard)
+  const cards = findAllByPriority($, PRESTAMYPE_SELECTORS.opportunityCard);
+  if (cards.length > 0)
+    return cards
     .toArray()
     .map((element) => parseOpportunityCard($(element)));
+  const rows = $("tr.row_table:not(.row_table--loading)");
+  if (rows.length === 0) return [];
+  return rows
+    .toArray()
+    .map((element) => parseLiveOpportunityRow($(element)));
+}
+
+function parseLiveOpportunityRow(row: Cheerio<AnyNode>): OpportunitySummary {
+  const cells = row.find("td").toArray().map((cell) => load(cell).text().replace(/\s+/gu, " ").trim());
+  const client = cells[0] ?? "";
+  const risk = (cells[1] ?? "").match(/\b(A\+|A|B|C|D|E)\b/iu)?.[1]?.toUpperCase();
+  const amountRaw = (cells[2] ?? "").match(/(?:(?:S\/|US\$|PEN|USD)\s*)?[\d][\d.,]*/iu)?.[0];
+  const percentages = [...(cells.join(" ").matchAll(/(\d+(?:[.,]\d+)?)\s*%/gu))].map((match) => parseNumber(match[1]!, "percentage"));
+  const href = row.find("a[href*='/app/inversionista/oportunidades/']").first().attr("href");
+  const rawId = row.attr("data-opportunity-id") ?? row.attr("data-id") ?? row.attr("data-auction-id") ?? href;
+  if (rawId === undefined) throw new PageStructureError("MISSING_FIELD", "url");
+  const link = validateOpportunityUrl(
+    href ?? `/app/inversionista/oportunidades/${rawId.replace(/^.*\//u, "")}`,
+  );
+  if (!risk || !["A+", "A", "B", "C", "D", "E"].includes(risk))
+    throw new PageStructureError("UNSUPPORTED_VALUE", "risk");
+  if (amountRaw === undefined) throw new PageStructureError("MISSING_FIELD", "remainingAmountCents");
+  const currency: Currency = /US\$|USD/iu.test(amountRaw) ? "USD" : "PEN";
+  const totalCents = parseCents(amountRaw, "remainingAmountCents", currency);
+  const progress = percentages.length > 1 ? percentages[0]! : 0;
+  const annualReturnPct = percentages.length > 1 ? percentages[1]! : percentages[0];
+  if (annualReturnPct === undefined) throw new PageStructureError("MISSING_FIELD", "annualReturnPct");
+  const names = client.split(/\s{2,}|\n/gu).map((value) => value.trim()).filter(Boolean);
+  return {
+    id: link.id,
+    url: link.url,
+    supplier: { legalName: names[0] ?? client, taxId: null },
+    debtor: { legalName: names[1] ?? names[0] ?? client, taxId: null },
+    risk: risk as RiskGrade,
+    currency,
+    annualReturnPct,
+    remainingAmountCents: Math.round(totalCents * Math.max(0, 1 - progress / 100)),
+  };
 }
 
 export function parseOpportunityDetail(

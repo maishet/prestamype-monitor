@@ -12,6 +12,18 @@ const fixture = (name: string) =>
   readFile(new URL(`../fixtures/${name}`, import.meta.url), "utf8");
 
 describe("parseOpportunityCards", () => {
+  it("parses the live Prestamype table rows", () => {
+    const html = `<table><tr class="row_table" data-opportunity-id="live-1">
+      <td>METALVAL<br>METALVAL S.A.C.</td><td>C</td><td>S/ 250.990,68 20%</td>
+      <td>Factoring</td><td>14,84 %</td><td>27 oct. 2026</td></tr></table>`;
+    expect(parseOpportunityCards(html)[0]).toMatchObject({
+      id: "live-1",
+      risk: "C",
+      currency: "PEN",
+      annualReturnPct: 14.84,
+      remainingAmountCents: 200_792_54,
+    });
+  });
   it("parses exact values, cents, percentages, identities, and stable link IDs", async () => {
     const summaries = parseOpportunityCards(
       await fixture("opportunities.html"),

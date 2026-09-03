@@ -234,6 +234,7 @@ export async function runMonitor(
       await save();
     }
     result = { acquired: true, evaluated, alertsSent };
+    console.info("Monitor scan completed", JSON.stringify(result));
   } catch (error) {
     collectError(errors, error);
   }
