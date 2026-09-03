@@ -299,6 +299,16 @@ describe("parseOpportunityDetail", () => {
     );
   });
 
+  it("extracts the money portion when a live detail amount includes funding percent", () => {
+    const summary = parseOpportunityCards(validCard())[0]!;
+    const html = `<main data-page="opportunity-detail">
+      <span data-field="total-amount">S/ 2.000,00 80%</span>
+      <span data-field="funded-amount">S/ 1.600,00 80%</span>
+      <span data-field="remaining-amount">S/ 400,00 20%</span>
+    </main>`;
+    expect(parseOpportunityDetail(html, summary).remainingAmountCents).toBe(40_000);
+  });
+
   it("requires an explicit detail container", () => {
     const summary = parseOpportunityCards(validCard())[0]!;
 

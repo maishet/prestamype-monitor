@@ -487,7 +487,9 @@ function parseRequiredCents(
   field: string,
   currency: Currency,
 ): number {
-  return parseCents(requiredText(scope, selectors, field), field, currency);
+  const raw = requiredText(scope, selectors, field);
+  const money = raw.match(/(?:S\/|PEN|US\$|USD)\s*[\d.,]+/i)?.[0] ?? raw;
+  return parseCents(money, field, currency);
 }
 
 function parseOptionalCents(
