@@ -5,7 +5,6 @@ param(
     [string]$AllowedRisks,
     [string]$AllowedCurrencies,
     [ValidateRange(0, 100)][double]$MinimumAnnualReturnPct,
-    [ValidateSet("PEN", "USD")][string]$Currency,
     [ValidateRange(1, 9223372036854775807)][long]$MinimumInvestmentCents,
     [switch]$ValidateOnly
 )
@@ -25,7 +24,6 @@ if ($PSBoundParameters.ContainsKey("AllowedCurrencies")) {
     $updates["monitor.allowedCurrencies"] = @{ L = @($currencies | Select-Object -Unique | ForEach-Object { @{ S = $_ } }) }
 }
 if ($PSBoundParameters.ContainsKey("MinimumAnnualReturnPct")) { $updates["monitor.minimumAnnualReturnPct"] = @{ N = $MinimumAnnualReturnPct.ToString([Globalization.CultureInfo]::InvariantCulture) } }
-if ($PSBoundParameters.ContainsKey("Currency")) { $updates["monitor.currency"] = @{ S = $Currency } }
 if ($PSBoundParameters.ContainsKey("MinimumInvestmentCents")) { $updates["monitor.minimumInvestmentCents"] = @{ N = $MinimumInvestmentCents.ToString() } }
 if ($updates.Count -eq 0) { throw "Indica al menos un parámetro de configuración para actualizar." }
 
