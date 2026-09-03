@@ -50,7 +50,7 @@ const ALLOWED_ACTIONS = new Set([
 
 function isAlreadyClosedBrowserError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /(?:Target|browserContext|context|browser)\s*(?:page,?\s*)?(?:has been closed|disposeBrowserContext|closed)/i.test(
+  return /(?:Target\.disposeBrowserContext|Failed to find context|Target page, context or browser has been closed|browserContext\.close)/i.test(
     message,
   );
 }
