@@ -19,6 +19,14 @@ $item = $response.Item
 $enabled = $item.enabled.BOOL -eq $true
 $state = if ($enabled) { "ACTIVADO" } else { "DESHABILITADO" }
 Write-Output "Estado: $state"
+$monitor = $item.monitor.M
+if ($null -ne $monitor) {
+    $risks = @($monitor.allowedRisks.L | ForEach-Object { $_.S }) -join ","
+    Write-Output "Riesgos: $risks"
+    Write-Output "Rentabilidad mínima (%): $($monitor.minimumAnnualReturnPct.N)"
+    Write-Output "Moneda: $($monitor.currency.S)"
+    Write-Output "Inversión mínima (centavos): $($monitor.minimumInvestmentCents.N)"
+}
 if ($item.PSObject.Properties.Name -contains "next_scan_at") { Write-Output "Próximo escaneo (UTC): $($item.next_scan_at.S)" }
 if ($item.PSObject.Properties.Name -contains "paused_until") { Write-Output "Pausado hasta (UTC): $($item.paused_until.S)" }
 if ($item.PSObject.Properties.Name -contains "pause_reason") { Write-Output "Motivo de pausa: $($item.pause_reason.S)" }
