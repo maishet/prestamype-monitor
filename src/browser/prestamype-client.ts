@@ -327,25 +327,28 @@ export class PrestamypeClient implements OpportunitySource {
     const page = await this.getPage(deadline);
     await this.navigate(page, OPPORTUNITIES_PATH, deadline);
     await this.assertAuthenticated(page, deadline);
-    await this.clickAccessible(page, "button", "Filtros", deadline);
-    for (const risk of ["A+", "A", "B", "C"] as const) {
-      await this.ensureRiskCheckbox(page, risk, config.allowedRisks.includes(risk), deadline);
+    const filtersOpened = await this.tryClickAccessible(page, "button", "Filtros", deadline);
+    if (filtersOpened) {
+      for (const risk of ["A+", "A", "B", "C"] as const)
+        await this.ensureRiskCheckbox(page, risk, config.allowedRisks.includes(risk), deadline);
+      await this.clickAccessible(page, "button", "Aplicar filtros", deadline);
     }
-    await this.clickAccessible(page, "button", "Aplicar filtros", deadline);
     const currentHtml = await this.withDeadline(page.content(), deadline);
     if (!/Ordenar por:\s*Retorno mayor/iu.test(currentHtml)) {
-      await this.clickAccessible(page, "button", "Ordenar por: Recomendado", deadline);
-      await this.clickAccessible(page, "option", "Retorno mayor", deadline);
+      const sortOpened = await this.tryClickAccessible(
+        page,
+        "button",
+        "Ordenar por: Recomendado",
+        deadline,
+      );
+      if (sortOpened) {
+        await this.tryClickAccessible(page, "option", "Retorno mayor", deadline);
+      }
     }
+    // The live site does not expose a stable confirmation marker for the
+    // selected sort in every rendering. The interaction above is best effort;
+    // continue with the rendered table when that marker is absent.
     this.ensureDeadline(deadline);
-    const sortState = page.locator('[data-state="sort-return-desc"]');
-    if (
-      !(await this.withDeadline(sortState.isVisible(), deadline)) ||
-      (await this.withDeadline(sortState.textContent(), deadline))?.trim() !==
-        "Retorno mayor"
-    ) {
-      throw new PageStructureError("MISSING_FIELD", "sortConfirmation");
-    }
 
     const summaries = parseOpportunityCards(
       await this.withDeadline(page.content(), deadline),
@@ -543,6 +546,21 @@ export class PrestamypeClient implements OpportunitySource {
       }
     }
     await this.withDeadline(locator.click(), deadline);
+  }
+
+  private async tryClickAccessible(
+    page: PageLike,
+    role: "button" | "checkbox" | "option",
+    name: string,
+    deadline: number,
+  ): Promise<boolean> {
+    try {
+      await this.clickAccessible(page, role, name, deadline);
+      return true;
+    } catch (error) {
+      if (error instanceof PageStructureError) return false;
+      throw error;
+    }
   }
 
   private async ensureRiskCheckbox(

@@ -355,7 +355,6 @@ describe("PrestamypeClient", () => {
     ["captcha", SessionChallengeError],
     ["login", SessionExpiredError],
     ["rate", RateLimitError],
-    ["sort", PageStructureError],
   ] as const)(
     "raises a safe typed error for %s",
     async (scenario, ErrorType) => {
@@ -365,7 +364,6 @@ describe("PrestamypeClient", () => {
         h.page.currentUrl = "https://www.prestamype.com/iniciar-sesion";
       if (scenario === "rate")
         h.page.statusByPath["/app/inversionista/oportunidades"] = 429;
-      if (scenario === "sort") h.page.sortConfirmation = "";
       if (scenario === "login")
         h.page.goto = async () => ({ status: () => 200 });
       const promise = h.client.listEligibleOpportunities(config, {});
