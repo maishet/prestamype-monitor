@@ -41,12 +41,6 @@ const portfolio: PortfolioSnapshot = {
   exposureByTaxId: {},
 };
 
-const opportunityOnlyPortfolio: PortfolioSnapshot = {
-  availableBalanceCents: null,
-  activeTotalCents: null,
-  exposureByTaxId: {},
-};
-
 function setup(
   options: {
     lock?: boolean;
@@ -190,6 +184,7 @@ describe("runMonitor", () => {
       "fingerprints",
       "source",
       "begin-scan",
+      "portfolio",
       "candidates",
       "evaluate",
       "claim",
@@ -199,11 +194,10 @@ describe("runMonitor", () => {
       "close",
       "release",
     ]);
-    expect(context.source.getPortfolio).not.toHaveBeenCalled();
     expect(context.dependencies.formatAlert).toHaveBeenCalledWith(
       opportunity,
       expect.any(Object),
-      opportunityOnlyPortfolio,
+      portfolio,
       new Date("2026-08-27T12:00:00.000Z"),
     );
   });
@@ -410,6 +404,107 @@ describe("runMonitor", () => {
     expect(context.repository.claimAlert).not.toHaveBeenCalled();
   });
 
+  it("adds both parties from portfolio collection conflicts before evaluation", async () => {
+    const context = setup();
+    const conflictPortfolio: PortfolioSnapshot = {
+      ...portfolio,
+      collectionConflicts: [
+        {
+          supplier: { legalName: "Proveedor SAC", taxId: "201" },
+          debtor: { legalName: "Pagador SAC", taxId: "202" },
+          status: "Cobranza administrativa I",
+          evidence: "Fila visible de cartera",
+        },
+      ],
+    };
+    vi.mocked(context.source.getPortfolio).mockResolvedValue(conflictPortfolio);
+    await runMonitor(context.dependencies, {
+      owner: "run",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+    expect(context.repository.addBlacklistEntries).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          taxId: "201",
+          source: "portfolio-collection",
+        }),
+        expect.objectContaining({
+          taxId: "202",
+          source: "portfolio-collection",
+        }),
+      ]),
+    );
+    expect(context.events.indexOf("add-blacklist")).toBeLessThan(
+      context.events.indexOf("candidates"),
+    );
+    expect(context.dependencies.evaluate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        blacklistEntries: expect.arrayContaining([
+          expect.objectContaining({ taxId: "201" }),
+          expect.objectContaining({ taxId: "202" }),
+        ]),
+      }),
+    );
+  });
+
+  it("enriches a name-only blacklist match with discovered RUC and stays idempotent", async () => {
+    const context = setup();
+    const existing = {
+      taxId: null,
+      normalizedName: "PROVEEDOR SAC",
+      reason: "Entrada manual",
+      source: "manual",
+      createdAt: "2026-08-01T00:00:00.000Z",
+    };
+    const conflictPortfolio: PortfolioSnapshot = {
+      ...portfolio,
+      collectionConflicts: [
+        {
+          supplier: {
+            legalName: "Proveedor S.A.C.",
+            taxId: "20123456789",
+          },
+          debtor: { legalName: "Pagador S.A.", taxId: "20987654321" },
+          status: "Cobranza legal",
+          evidence: "Fila auditada",
+        },
+      ],
+    };
+    vi.mocked(context.source.getPortfolio).mockResolvedValue(conflictPortfolio);
+    vi.mocked(context.repository.getBlacklist).mockResolvedValue([existing]);
+    await runMonitor(context.dependencies, {
+      owner: "run",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+    const added = vi.mocked(context.repository.addBlacklistEntries).mock
+      .calls[0]?.[0];
+    expect(added).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          taxId: "20123456789",
+          normalizedName: "PROVEEDOR SAC",
+          source: "portfolio-collection",
+          evidence: "Fila auditada",
+          createdAt: "2026-08-27T12:00:00.000Z",
+        }),
+        expect.objectContaining({ taxId: "20987654321" }),
+      ]),
+    );
+
+    vi.mocked(context.repository.getBlacklist).mockResolvedValue([
+      existing,
+      ...(added ?? []),
+    ]);
+    await runMonitor(context.dependencies, {
+      owner: "run-2",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+    expect(context.repository.addBlacklistEntries).toHaveBeenCalledTimes(1);
+  });
+
   it("closes and releases on browser/parser and repository failures", async () => {
     for (const failure of ["browser", "repository"] as const) {
       const context = setup();
@@ -553,7 +648,7 @@ describe("runMonitor", () => {
     expect(context.dependencies.formatAlert).toHaveBeenCalledWith(
       opportunity,
       expect.any(Object),
-      opportunityOnlyPortfolio,
+      portfolio,
       new Date("2026-08-27T12:01:00.000Z"),
     );
   });

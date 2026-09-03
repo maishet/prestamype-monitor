@@ -11,7 +11,6 @@ import {
 import {
   PrestamypeClient,
   assertAllowedInteraction,
-  configureChromiumForServerless,
   opportunityFingerprint,
   shouldBlockResource,
   summaryFingerprint,
@@ -21,12 +20,6 @@ import {
   type LocatorLike,
   type PageLike,
 } from "../../src/browser/prestamype-client.js";
-
-it("disables Chromium graphics for the serverless scanner", () => {
-  const chromium = { setGraphicsMode: true };
-  configureChromiumForServerless(chromium);
-  expect(chromium.setGraphicsMode).toBe(false);
-});
 
 const config: MonitorConfig = {
   allowedRisks: ["A+", "A", "B", "C"],
@@ -362,6 +355,7 @@ describe("PrestamypeClient", () => {
     ["captcha", SessionChallengeError],
     ["login", SessionExpiredError],
     ["rate", RateLimitError],
+    ["sort", PageStructureError],
   ] as const)(
     "raises a safe typed error for %s",
     async (scenario, ErrorType) => {
@@ -371,6 +365,7 @@ describe("PrestamypeClient", () => {
         h.page.currentUrl = "https://www.prestamype.com/iniciar-sesion";
       if (scenario === "rate")
         h.page.statusByPath["/app/inversionista/oportunidades"] = 429;
+      if (scenario === "sort") h.page.sortConfirmation = "";
       if (scenario === "login")
         h.page.goto = async () => ({ status: () => 200 });
       const promise = h.client.listEligibleOpportunities(config, {});

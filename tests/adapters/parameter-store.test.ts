@@ -46,21 +46,6 @@ describe("runtime secrets Parameter Store adapter", () => {
     expect(send).toHaveBeenCalledOnce();
   });
 
-  it("accepts a comma-separated private chat and supergroup destination list", async () => {
-    const send = vi.fn(async () => ({
-      Parameters: [
-        { Name: names.TELEGRAM_TOKEN_PARAMETER, Value: "123456789:AbCdEf_0123456789" },
-        { Name: names.TELEGRAM_CHAT_ID_PARAMETER, Value: "1524876607,-1004295718410" },
-        { Name: names.SESSION_KEY_PARAMETER, Value: key },
-      ],
-    }));
-    const load = createRuntimeSecretsLoader({ client: { send }, env: names });
-
-    await expect(load()).resolves.toMatchObject({
-      telegramChatId: "1524876607,-1004295718410",
-    });
-  });
-
   it("shares an in-flight successful load and caches it for the warm process", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));

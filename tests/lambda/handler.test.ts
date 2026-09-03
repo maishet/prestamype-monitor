@@ -152,21 +152,17 @@ describe("scan Lambda handler", () => {
           repository,
           notifier: { send: vi.fn() },
           createSource: async () => ({
-            getPortfolio: async () => ({
-              availableBalanceCents: null,
-              activeTotalCents: null,
-              exposureByTaxId: {},
-            }),
-            listEligibleOpportunities: async () => {
-              throw new Error("opportunities failed");
+            getPortfolio: async () => {
+              throw new Error("portfolio failed");
             },
+            listEligibleOpportunities: async () => [],
             close,
           }),
           config: CONFIG.monitor,
         },
         { owner: "message-1", lockTtlSeconds: 120, alertLeaseSeconds: 300 },
       ),
-    ).rejects.toThrow("opportunities failed");
+    ).rejects.toThrow("portfolio failed");
     expect(close).toHaveBeenCalledOnce();
     expect(releaseLock).toHaveBeenCalledWith("message-1");
   });

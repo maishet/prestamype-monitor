@@ -335,20 +335,23 @@ export class PrestamypeClient implements OpportunitySource {
     }
     const currentHtml = await this.withDeadline(page.content(), deadline);
     if (!/Ordenar por:\s*Retorno mayor/iu.test(currentHtml)) {
-      const sortOpened = await this.tryClickAccessible(
-        page,
-        "button",
-        "Ordenar por: Recomendado",
-        deadline,
-      );
-      if (sortOpened) {
-        await this.tryClickAccessible(page, "option", "Retorno mayor", deadline);
+      // The control is not rendered in some authenticated sessions. Sorting
+      // is a presentation preference, so its absence must not disable scans.
+      try {
+        await this.clickAccessible(page, "button", "Ordenar por: Recomendado", deadline);
+        await this.clickAccessible(page, "option", "Retorno mayor", deadline);
+      } catch (error) {
+        if (!(error instanceof PageStructureError)) throw error;
       }
     }
-    // The live site does not expose a stable confirmation marker for the
-    // selected sort in every rendering. The interaction above is best effort;
-    // continue with the rendered table when that marker is absent.
-    this.ensureDeadline(deadline);
+    // The Vue table is populated asynchronously after navigation/filtering.
+    // Wait briefly for a real data row before taking the HTML snapshot.
+    const liveRows = page.locator("tr.row_table:not(.row_table--loading), div.row_table:not(.row_table--loading)");
+    const rowsDeadline = Math.min(deadline, this.now() + 12_000);
+    while (!(await this.withDeadline(liveRows.isVisible(), rowsDeadline))) {
+      if (this.now() >= rowsDeadline) break;
+      await this.withDeadline(new Promise((resolve) => setTimeout(resolve, 250)), rowsDeadline);
+    }
 
     const summaries = parseOpportunityCards(
       await this.withDeadline(page.content(), deadline),
@@ -372,7 +375,7 @@ export class PrestamypeClient implements OpportunitySource {
         recentlyChecked
       )
         continue;
-      const rows = page.locator("tr.row_table:not(.row_table--loading)");
+      const rows = page.locator("tr.row_table:not(.row_table--loading), div.row_table:not(.row_table--loading)");
       const row = rows.nth?.(summaryIndex);
       if (row !== undefined && (await this.withDeadline(row.isVisible(), deadline))) {
         await this.withDeadline(row.click(), deadline);
@@ -433,18 +436,14 @@ export class PrestamypeClient implements OpportunitySource {
       ]);
       const failure = results.find(
         (result): result is PromiseRejectedResult =>
-          result.status === "rejected" && !this.isClosedResourceError(result.reason),
+          result.status === "rejected",
       );
-      if (failure !== undefined) throw failure.reason;
+      if (failure !== undefined) {
+        const message = failure.reason instanceof Error ? failure.reason.message : String(failure.reason);
+        if (!/context|target.*closed|failed to find context/iu.test(message)) throw failure.reason;
+      }
     })();
     return this.resourcesClosePromise;
-  }
-
-  private isClosedResourceError(error: unknown): boolean {
-    const message = error instanceof Error ? error.message : String(error);
-    return /target page|context or browser has been closed|disposebrowsercontext|failed to find context/i.test(
-      message,
-    );
   }
 
   private async getPage(deadline: number): Promise<PageLike> {
@@ -699,15 +698,6 @@ function parseOptionalPenCents(raw: string): number | null {
   return parseVisibleMoneyCents(compact, "PEN", "portfolioAmount");
 }
 
-export function configureChromiumForServerless(chromium: {
-  setGraphicsMode: boolean;
-}): void {
-  // The opportunities board has no WebGL requirement. Disabling SwiftShader
-  // avoids an extra graphics process and makes Chromium materially more stable
-  // in Lambda's constrained runtime.
-  chromium.setGraphicsMode = false;
-}
-
 const productionLauncher: BrowserLauncher = {
   async launch(): Promise<BrowserLike> {
     // Lambda exposes layer packages through NODE_PATH. Node's ESM resolver does
@@ -723,7 +713,6 @@ const productionLauncher: BrowserLauncher = {
     const chromiumBinary = chromiumModule as {
       default: typeof import("@sparticuz/chromium").default;
     };
-    configureChromiumForServerless(chromiumBinary.default);
     const browser = await playwrightChromium.launch({
       args: chromiumBinary.default.args,
       executablePath: await chromiumBinary.default.executablePath(),

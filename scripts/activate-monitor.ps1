@@ -17,16 +17,14 @@ function Is-CompleteEnabledConfig([object]$Response) {
         $item = $Response.Item
         if ($item.PK.S -cne "CONFIG" -or $item.SK.S -cne "MONITOR" -or $item.enabled.BOOL -ne $true) { return $false }
         $m = $item.monitor.M; $c = $item.costLimits.M
-        foreach ($name in @("allowedRisks", "minimumAnnualReturnPct", "allowedCurrencies", "minimumInvestmentCents", "highPriorityScore", "reviewScore", "detailRefreshIntervalMs")) { if (-not (Has-Property $m $name)) { return $false } }
+        foreach ($name in @("allowedRisks", "minimumAnnualReturnPct", "currency", "minimumInvestmentCents", "highPriorityScore", "reviewScore", "detailRefreshIntervalMs")) { if (-not (Has-Property $m $name)) { return $false } }
         foreach ($name in @("configuredMemoryGb", "monthlyGbSecondsLimit")) { if (-not (Has-Property $c $name)) { return $false } }
         $risks = @($m.allowedRisks.L | ForEach-Object { $_.S })
         if ($risks.Count -eq 0 -or @($risks | Where-Object { $_ -notin @("A+", "A", "B", "C", "D", "E") }).Count -gt 0) { return $false }
-        $currencies = @($m.allowedCurrencies.L | ForEach-Object { $_.S })
-        if ($currencies.Count -eq 0 -or @($currencies | Where-Object { $_ -notin @("PEN", "USD") }).Count -gt 0) { return $false }
         foreach ($number in @($m.minimumAnnualReturnPct.N, $m.highPriorityScore.N, $m.reviewScore.N, $c.configuredMemoryGb.N, $c.monthlyGbSecondsLimit.N)) { if ($number -notmatch '^\d+(?:\.\d+)?$') { return $false } }
         foreach ($integer in @($m.minimumInvestmentCents.N, $m.detailRefreshIntervalMs.N)) { if ($integer -notmatch '^\d+$') { return $false } }
         $annual = [double]$m.minimumAnnualReturnPct.N; $minimum = [long]$m.minimumInvestmentCents.N; $high = [double]$m.highPriorityScore.N; $review = [double]$m.reviewScore.N; $refresh = [long]$m.detailRefreshIntervalMs.N; $memory = [double]$c.configuredMemoryGb.N; $monthly = [double]$c.monthlyGbSecondsLimit.N
-        if ($annual -lt 0 -or $minimum -le 0 -or $review -lt 0 -or $high -gt 100 -or $high -lt $review -or $refresh -le 0 -or $memory -le 0 -or $monthly -le 0) { return $false }
+        if ($m.currency.S -notin @("PEN", "USD") -or $annual -lt 0 -or $minimum -le 0 -or $review -lt 0 -or $high -gt 100 -or $high -lt $review -or $refresh -le 0 -or $memory -le 0 -or $monthly -le 0) { return $false }
         if (Has-Property $item "activation_owner") { return $false }
         return $true
     } catch { return $false }
@@ -42,7 +40,7 @@ if ($tableName -notmatch '^[A-Za-z0-9_.-]{3,255}$' -or $queueUrl -notmatch '^htt
 $owner = [Guid]::NewGuid().ToString("N")
 $tempPath = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 try {
-    $required = "attribute_exists(PK) AND attribute_exists(monitor) AND attribute_exists(monitor.allowedRisks) AND attribute_exists(monitor.minimumAnnualReturnPct) AND attribute_exists(monitor.allowedCurrencies) AND attribute_exists(monitor.minimumInvestmentCents) AND attribute_exists(monitor.highPriorityScore) AND attribute_exists(monitor.reviewScore) AND attribute_exists(monitor.detailRefreshIntervalMs) AND attribute_exists(costLimits) AND attribute_exists(costLimits.configuredMemoryGb) AND attribute_exists(costLimits.monthlyGbSecondsLimit) AND attribute_not_exists(activation_owner) AND enabled = :disabled"
+    $required = "attribute_exists(PK) AND attribute_exists(monitor) AND attribute_exists(monitor.allowedRisks) AND attribute_exists(monitor.minimumAnnualReturnPct) AND attribute_exists(monitor.currency) AND attribute_exists(monitor.minimumInvestmentCents) AND attribute_exists(monitor.highPriorityScore) AND attribute_exists(monitor.reviewScore) AND attribute_exists(monitor.detailRefreshIntervalMs) AND attribute_exists(costLimits) AND attribute_exists(costLimits.configuredMemoryGb) AND attribute_exists(costLimits.monthlyGbSecondsLimit) AND attribute_not_exists(activation_owner) AND enabled = :disabled"
     $request = @{ TableName = $tableName; Key = @{ PK = @{ S = "CONFIG" }; SK = @{ S = "MONITOR" } }; UpdateExpression = "SET enabled = :enabled, activation_owner = :owner"; ConditionExpression = $required; ExpressionAttributeValues = @{ ":enabled" = @{ BOOL = $true }; ":disabled" = @{ BOOL = $false }; ":owner" = @{ S = $owner } } }
     [IO.File]::WriteAllText($tempPath, ($request | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding($false)))
     $oldPreference = $ErrorActionPreference

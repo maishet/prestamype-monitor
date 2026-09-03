@@ -34,9 +34,7 @@ describe("SAM infrastructure", () => {
       ).Properties;
       expect(properties.Runtime).toBe("nodejs22.x");
       expect(properties.Architectures).toEqual(["x86_64"]);
-      expect(properties.MemorySize).toBe(
-        logicalId === "ScanFunction" ? 2048 : 1024,
-      );
+      expect(properties.MemorySize).toBe(1024);
       expect(properties.Timeout).toBe(30);
       expect(properties.ReservedConcurrentExecutions).toEqual({
         "Fn::If": ["UseReservedConcurrency", 1, { Ref: "AWS::NoValue" }],
@@ -275,9 +273,6 @@ describe("SAM infrastructure", () => {
     );
     expect(browserClient).toContain("createRequire(import.meta.url)");
     expect(browserClient).not.toContain('await import("playwright-core")');
-    expect(browserClient).toContain(
-      'runtimeRequire.resolve("@sparticuz/chromium")',
-    );
   });
 
   it("pairs Playwright with the Chromium major shipped by Sparticuz", () => {

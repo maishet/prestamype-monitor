@@ -6,7 +6,9 @@ import type {
   Opportunity,
   PortfolioSnapshot,
 } from "../domain/types.js";
+import { normalizeLegalName } from "../domain/normalization.js";
 import { opportunityFingerprint } from "../browser/prestamype-client.js";
+import { redactSensitiveText } from "../security/redaction.js";
 import { formatOpportunityAlert } from "../notifications/telegram-message.js";
 import type {
   MonitorRepository,
@@ -96,8 +98,28 @@ export function materialAlertKeys(
   return [JSON.stringify(material)];
 }
 
+function safeCollectionText(value: string): string {
+  return redactSensitiveText(value).replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+function hasBlacklistIdentity(
+  party: Opportunity["supplier"],
+  entries: readonly BlacklistEntry[],
+): boolean {
+  if (party.taxId !== null)
+    return entries.some((entry) => entry.taxId === party.taxId);
+  const name = normalizeLegalName(party.legalName);
+  return entries.some(
+    (entry) => normalizeLegalName(entry.normalizedName) === name,
+  );
+}
+
 function collectError(errors: unknown[], error: unknown): void {
   errors.push(error);
+  const detail = error instanceof AggregateError
+    ? error.errors.map((item) => item instanceof Error ? `${item.name}: ${item.message}` : String(item))
+    : error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  console.error("Monitor error", detail);
 }
 
 function errorWithCause(error: unknown, fallback: string): Error {
@@ -128,15 +150,35 @@ export async function runMonitor(
       await dependencies.repository.getOpportunityFingerprints();
     source = await dependencies.createSource();
     source.beginScan?.();
-    // Monitoring intentionally starts from the public Opportunities board. The
-    // private investment-history page is unrelated to new opportunities and
-    // must never block an alert scan.
-    const portfolio: PortfolioSnapshot = {
-      availableBalanceCents: null,
-      activeTotalCents: null,
-      exposureByTaxId: {},
-    };
-    const blacklistEntries = persistedBlacklist;
+    const portfolio = await source.getPortfolio();
+    const detectedEntries: BlacklistEntry[] = [];
+    for (const conflict of portfolio.collectionConflicts ?? []) {
+      for (const party of [conflict.supplier, conflict.debtor]) {
+        const entry: BlacklistEntry = {
+          taxId: party.taxId,
+          normalizedName: normalizeLegalName(party.legalName),
+          reason: "Problema de cobranza detectado en cartera",
+          source: "portfolio-collection",
+          createdAt: now.toISOString(),
+          status: safeCollectionText(conflict.status),
+          evidence:
+            conflict.evidence === null
+              ? null
+              : safeCollectionText(conflict.evidence),
+        };
+        if (
+          hasBlacklistIdentity(party, [
+            ...persistedBlacklist,
+            ...detectedEntries,
+          ])
+        )
+          continue;
+        detectedEntries.push(entry);
+      }
+    }
+    if (detectedEntries.length > 0)
+      await dependencies.repository.addBlacklistEntries(detectedEntries);
+    const blacklistEntries = [...persistedBlacklist, ...detectedEntries];
     const candidates = await source.listEligibleOpportunities(
       dependencies.config,
       fingerprints,

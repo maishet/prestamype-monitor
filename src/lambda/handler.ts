@@ -176,12 +176,6 @@ function assertRuntimeConfig(config: ScanRuntimeConfig): void {
       !monitor.allowedRisks.every((risk) =>
         ["A+", "A", "B", "C", "D", "E"].includes(risk),
       ) ||
-      (monitor.allowedCurrencies !== undefined &&
-        (!Array.isArray(monitor.allowedCurrencies) ||
-          monitor.allowedCurrencies.length === 0 ||
-          !monitor.allowedCurrencies.every((currency) =>
-            ["PEN", "USD"].includes(currency),
-          ))) ||
       !Number.isFinite(monitor.minimumAnnualReturnPct) ||
       !Number.isSafeInteger(monitor.minimumInvestmentCents) ||
       monitor.minimumInvestmentCents < 0 ||
@@ -465,20 +459,6 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
         safeNow(dependencies.clock),
         requestIdFrom(context),
       );
-      console.error("Sanitized monitor failure", JSON.stringify(savedError));
-      if (error instanceof AggregateError)
-        console.error(
-          "Sanitized monitor causes",
-          JSON.stringify(
-            error.errors.map((cause) =>
-              storedRuntimeError(
-                cause,
-                safeNow(dependencies.clock),
-                requestIdFrom(context),
-              ),
-            ),
-          ),
-        );
       const current = await dependencies.store.loadConfig();
       const messageId = (event as SQSEvent).Records[0]?.messageId ?? "unknown";
       if (current === null) throw error;
@@ -587,7 +567,7 @@ function createProductionHandler(): ReturnType<typeof createScanHandler> {
         createSource: async () =>
           new PrestamypeClient({
             storageState: storageState as object,
-          deadlineMs: Math.max(1, Math.min(110_000, budgetMs)),
+            deadlineMs: Math.max(1, Math.min(22_000, budgetMs)),
           }),
         config,
       };

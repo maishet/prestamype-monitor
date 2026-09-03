@@ -13,16 +13,14 @@ function Has-Property([object]$Value, [string]$Name) {
     return $null -ne $Value -and @($Value.PSObject.Properties | ForEach-Object { $_.Name }) -contains $Name
 }
 
-function Is-CompleteConfig([object]$Item) {
+function Is-CompleteDisabledConfig([object]$Item) {
     try {
-        if ($Item.PK.S -cne "CONFIG" -or $Item.SK.S -cne "MONITOR" -or $Item.enabled.BOOL -notin @($true, $false)) { return $false }
+        if ($Item.PK.S -cne "CONFIG" -or $Item.SK.S -cne "MONITOR" -or $Item.enabled.BOOL -ne $false) { return $false }
         $monitor = $Item.monitor.M
         $cost = $Item.costLimits.M
-        foreach ($name in @("allowedRisks", "minimumAnnualReturnPct", "minimumInvestmentCents", "highPriorityScore", "reviewScore", "detailRefreshIntervalMs")) {
+        foreach ($name in @("allowedRisks", "minimumAnnualReturnPct", "currency", "minimumInvestmentCents", "highPriorityScore", "reviewScore", "detailRefreshIntervalMs")) {
             if (-not (Has-Property $monitor $name)) { return $false }
         }
-        $currencies = if (Has-Property $monitor "allowedCurrencies") { @($monitor.allowedCurrencies.L | ForEach-Object { $_.S }) } elseif (Has-Property $monitor "currency") { @($monitor.currency.S) } else { @() }
-        if ($currencies.Count -eq 0 -or @($currencies | Where-Object { $_ -notin @("PEN", "USD") }).Count -gt 0) { return $false }
         foreach ($name in @("configuredMemoryGb", "monthlyGbSecondsLimit")) {
             if (-not (Has-Property $cost $name)) { return $false }
         }
@@ -41,7 +39,7 @@ function Is-CompleteConfig([object]$Item) {
         $refresh = [long]$monitor.detailRefreshIntervalMs.N
         $memory = [double]$cost.configuredMemoryGb.N
         $monthly = [double]$cost.monthlyGbSecondsLimit.N
-        if ($annual -lt 0 -or $minimum -le 0 -or $review -lt 0 -or $high -gt 100 -or $high -lt $review -or $refresh -le 0 -or $memory -le 0 -or $monthly -le 0) { return $false }
+        if ($monitor.currency.S -notin @("PEN", "USD") -or $annual -lt 0 -or $minimum -le 0 -or $review -lt 0 -or $high -gt 100 -or $high -lt $review -or $refresh -le 0 -or $memory -le 0 -or $monthly -le 0) { return $false }
         if (Has-Property $Item "activation_owner") { return $false }
         return $true
     } catch { return $false }
@@ -57,8 +55,6 @@ $tableOutputs = @($outputs | Where-Object OutputKey -eq "TableName")
 if ($tableOutputs.Count -ne 1) { throw "Output TableName invalido." }
 $tableName = $tableOutputs[0].OutputValue
 if ($tableName -notmatch '^[A-Za-z0-9_.-]{3,255}$') { throw "Output TableName invalido." }
-$queueUrl = & aws cloudformation describe-stacks --stack-name $StackName --region $Region --query "Stacks[0].Outputs[?OutputKey=='QueueUrl'].OutputValue | [0]" --output text
-if ($LASTEXITCODE -ne 0 -or $queueUrl -notmatch '^https://sqs\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?/\d{12}/[A-Za-z0-9_-]+$') { throw "Output QueueUrl invalido." }
 
 $tempPath = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 try {
@@ -71,8 +67,8 @@ try {
     $readText = & aws dynamodb get-item --region $Region --cli-input-json ("file://" + $tempPath) --output json
     if ($LASTEXITCODE -ne 0) { throw "No se pudo leer la configuracion." }
     $response = $readText | ConvertFrom-Json
-    if (-not (Has-Property $response "Item") -or -not (Is-CompleteConfig $response.Item)) {
-        throw "No se puede reanudar: la configuracion falta o es invalida."
+    if (-not (Has-Property $response "Item") -or -not (Is-CompleteDisabledConfig $response.Item)) {
+        throw "No se puede reanudar: la configuracion falta, es invalida o no esta deshabilitada."
     }
     $item = $response.Item
     if (-not (Has-Property $item "paused_until") -or $item.paused_until.S -cne "manual" -or -not (Has-Property $item "pause_reason")) {
@@ -87,8 +83,9 @@ try {
         TableName = $tableName
         Key = @{ PK = @{ S = "CONFIG" }; SK = @{ S = "MONITOR" } }
         UpdateExpression = "REMOVE paused_until, pause_reason"
-        ConditionExpression = "paused_until = :manual AND pause_reason = :reason"
+        ConditionExpression = "enabled = :disabled AND paused_until = :manual AND pause_reason = :reason"
         ExpressionAttributeValues = @{
+            ":disabled" = @{ BOOL = $false }
             ":manual" = @{ S = "manual" }
             ":reason" = @{ S = $reason }
         }
@@ -101,18 +98,8 @@ try {
         $updateExit = $LASTEXITCODE
     } finally { $ErrorActionPreference = $oldPreference }
     if ($updateExit -ne 0) { throw "No se pudo reanudar porque el estado cambio; vuelva a inspeccionarlo." }
-    $delay = 75 + (Get-Random -Minimum 0 -Maximum 31)
-    $next = [DateTime]::UtcNow.AddSeconds($delay).ToString("o")
-    $send = @{ QueueUrl = $queueUrl; DelaySeconds = $delay; MessageBody = '{"kind":"scan","schemaVersion":1}' }
-    [IO.File]::WriteAllText($tempPath, ($send | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding($false)))
-    & aws sqs send-message --region $Region --cli-input-json ("file://" + $tempPath) --output json | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Pausa retirada pero no se pudo programar el siguiente escaneo." }
-    $mark = @{ TableName = $tableName; Key = @{ PK = @{ S = "CONFIG" }; SK = @{ S = "MONITOR" } }; UpdateExpression = "SET next_scan_at = :next"; ExpressionAttributeValues = @{ ":next" = @{ S = $next } } }
-    [IO.File]::WriteAllText($tempPath, ($mark | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding($false)))
-    & aws dynamodb update-item --region $Region --cli-input-json ("file://" + $tempPath) --output json | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Escaneo programado pero no se pudo actualizar next_scan_at." }
 } finally {
     if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force }
 }
 
-Write-Output "Pausa recuperable retirada y siguiente escaneo programado en $next."
+Write-Output "Pausa recuperable retirada; el monitor sigue deshabilitado y no se envio ningun mensaje."

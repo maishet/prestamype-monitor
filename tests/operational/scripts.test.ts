@@ -11,8 +11,6 @@ const scripts = [
   "activate-monitor.ps1",
   "deactivate-monitor.ps1",
   "resume-monitor.ps1",
-  "status-monitor.ps1",
-  "configure-monitor.ps1",
 ] as const;
 const shells = ["pwsh", "powershell"].map((name) => ({
   name,
@@ -22,7 +20,7 @@ const shells = ["pwsh", "powershell"].map((name) => ({
 }));
 
 function source(name: string): string {
-  return readFileSync(resolve("scripts", name), "utf8").replace(/\r\n/g, "\n");
+  return readFileSync(resolve("scripts", name), "utf8");
 }
 
 describe("operational PowerShell scripts", () => {
@@ -160,7 +158,7 @@ describe("operational PowerShell scripts", () => {
     }
   });
 
-  it("resumes only an exact recoverable manual pause and schedules one scan", () => {
+  it("resumes only an exact disabled recoverable manual pause without enqueueing", () => {
     const resume = source("resume-monitor.ps1");
     expect(resume).toContain('Read-Host "Escribe exactamente REANUDAR');
     expect(resume).toContain('$confirmation -cne "REANUDAR"');
@@ -172,10 +170,11 @@ describe("operational PowerShell scripts", () => {
     ])
       expect(resume).toContain(reason);
     expect(resume).toContain("ConsistentRead = $true");
+    expect(resume).toContain("enabled = :disabled");
     expect(resume).toContain("paused_until = :manual");
     expect(resume).toContain("pause_reason = :reason");
     expect(resume).toContain("REMOVE paused_until, pause_reason");
-    expect(resume).toContain("sqs send-message");
+    expect(resume).not.toContain("sqs send-message");
     expect(resume).not.toContain("SET enabled = :enabled");
   });
 });

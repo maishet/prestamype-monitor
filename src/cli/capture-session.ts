@@ -9,10 +9,8 @@ import {
 const OPPORTUNITIES_URL =
   "https://www.prestamype.com/app/inversionista/oportunidades";
 const AUTHENTICATED_MARKER =
-  'h1:has-text("Oportunidades"), h2:has-text("Oportunidades"), h3:has-text("Oportunidades"), [role="heading"]:has-text("Oportunidades")';
-const CAPTCHA_MARKER =
-  '[data-captcha], .g-recaptcha, iframe[src*="recaptcha/api2/bframe"], iframe[src*="hcaptcha.com"]';
-const COOKIE_CONSENT_MARKER = 'button:has-text("Permitir la selección")';
+  '[data-opportunity-card], [data-page="opportunities"]';
+const CAPTCHA_MARKER = '[data-captcha], iframe[src*="captcha"], .g-recaptcha';
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 export class CaptureSessionError extends Error {
@@ -73,9 +71,7 @@ function assertAllowedUrl(rawUrl: string): void {
     throw new CaptureSessionError("Unexpected browser destination");
   }
   if (
-    !["https://www.prestamype.com", "https://prestamype.com"].includes(
-      url.origin,
-    ) ||
+    url.origin !== "https://www.prestamype.com" ||
     url.username !== "" ||
     url.password !== "" ||
     !/^\/(?:app\/inversionista\/oportunidades|iniciar-sesion)\/?$/.test(
@@ -203,17 +199,6 @@ async function waitForAuthentication(
   }
 }
 
-async function waitForCookieConsentDismissal(
-  page: CapturePage,
-  signal: AbortSignal,
-): Promise<void> {
-  while (
-    await raceWithAbort(page.locator(COOKIE_CONSENT_MARKER).isVisible(), signal)
-  ) {
-    await abortableDelay(100, signal);
-  }
-}
-
 export async function captureSession(
   dependencies: CaptureDependencies,
   options: CaptureOptions = {},
@@ -302,7 +287,6 @@ export async function captureSession(
     await raceWithAbort(page.goto(OPPORTUNITIES_URL), controller.signal);
     assertAllowedUrl(page.url());
     dependencies.output("Inicia sesión manualmente y vuelve aquí");
-    await waitForCookieConsentDismissal(page, controller.signal);
     if (
       await raceWithAbort(
         page.locator(CAPTCHA_MARKER).isVisible(),
@@ -323,7 +307,6 @@ export async function captureSession(
       context.storageState(),
       controller.signal,
     );
-    dependencies.output("Guardando sesión cifrada");
     await raceWithAbort(
       dependencies.store.saveEncryptedSession(
         encryptSession(storageState, dependencies.key),
@@ -331,7 +314,6 @@ export async function captureSession(
       ),
       controller.signal,
     );
-    dependencies.output("Sesión cifrada guardada");
   } catch (error) {
     primaryError = error;
   }

@@ -47,9 +47,8 @@ export function evaluateOpportunity({
   ) {
     reasons.push(`Annual return is below ${config.minimumAnnualReturnPct}%`);
   }
-  const allowedCurrencies = config.allowedCurrencies ?? [config.currency];
-  if (!allowedCurrencies.includes(opportunity.currency)) {
-    reasons.push(`Currency ${opportunity.currency} is not allowed`);
+  if (opportunity.currency !== config.currency) {
+    reasons.push(`Currency ${opportunity.currency} is not ${config.currency}`);
   }
   if (
     !Number.isFinite(opportunity.remainingAmountCents) ||
