@@ -235,7 +235,9 @@ function parseTaxId(raw: string, role: string): string {
 }
 
 function parseRisk(raw: string): RiskGrade {
-  const value = raw.trim().toUpperCase();
+  const normalized = raw.replaceAll(/\s+/gu, " ").trim().toUpperCase();
+  const value = normalized.match(/(?:^|\s)(A\+|[A-E])(?:\s|$)/)?.[1]
+    ?? (normalized.match(/A\+|[A-E]/g)?.at(-1) ?? normalized);
   if (!["A+", "A", "B", "C", "D", "E"].includes(value)) {
     throw new PageStructureError("UNSUPPORTED_VALUE", "risk");
   }

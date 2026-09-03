@@ -316,6 +316,15 @@ describe("parseOpportunityDetail", () => {
     expect(parseOpportunityDetail(html, summary).remainingAmountCents).toBe(40_000);
   });
 
+  it("accepts auxiliary text around the risk grade on a live detail page", () => {
+    const summary = parseOpportunityCards(validCard())[0]!;
+    const html = `<main data-page="opportunity-detail">
+      <span data-field="risk">Riesgo D</span>
+      ${validDetailBody()}
+    </main>`;
+    expect(parseOpportunityDetail(html, summary).risk).toBe("D");
+  });
+
   it("requires an explicit detail container", () => {
     const summary = parseOpportunityCards(validCard())[0]!;
 
