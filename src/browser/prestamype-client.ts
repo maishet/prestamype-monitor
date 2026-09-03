@@ -60,6 +60,7 @@ export interface PageLike {
   content(): Promise<string>;
   locator(selector: string): LocatorLike;
   getByRole(role: string, options: { name: string; exact: true }): LocatorLike;
+  getByText?(text: string, options: { exact: true }): LocatorLike;
   route(
     pattern: string,
     handler: (
@@ -546,9 +547,23 @@ export class PrestamypeClient implements OpportunitySource {
   ): Promise<void> {
     this.ensureDeadline(deadline);
     assertAllowedInteraction({ kind: "click", name });
-    const locator = page.getByRole(role, { name, exact: true });
-    if (!(await this.withDeadline(locator.isVisible(), deadline)))
+    let locator = page.getByRole(role, { name, exact: true });
+    let visible = await this.withDeadline(locator.isVisible(), deadline);
+    if (!visible && name === "Filtros") {
+      locator = page.locator('button:has-text("Filtros")');
+      visible = await this.withDeadline(locator.isVisible(), deadline);
+      if (!visible && page.getByText !== undefined) {
+        locator = page.getByText("Filtros", { exact: false });
+        visible = await this.withDeadline(locator.isVisible(), deadline);
+      }
+    }
+    if (!visible) {
+      console.error(
+        "Sanitized missing interaction",
+        JSON.stringify({ role, name }),
+      );
       throw new PageStructureError("MISSING_FIELD", "interaction");
+    }
     await this.withDeadline(locator.click(), deadline);
   }
 

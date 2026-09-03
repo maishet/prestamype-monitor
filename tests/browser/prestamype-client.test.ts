@@ -131,9 +131,14 @@ class FakePage implements PageLike {
         this.sortConfirmation !== "",
         this.sortConfirmation,
       );
+    if (selector === "text=Filtros") return new FakeLocator(true, "Filtros");
     if (selector.startsWith('[data-filter-risk="'))
       return new FakeLocator(true, selector);
     return new FakeLocator(false);
+  }
+  getByText(text: string, _options: { exact: boolean }): LocatorLike {
+    this.accessibleActions.push({ role: "text", name: text, exact: true });
+    return new FakeLocator(true, text);
   }
   getByRole(
     role: string,
