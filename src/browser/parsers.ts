@@ -518,15 +518,20 @@ function parseCents(raw: string, field: string, currency: Currency): number {
   // Live table cells append funding percentages after the monetary amount.
   const hasPen = /(?:S\/|\bPEN\b)/i.test(raw);
   const hasUsd = /(?:US\$|\bUSD\b)/i.test(raw);
+  if (!hasPen && !hasUsd && /^\s*[\d.,]+\s*%\s*$/u.test(raw))
+    throw new PageStructureError("INVALID_FIELD", field);
   if (
-    (currency === "PEN" && (!hasPen || hasUsd)) ||
-    (currency === "USD" && (!hasUsd || hasPen))
+    (currency === "PEN" && hasUsd) ||
+    (currency === "USD" && hasPen)
   ) {
     throw new PageStructureError("INVALID_FIELD", field);
   }
   const moneyPart = raw.split(/\s*%/u, 1)[0]!;
+  const amountToken = moneyPart.match(
+    /(?:S\/|\bPEN\b|US\$|\bUSD\b)\s*[\d.,]+/iu,
+  )?.[0] ?? moneyPart.match(/[\d][\d.,]*/u)?.[0] ?? moneyPart;
   const value = parseNumber(
-    moneyPart.replace(/\bPEN\b|\bUSD\b|US\$|S\//gi, ""),
+    amountToken.replace(/\bPEN\b|\bUSD\b|US\$|S\//gi, ""),
     field,
   );
   const cents = Math.round(value * 100);

@@ -35,7 +35,7 @@ describe("SAM infrastructure", () => {
       expect(properties.Runtime).toBe("nodejs22.x");
       expect(properties.Architectures).toEqual(["x86_64"]);
       expect(properties.MemorySize).toBe(1024);
-      expect(properties.Timeout).toBe(60);
+      expect(properties.Timeout).toBe(120);
       expect(properties.ReservedConcurrentExecutions).toEqual({
         "Fn::If": ["UseReservedConcurrency", 1, { Ref: "AWS::NoValue" }],
       });

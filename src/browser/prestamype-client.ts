@@ -175,6 +175,7 @@ export function opportunityFingerprint(opportunity: Opportunity): string {
 }
 
 export class PrestamypeClient implements OpportunitySource {
+  private static readonly MAX_DETAILS_PER_SCAN = 3;
   private readonly launcher: BrowserLauncher;
   private readonly now: () => number;
   private readonly deadlineMs: number;
@@ -344,7 +345,12 @@ export class PrestamypeClient implements OpportunitySource {
     await this.assertAuthenticated(page, deadline);
     try {
       await this.clickAccessible(page, "button", "Filtros", deadline);
-      await this.clickAccessible(page, "button", "Limpiar", deadline);
+      try {
+        await this.clickAccessible(page, "button", "Limpiar", deadline);
+      } catch {
+        // The UI disables Limpiar when no filters are active; that is already
+        // the desired clean state, so continue without treating it as fatal.
+      }
       for (const risk of ["A+", "A", "B", "C"] as const) {
         if (config.allowedRisks.includes(risk)) {
           await this.clickAccessible(page, "checkbox", risk, deadline);
@@ -501,6 +507,7 @@ export class PrestamypeClient implements OpportunitySource {
     if (!sortControlsAvailable)
       summaries.sort((left, right) => right.annualReturnPct - left.annualReturnPct);
     const results: Opportunity[] = [];
+    let detailsFetched = 0;
     for (let summary of summaries) {
       if (summary.rowIndex !== undefined && new URL(page.url()).pathname !== OPPORTUNITIES_PATH) {
         await this.navigate(page, OPPORTUNITIES_PATH, deadline);
@@ -524,6 +531,8 @@ export class PrestamypeClient implements OpportunitySource {
         recentlyChecked
       )
         continue;
+      if (detailsFetched >= PrestamypeClient.MAX_DETAILS_PER_SCAN) break;
+      detailsFetched += 1;
       let detailPath = new URL(summary.url).pathname;
       if (summary.rowIndex !== undefined) {
         const row = page.locator("tr.row_table:not(.row_table--loading)").nth?.(summary.rowIndex);

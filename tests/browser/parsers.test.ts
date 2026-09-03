@@ -12,6 +12,26 @@ const fixture = (name: string) =>
   readFile(new URL(`../fixtures/${name}`, import.meta.url), "utf8");
 
 describe("parseOpportunityCards", () => {
+  it("parses money amounts when the live cell appends display text", () => {
+    const html = `<table><tr class="row_table"><td>REDONDOS</td><td>A</td><td><div class="amount-label">S/ 14,283.88 100% disponible</div></td><td>Factoring</td><td>9.51 %</td></tr></table>`;
+    expect(parseOpportunityCards(html)[0]?.remainingAmountCents).toBe(1_428_388);
+  });
+
+  it("accepts a detail amount without a repeated currency marker", () => {
+    const summary = {
+      id: "detail-no-currency",
+      url: "https://www.prestamype.com/app/inversionista/oportunidades/detail-no-currency",
+      supplier: { legalName: "Proveedor", taxId: null },
+      debtor: { legalName: "Deudor", taxId: null },
+      risk: "A" as const,
+      currency: "PEN" as const,
+      annualReturnPct: 10,
+      remainingAmountCents: 100_000,
+    };
+    const detail = `<div data-page="opportunity-detail"><span data-field="total-amount">2.000,00</span><span data-field="funded-amount">1.000,00</span><span data-field="remaining-amount">1.000,00</span></div>`;
+    expect(parseOpportunityDetail(detail, summary).remainingAmountCents).toBe(100_000);
+  });
+
   it("ignores protected rows whose risk column contains only the shield icon", () => {
     const html = `<table><tr class="row_table"><td>PLUZ ENERGÍA PERÚ</td><td><span class="protected-icon">🛡</span></td><td><div class="amount-label">S/ 216.996,97</div></td><td>Factoring</td><td>7,31 %</td></tr><tr class="row_table"><td>REDONDOS</td><td>A</td><td><div class="amount-label">S/ 14.283,88</div></td><td>Factoring</td><td>9,51 %</td></tr></table>`;
     const summaries = parseOpportunityCards(html);
@@ -319,6 +339,16 @@ describe("parseOpportunityDetail", () => {
       <span data-field="total-amount">S/ 2.000,00 80%</span>
       <span data-field="funded-amount">S/ 1.600,00 80%</span>
       <span data-field="remaining-amount">S/ 400,00 20%</span>
+    </main>`;
+    expect(parseOpportunityDetail(html, summary).remainingAmountCents).toBe(40_000);
+  });
+
+  it("extracts a numeric amount when the live detail adds a label suffix", () => {
+    const summary = parseOpportunityCards(validCard())[0]!;
+    const html = `<main data-page="opportunity-detail">
+      <span data-field="total-amount">Monto total: 2.000,00</span>
+      <span data-field="funded-amount">Financiado: 1.600,00</span>
+      <span data-field="remaining-amount">Disponible: 400,00</span>
     </main>`;
     expect(parseOpportunityDetail(html, summary).remainingAmountCents).toBe(40_000);
   });
