@@ -13,7 +13,9 @@
     "lint": "eslint .",
     "format:check": "prettier --check .",
     "auth:capture": "node --import tsx src/cli/capture-session.ts",
-    "dry-run": "node --import tsx src/cli/dry-run.ts"
+    "dry-run": "node --import tsx src/cli/dry-run.ts",
+    "telegram:test": "node scripts/test-telegram.mjs",
+    "telegram:list-chats": "node scripts/telegram-list-chats.mjs"
   },
   "keywords": [],
   "author": "",

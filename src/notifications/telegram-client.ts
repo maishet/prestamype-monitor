@@ -139,19 +139,20 @@ function retryAfter(
 
 export class TelegramClient implements Notifier {
   readonly #url: string;
-  readonly #chatId: string;
+  readonly #chatIds: readonly string[];
   readonly #fetch: FetchLike;
   readonly #sleep: (milliseconds: number) => Promise<void>;
   readonly #random: () => number;
   readonly #timeoutMs: number;
 
   constructor(options: TelegramClientOptions) {
-    if (!TOKEN.test(options.token) || !CHAT_ID.test(options.chatId)) fail();
+    const chatIds = options.chatId.split(",").map((id) => id.trim()).filter(Boolean);
+    if (!TOKEN.test(options.token) || chatIds.length === 0 || !chatIds.every((id) => CHAT_ID.test(id))) fail();
     const timeoutMs = options.timeoutMs ?? 10_000;
     if (!Number.isFinite(timeoutMs) || timeoutMs < 100 || timeoutMs > 60_000)
       fail();
     this.#url = `https://api.telegram.org/bot${options.token}/sendMessage`;
-    this.#chatId = options.chatId;
+    this.#chatIds = chatIds;
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#sleep =
       options.sleep ??
@@ -172,13 +173,13 @@ export class TelegramClient implements Notifier {
       message.length > MAX_MESSAGE_LENGTH
     )
       fail();
-    const body = JSON.stringify({
-      chat_id: this.#chatId,
-      text: message,
-      parse_mode: "HTML",
-      link_preview_options: { is_disabled: true },
-      disable_web_page_preview: true,
-    });
+    for (const chatId of this.#chatIds) {
+      await this.sendToChat(chatId, message, options);
+    }
+  }
+
+  private async sendToChat(chatId: string, message: string, options: TelegramSendOptions): Promise<void> {
+    const body = JSON.stringify({ chat_id: chatId, text: message, parse_mode: "HTML", link_preview_options: { is_disabled: true }, disable_web_page_preview: true });
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
       if (options.signal?.aborted === true) fail();

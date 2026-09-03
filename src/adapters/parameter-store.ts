@@ -84,6 +84,16 @@ function decodeCanonicalKey(value: string): Uint8Array {
   return new Uint8Array(decoded);
 }
 
+function validChatIdList(value: string): boolean {
+  const ids = value.split(",").map((item) => item.trim());
+  return (
+    ids.length >= 1 &&
+    ids.length <= 10 &&
+    ids.every((id) => CHAT_ID.test(id)) &&
+    new Set(ids).size === ids.length
+  );
+}
+
 async function requestSecrets(
   client: ParameterStoreClientLike,
   env: Readonly<Record<string, string | undefined>>,
@@ -128,7 +138,7 @@ async function requestSecrets(
       telegramChatId === undefined ||
       rawKey === undefined ||
       !TOKEN.test(telegramToken) ||
-      !CHAT_ID.test(telegramChatId)
+      !validChatIdList(telegramChatId)
     )
       fail();
     return Object.freeze({

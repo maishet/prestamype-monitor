@@ -218,9 +218,22 @@ describe("safe browser policy", () => {
     expect(shouldBlockResource("script", "https://prestamype.com/app.js")).toBe(
       true,
     );
+    for (const kind of ["xhr", "fetch"])
+      expect(shouldBlockResource(kind, "https://prestamype.com/api/opportunities")).toBe(
+        false,
+      );
     expect(shouldBlockResource("xhr", "https://api.prestamype.com/x")).toBe(
-      true,
+      false,
     );
+    expect(shouldBlockResource("fetch", "https://api.prestamype.com/x")).toBe(
+      false,
+    );
+    expect(
+      shouldBlockResource(
+        "script",
+        "https://d14bodb4yrsx8y.cloudfront.net/assets/app.js",
+      ),
+    ).toBe(false);
   });
 
   it("rejects unsafe navigation and prohibited interaction names", () => {

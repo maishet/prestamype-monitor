@@ -54,15 +54,46 @@ export interface OpportunitySummary {
   currency: Currency;
   annualReturnPct: number;
   remainingAmountCents: number;
+  /** Index in the live table when the SPA does not expose a detail href. */
+  rowIndex?: number;
 }
 
 type SelectorAlternatives = readonly string[];
 
 export function parseOpportunityCards(html: string): OpportunitySummary[] {
   const $ = load(html);
-  return findAllByPriority($, PRESTAMYPE_SELECTORS.opportunityCard)
+  const cards = findAllByPriority($, PRESTAMYPE_SELECTORS.opportunityCard)
     .toArray()
     .map((element) => parseOpportunityCard($(element)));
+  if (cards.length > 0) return cards;
+  return parseOpportunityTable($);
+}
+
+function parseOpportunityTable($: CheerioAPI): OpportunitySummary[] {
+  return $("tr.row_table:not(.row_table--loading)")
+    .toArray()
+    .map((element, rowIndex) => {
+      const cells = $(element).find("td").toArray().map((cell) => $(cell).text().replaceAll(/\s+/gu, " ").trim());
+      if (cells.length < 5) throw new PageStructureError("MISSING_FIELD", "opportunityTable");
+      const client = cells[0] ?? "";
+      const risk = parseRisk(cells[1] ?? $(element).find(".badge-risk").first().text());
+      const amountRaw = cells[2] ?? "";
+      const currency: Currency = /(?:US\$|USD|\$)/i.test(amountRaw) ? "USD" : "PEN";
+      const amount = parseCents(amountRaw, "remainingAmountCents", currency);
+      const annualReturnPct = parsePercentage(cells[4] ?? "", "annualReturnPct");
+      const identity: PartyIdentity = { legalName: client || `Oportunidad ${rowIndex + 1}`, taxId: null };
+      return {
+        id: `table-row-${rowIndex}`,
+        url: `${PRESTAMYPE_ORIGIN}/app/inversionista/oportunidades/table-row-${rowIndex}`,
+        supplier: identity,
+        debtor: identity,
+        risk,
+        currency,
+        annualReturnPct,
+        remainingAmountCents: amount,
+        rowIndex,
+      };
+    });
 }
 
 export function parseOpportunityDetail(

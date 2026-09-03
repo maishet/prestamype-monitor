@@ -27,6 +27,8 @@ import {
 
 export const ORIGIN = "https://www.prestamype.com";
 const APEX_ORIGIN = "https://prestamype.com";
+const API_ORIGIN = "https://api.prestamype.com";
+const CDN_ORIGIN = "https://d14bodb4yrsx8y.cloudfront.net";
 const OPPORTUNITIES_PATH = "/app/inversionista/oportunidades";
 const PORTFOLIO_PATH = "/app/inversionista/mis-inversiones";
 const PROTECTED_PATHS = [
@@ -59,6 +61,8 @@ export interface LocatorLike {
   click(): Promise<void>;
   isVisible(): Promise<boolean>;
   textContent(): Promise<string | null>;
+  nth?(index: number): LocatorLike;
+  first?(): LocatorLike;
 }
 
 export interface PageLike {
@@ -119,7 +123,13 @@ export function shouldBlockResource(
   } catch {
     return true;
   }
-  if (url.origin === APEX_ORIGIN) return resourceType !== "document";
+  // The SPA serves its data API from the apex host while the UI is on www.
+  // Keep scripts and navigations constrained, but allow same-site API calls.
+  if (url.origin === APEX_ORIGIN)
+    return !["document", "xhr", "fetch"].includes(resourceType);
+  if (url.origin === API_ORIGIN)
+    return !["xhr", "fetch"].includes(resourceType);
+  if (url.origin === CDN_ORIGIN) return resourceType !== "script";
   if (url.origin !== ORIGIN) return true;
   return !["document", "script", "xhr", "fetch"].includes(resourceType);
 }
@@ -369,13 +379,132 @@ export class PrestamypeClient implements OpportunitySource {
       }
     }
 
-    const summaries = parseOpportunityCards(
-      await this.withDeadline(page.content(), deadline),
+    const html = await this.waitForOpportunityTable(page, deadline);
+    const diagnostics = load(html);
+    console.error(
+      "Sanitized opportunities DOM diagnostics",
+      JSON.stringify({
+        url: new URL(page.url()).pathname,
+        htmlLength: html.length,
+        cards: diagnostics("[data-opportunity-card]").length,
+        articles: diagnostics("article").length,
+        rows: diagnostics("tr").length,
+        links: diagnostics("a").length,
+        buttons: diagnostics("button").length,
+        pagination: diagnostics(
+          '[aria-label*="pagin" i], [class*="pagin" i], [data-pagination]',
+        ).length,
+        linkPaths: diagnostics("a")
+          .toArray()
+          .map((element) => {
+            const href = diagnostics(element).attr("href");
+            try {
+              return href === undefined ? null : new URL(href, ORIGIN).pathname;
+            } catch {
+              return null;
+            }
+          })
+          .filter((path): path is string => path !== null)
+          .slice(0, 20),
+        buttonLabels: diagnostics("button")
+          .toArray()
+          .map((element) => diagnostics(element).text().replaceAll(/\s+/gu, " ").trim().slice(0, 80))
+          .filter((label) => label !== "")
+          .slice(0, 20),
+        structuredNodes: diagnostics("*")
+          .toArray()
+          .map((element) => {
+            const node = diagnostics(element);
+            const raw = element as {
+              attribs?: Record<string, string>;
+              tagName?: string;
+            };
+            const attrs = Object.fromEntries(
+              Object.entries(raw.attribs ?? {}).filter(([name]) =>
+                /(?:data|aria|class|href)/i.test(name),
+              ),
+            );
+            return {
+              tag: raw.tagName,
+              attrs,
+              textLength: node.text().trim().length,
+            };
+          })
+          .filter(({ attrs }) =>
+            Object.keys(attrs).some((name) =>
+              /(?:field|opportun|risk|return|currency|amount|pagination|page)/i.test(
+                name,
+              ) ||
+              /(?:field|opportun|risk|return|currency|amount|pagination|page)/i.test(
+                String(attrs[name]),
+              ),
+            ),
+          )
+          .slice(0, 120),
+        articleShapes: diagnostics("article")
+          .toArray()
+          .slice(0, 20)
+          .map((element) => {
+            const node = diagnostics(element);
+            return {
+              className: node.attr("class") ?? "",
+              dataAttrs: Object.keys((element as { attribs?: Record<string, string> }).attribs ?? {})
+                .filter((name) => name.startsWith("data-"))
+                .slice(0, 10),
+              childClasses: node
+                .find("*")
+                .toArray()
+                .map((child) => diagnostics(child).attr("class") ?? "")
+                .filter((name) => name !== "")
+                .filter((name, index, all) => all.indexOf(name) === index)
+                .slice(0, 30),
+              childLinkPaths: node
+                .find("a")
+                .toArray()
+                .map((child) => diagnostics(child).attr("href") ?? "")
+                .filter((href) => href !== "")
+                .slice(0, 10),
+            };
+          }),
+        rowShapes: diagnostics(".row_table:not(.row_table--loading)")
+          .toArray()
+          .slice(0, 3)
+          .map((element) => {
+            const node = diagnostics(element);
+            const raw = element as { attribs?: Record<string, string>; tagName?: string };
+            return {
+              tag: raw.tagName,
+              attrNames: Object.keys(raw.attribs ?? {}).filter((name) => /^(data|aria|class|href|id)/i.test(name)),
+              childClasses: node.find("*").toArray().map((child) => diagnostics(child).attr("class") ?? "").filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).slice(0, 40),
+              childTags: node.find("*").toArray().map((child) => (child as { tagName?: string }).tagName ?? "").filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).slice(0, 20),
+            };
+          }),
+        relevantClasses: (() => {
+          const counts = new Map<string, number>();
+          for (const element of diagnostics("*").toArray()) {
+            for (const value of (diagnostics(element).attr("class") ?? "").split(/\s+/u)) {
+              if (/(?:opportun|invest|factoring|risk|return|amount|table|row|card)/i.test(value))
+                counts.set(value, (counts.get(value) ?? 0) + 1);
+            }
+          }
+          return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 80);
+        })(),
+      }),
+    );
+    const summaries = parseOpportunityCards(html);
+    console.error(
+      "Sanitized opportunities parsed",
+      JSON.stringify({ count: summaries.length }),
     );
     if (!sortControlsAvailable)
       summaries.sort((left, right) => right.annualReturnPct - left.annualReturnPct);
     const results: Opportunity[] = [];
-    for (const summary of summaries) {
+    for (let summary of summaries) {
+      if (summary.rowIndex !== undefined && new URL(page.url()).pathname !== OPPORTUNITIES_PATH) {
+        await this.navigate(page, OPPORTUNITIES_PATH, deadline);
+        await this.assertAuthenticated(page, deadline);
+        await this.waitForOpportunityTable(page, deadline);
+      }
       if (summary.annualReturnPct < config.minimumAnnualReturnPct) break;
       if (
         !config.allowedRisks.includes(summary.risk) ||
@@ -393,7 +522,19 @@ export class PrestamypeClient implements OpportunitySource {
         recentlyChecked
       )
         continue;
-      await this.navigate(page, new URL(summary.url).pathname, deadline);
+      let detailPath = new URL(summary.url).pathname;
+      if (summary.rowIndex !== undefined) {
+        const row = page.locator("tr.row_table:not(.row_table--loading)").nth?.(summary.rowIndex);
+        if (row === undefined) continue;
+        await this.withDeadline(row.click(), deadline);
+        await this.waitForDetailNavigation(page, deadline);
+        const landed = new URL(page.url());
+        if (!/^\/app\/inversionista\/oportunidades\/[A-Za-z0-9_-]+$/.test(landed.pathname)) continue;
+        detailPath = landed.pathname;
+        summary = { ...summary, id: landed.pathname.split("/").at(-1)!, url: landed.href };
+      } else {
+        await this.navigate(page, detailPath, deadline);
+      }
       await this.assertAuthenticated(page, deadline);
       results.push(
         parseOpportunityDetail(
@@ -403,6 +544,16 @@ export class PrestamypeClient implements OpportunitySource {
       );
     }
     return results;
+  }
+
+  private async waitForDetailNavigation(page: PageLike, deadline: number): Promise<void> {
+    for (;;) {
+      const path = new URL(page.url()).pathname;
+      if (/^\/app\/inversionista\/oportunidades\/[A-Za-z0-9_-]+$/.test(path)) return;
+      const remaining = deadline - this.now();
+      if (remaining <= 250) return;
+      await this.withDeadline(new Promise<void>((resolve) => setTimeout(resolve, 250)), deadline);
+    }
   }
 
   async close(): Promise<void> {
@@ -516,6 +667,27 @@ export class PrestamypeClient implements OpportunitySource {
       throw new PageStructureError("INVALID_URL", "navigationResult");
   }
 
+  private async waitForOpportunityTable(
+    page: PageLike,
+    deadline: number,
+  ): Promise<string> {
+    let html = await this.withDeadline(page.content(), deadline);
+    for (;;) {
+      const $ = load(html);
+      const rows = $(".row_table").length;
+      const loadingRows = $(".row_table--loading").length;
+      if ((rows > 1 && loadingRows === 0) || $("[data-opportunity-card]").length > 0)
+        return html;
+      const remaining = deadline - this.now();
+      if (remaining <= 250) return html;
+      await this.withDeadline(
+        new Promise<void>((resolve) => setTimeout(resolve, 250)),
+        deadline,
+      );
+      html = await this.withDeadline(page.content(), deadline);
+    }
+  }
+
   private async assertAuthenticated(
     page: PageLike,
     deadline: number,
@@ -578,14 +750,17 @@ export class PrestamypeClient implements OpportunitySource {
       name,
       exact: !(role === "button" && name === "Filtros"),
     });
+    locator = locator.first?.() ?? locator;
     let visible = await this.withDeadline(locator.isVisible(), deadline);
     if (!visible && name === "Filtros") {
       locator = page.locator(
         'button:has-text("Filtros"), [role="button"]:has-text("Filtros"), [aria-label*="Filtros"]',
       );
+      locator = locator.first?.() ?? locator;
       visible = await this.withDeadline(locator.isVisible(), deadline);
       if (!visible && page.getByText !== undefined) {
         locator = page.getByText("Filtros", { exact: false });
+        locator = locator.first?.() ?? locator;
         visible = await this.withDeadline(locator.isVisible(), deadline);
       }
     }
