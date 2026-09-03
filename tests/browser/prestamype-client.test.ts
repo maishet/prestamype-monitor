@@ -136,8 +136,8 @@ class FakePage implements PageLike {
       return new FakeLocator(true, selector);
     return new FakeLocator(false);
   }
-  getByText(text: string, _options: { exact: boolean }): LocatorLike {
-    this.accessibleActions.push({ role: "text", name: text, exact: true });
+  getByText(text: string, options: { exact: boolean }): LocatorLike {
+    this.accessibleActions.push({ role: "text", name: text, exact: options.exact });
     return new FakeLocator(true, text);
   }
   getByRole(
@@ -286,7 +286,7 @@ describe("PrestamypeClient", () => {
       ),
     ).toBe(false);
     expect(h.page.accessibleActions).toEqual([
-      { role: "button", name: "Filtros", exact: true },
+      { role: "button", name: "Filtros", exact: false },
       { role: "checkbox", name: "A+", exact: true },
       { role: "checkbox", name: "A", exact: true },
       { role: "checkbox", name: "B", exact: true },

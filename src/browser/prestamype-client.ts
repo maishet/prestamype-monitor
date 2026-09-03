@@ -48,6 +48,13 @@ const ALLOWED_ACTIONS = new Set([
   "C",
 ]);
 
+function isAlreadyClosedBrowserError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:Target|browserContext|context|browser)\s*(?:page,?\s*)?(?:has been closed|disposeBrowserContext|closed)/i.test(
+    message,
+  );
+}
+
 export interface LocatorLike {
   click(): Promise<void>;
   isVisible(): Promise<boolean>;
@@ -59,8 +66,8 @@ export interface PageLike {
   url(): string;
   content(): Promise<string>;
   locator(selector: string): LocatorLike;
-  getByRole(role: string, options: { name: string; exact: true }): LocatorLike;
-  getByText?(text: string, options: { exact: true }): LocatorLike;
+  getByRole(role: string, options: { name: string; exact: boolean }): LocatorLike;
+  getByText?(text: string, options: { exact: boolean }): LocatorLike;
   route(
     pattern: string,
     handler: (
@@ -324,33 +331,49 @@ export class PrestamypeClient implements OpportunitySource {
     const page = await this.getPage(deadline);
     await this.navigate(page, OPPORTUNITIES_PATH, deadline);
     await this.assertAuthenticated(page, deadline);
-    await this.clickAccessible(page, "button", "Filtros", deadline);
-    for (const risk of ["A+", "A", "B", "C"] as const) {
-      if (config.allowedRisks.includes(risk)) {
-        await this.clickAccessible(page, "checkbox", risk, deadline);
+    try {
+      await this.clickAccessible(page, "button", "Filtros", deadline);
+      for (const risk of ["A+", "A", "B", "C"] as const) {
+        if (config.allowedRisks.includes(risk)) {
+          await this.clickAccessible(page, "checkbox", risk, deadline);
+        }
       }
+      await this.clickAccessible(page, "button", "Aplicar filtros", deadline);
+    } catch (error) {
+      if (!(error instanceof PageStructureError)) throw error;
+      console.error("Sanitized optional filter interaction unavailable");
     }
-    await this.clickAccessible(page, "button", "Aplicar filtros", deadline);
-    await this.clickAccessible(
-      page,
-      "button",
-      "Ordenar por: Recomendado",
-      deadline,
-    );
-    await this.clickAccessible(page, "button", "Retorno mayor", deadline);
-    this.ensureDeadline(deadline);
-    const sortState = page.locator('[data-state="sort-return-desc"]');
-    if (
-      !(await this.withDeadline(sortState.isVisible(), deadline)) ||
-      (await this.withDeadline(sortState.textContent(), deadline))?.trim() !==
-        "Retorno mayor"
-    ) {
-      throw new PageStructureError("MISSING_FIELD", "sortConfirmation");
+    let sortControlsAvailable = true;
+    try {
+      await this.clickAccessible(
+        page,
+        "button",
+        "Ordenar por: Recomendado",
+        deadline,
+      );
+      await this.clickAccessible(page, "button", "Retorno mayor", deadline);
+    } catch (error) {
+      if (!(error instanceof PageStructureError)) throw error;
+      sortControlsAvailable = false;
+      console.error("Sanitized optional sort interaction unavailable");
+    }
+    if (sortControlsAvailable) {
+      this.ensureDeadline(deadline);
+      const sortState = page.locator('[data-state="sort-return-desc"]');
+      if (
+        !(await this.withDeadline(sortState.isVisible(), deadline)) ||
+        (await this.withDeadline(sortState.textContent(), deadline))?.trim() !==
+          "Retorno mayor"
+      ) {
+        throw new PageStructureError("MISSING_FIELD", "sortConfirmation");
+      }
     }
 
     const summaries = parseOpportunityCards(
       await this.withDeadline(page.content(), deadline),
     );
+    if (!sortControlsAvailable)
+      summaries.sort((left, right) => right.annualReturnPct - left.annualReturnPct);
     const results: Opportunity[] = [];
     for (const summary of summaries) {
       if (summary.annualReturnPct < config.minimumAnnualReturnPct) break;
@@ -426,7 +449,8 @@ export class PrestamypeClient implements OpportunitySource {
       ]);
       const failure = results.find(
         (result): result is PromiseRejectedResult =>
-          result.status === "rejected",
+          result.status === "rejected" &&
+          !isAlreadyClosedBrowserError(result.reason),
       );
       if (failure !== undefined) throw failure.reason;
     })();
@@ -547,10 +571,18 @@ export class PrestamypeClient implements OpportunitySource {
   ): Promise<void> {
     this.ensureDeadline(deadline);
     assertAllowedInteraction({ kind: "click", name });
-    let locator = page.getByRole(role, { name, exact: true });
+    // The live UI renders the active-filter count in the accessible name
+    // (for example, "Filtros 4"). Keep exact matching for every action except
+    // this control so the selector remains stable as the count changes.
+    let locator = page.getByRole(role, {
+      name,
+      exact: !(role === "button" && name === "Filtros"),
+    });
     let visible = await this.withDeadline(locator.isVisible(), deadline);
     if (!visible && name === "Filtros") {
-      locator = page.locator('button:has-text("Filtros")');
+      locator = page.locator(
+        'button:has-text("Filtros"), [role="button"]:has-text("Filtros"), [aria-label*="Filtros"]',
+      );
       visible = await this.withDeadline(locator.isVisible(), deadline);
       if (!visible && page.getByText !== undefined) {
         locator = page.getByText("Filtros", { exact: false });
