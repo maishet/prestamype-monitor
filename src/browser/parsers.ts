@@ -72,7 +72,7 @@ export function parseOpportunityCards(html: string): OpportunitySummary[] {
 function parseOpportunityTable($: CheerioAPI): OpportunitySummary[] {
   return $("tr.row_table:not(.row_table--loading)")
     .toArray()
-    .map((element, rowIndex) => {
+    .flatMap((element, rowIndex) => {
       const cells = $(element).find("td").toArray().map((cell) => $(cell).text().replaceAll(/\s+/gu, " ").trim());
       if (cells.length < 5) throw new PageStructureError("MISSING_FIELD", "opportunityTable");
       const client = cells[0] ?? "";
@@ -80,14 +80,14 @@ function parseOpportunityTable($: CheerioAPI): OpportunitySummary[] {
       const normalizedRiskCell = riskCell.toUpperCase().replaceAll(/\s+/gu, " ").trim();
       const riskToken = normalizedRiskCell.match(/(?:^|\s)(A\+|[A-E])(?:\s|$)/)?.[1]
         ?? normalizedRiskCell.match(/A\+|[A-E]/g)?.at(-1);
-      if (riskToken === undefined) throw new PageStructureError("UNSUPPORTED_VALUE", "risk");
+      if (riskToken === undefined) return [];
       const risk = parseRisk(riskToken);
       const amountRaw = $(element).find(".amount-label").first().text().trim() || cells[2] || "";
       const currency: Currency = /(?:US\$|USD|\$)/i.test(amountRaw) ? "USD" : "PEN";
       const amount = parseCents(amountRaw, "remainingAmountCents", currency);
       const annualReturnPct = parsePercentage(cells[4] ?? "", "annualReturnPct");
       const identity: PartyIdentity = { legalName: client || `Oportunidad ${rowIndex + 1}`, taxId: null };
-      return {
+      return [{
         id: `table-row-${rowIndex}`,
         url: `${PRESTAMYPE_ORIGIN}/app/inversionista/oportunidades/table-row-${rowIndex}`,
         supplier: identity,
@@ -97,7 +97,7 @@ function parseOpportunityTable($: CheerioAPI): OpportunitySummary[] {
         annualReturnPct,
         remainingAmountCents: amount,
         rowIndex,
-      };
+      }];
     });
 }
 
@@ -111,12 +111,18 @@ export function parseOpportunityDetail(
     throw new PageStructureError("MISSING_FIELD", "detailPage");
 
   const currency = parseOptionalCurrency(page) ?? summary.currency;
+  let detailRisk = summary.risk;
+  try {
+    detailRisk = parseOptionalRisk(page) ?? summary.risk;
+  } catch (error) {
+    if (!(error instanceof PageStructureError) || error.code !== "UNSUPPORTED_VALUE") throw error;
+  }
   return {
     id: summary.id,
     url: validateOpportunityUrl(summary.url).url,
     supplier: parseIdentity(page, "supplier", summary.supplier),
     debtor: parseIdentity(page, "debtor", summary.debtor),
-    risk: parseOptionalRisk(page) ?? summary.risk,
+    risk: detailRisk,
     currency,
     annualReturnPct:
       parseOptionalPercentage(
@@ -236,8 +242,7 @@ function parseTaxId(raw: string, role: string): string {
 
 function parseRisk(raw: string): RiskGrade {
   const normalized = raw.replaceAll(/\s+/gu, " ").trim().toUpperCase();
-  const value = normalized.match(/(?:^|\s)(A\+|[A-E])(?:\s|$)/)?.[1]
-    ?? (normalized.match(/A\+|[A-E]/g)?.at(-1) ?? normalized);
+  const value = normalized.match(/(?:^|\s)(A\+|[A-E])(?:\s|$)/)?.[1] ?? normalized;
   if (!["A+", "A", "B", "C", "D", "E"].includes(value)) {
     throw new PageStructureError("UNSUPPORTED_VALUE", "risk");
   }
@@ -510,7 +515,7 @@ function parseOptionalCents(
 }
 
 function parseCents(raw: string, field: string, currency: Currency): number {
-  if (raw.includes("%")) throw new PageStructureError("INVALID_FIELD", field);
+  // Live table cells append funding percentages after the monetary amount.
   const hasPen = /(?:S\/|\bPEN\b)/i.test(raw);
   const hasUsd = /(?:US\$|\bUSD\b)/i.test(raw);
   if (
@@ -519,8 +524,9 @@ function parseCents(raw: string, field: string, currency: Currency): number {
   ) {
     throw new PageStructureError("INVALID_FIELD", field);
   }
+  const moneyPart = raw.split(/\s*%/u, 1)[0]!;
   const value = parseNumber(
-    raw.replace(/\bPEN\b|\bUSD\b|US\$|S\//gi, ""),
+    moneyPart.replace(/\bPEN\b|\bUSD\b|US\$|S\//gi, ""),
     field,
   );
   const cents = Math.round(value * 100);

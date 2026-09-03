@@ -215,7 +215,7 @@
         "Runtime": "nodejs22.x",
         "Architectures": ["x86_64"],
         "MemorySize": 1024,
-        "Timeout": 30,
+        "Timeout": 60,
         "ReservedConcurrentExecutions": {
           "Fn::If": ["UseReservedConcurrency", 1, { "Ref": "AWS::NoValue" }]
         },
@@ -281,7 +281,7 @@
         "Runtime": "nodejs22.x",
         "Architectures": ["x86_64"],
         "MemorySize": 1024,
-        "Timeout": 30,
+        "Timeout": 60,
         "ReservedConcurrentExecutions": {
           "Fn::If": ["UseReservedConcurrency", 1, { "Ref": "AWS::NoValue" }]
         },

@@ -41,6 +41,7 @@ const PROTECTED_PATHS = [
 const PROHIBITED_ACTION = /invertir|reservar|pagar|confirmar/i;
 const ALLOWED_ACTIONS = new Set([
   "Filtros",
+  "Limpiar",
   "Aplicar filtros",
   "Ordenar por: Recomendado",
   "Retorno mayor",
@@ -343,6 +344,7 @@ export class PrestamypeClient implements OpportunitySource {
     await this.assertAuthenticated(page, deadline);
     try {
       await this.clickAccessible(page, "button", "Filtros", deadline);
+      await this.clickAccessible(page, "button", "Limpiar", deadline);
       for (const risk of ["A+", "A", "B", "C"] as const) {
         if (config.allowedRisks.includes(risk)) {
           await this.clickAccessible(page, "checkbox", risk, deadline);

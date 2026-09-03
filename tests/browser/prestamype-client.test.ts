@@ -300,6 +300,7 @@ describe("PrestamypeClient", () => {
     ).toBe(false);
     expect(h.page.accessibleActions).toEqual([
       { role: "button", name: "Filtros", exact: false },
+      { role: "button", name: "Limpiar", exact: true },
       { role: "checkbox", name: "A+", exact: true },
       { role: "checkbox", name: "A", exact: true },
       { role: "checkbox", name: "B", exact: true },

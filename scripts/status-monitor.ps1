@@ -29,8 +29,19 @@ if ($null -ne $monitor) {
     } else {
         Write-Output "Moneda (compatibilidad): $($monitor.currency.S)"
     }
-    Write-Output "Inversión mínima (centavos): $($monitor.minimumInvestmentCents.N)"
+    $minimumSoles = ([decimal]$monitor.minimumInvestmentCents.N / 100).ToString("N2", [Globalization.CultureInfo]::GetCultureInfo("es-PE"))
+    Write-Output "Inversión mínima (S/): S/ $minimumSoles"
 }
-if ($item.PSObject.Properties.Name -contains "next_scan_at") { Write-Output "Próximo escaneo (UTC): $($item.next_scan_at.S)" }
-if ($item.PSObject.Properties.Name -contains "paused_until") { Write-Output "Pausado hasta (UTC): $($item.paused_until.S)" }
+function Format-LimaTime([string]$Value) {
+    $instant = [DateTimeOffset]::Parse($Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal)
+    return $instant.ToOffset([TimeSpan]::FromHours(-5)).ToString("dd/MM/yyyy HH:mm:ss")
+}
+if ($item.PSObject.Properties.Name -contains "next_scan_at") {
+    Write-Output "Próximo escaneo (Lima): $(Format-LimaTime $item.next_scan_at.S)"
+}
+if ($item.PSObject.Properties.Name -contains "paused_until") {
+    $paused = $item.paused_until.S
+    $pausedDisplay = if ($paused -eq "manual") { "manual" } else { Format-LimaTime $paused }
+    Write-Output "Pausado hasta (Lima): $pausedDisplay"
+}
 if ($item.PSObject.Properties.Name -contains "pause_reason") { Write-Output "Motivo de pausa: $($item.pause_reason.S)" }

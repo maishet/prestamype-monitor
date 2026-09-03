@@ -587,7 +587,7 @@ function createProductionHandler(): ReturnType<typeof createScanHandler> {
         createSource: async () =>
           new PrestamypeClient({
             storageState: storageState as object,
-            deadlineMs: Math.max(1, Math.min(22_000, budgetMs)),
+            deadlineMs: Math.max(1, Math.min(50_000, budgetMs)),
           }),
         config,
       };

@@ -12,6 +12,13 @@ const fixture = (name: string) =>
   readFile(new URL(`../fixtures/${name}`, import.meta.url), "utf8");
 
 describe("parseOpportunityCards", () => {
+  it("ignores protected rows whose risk column contains only the shield icon", () => {
+    const html = `<table><tr class="row_table"><td>PLUZ ENERGÍA PERÚ</td><td><span class="protected-icon">🛡</span></td><td><div class="amount-label">S/ 216.996,97</div></td><td>Factoring</td><td>7,31 %</td></tr><tr class="row_table"><td>REDONDOS</td><td>A</td><td><div class="amount-label">S/ 14.283,88</div></td><td>Factoring</td><td>9,51 %</td></tr></table>`;
+    const summaries = parseOpportunityCards(html);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.risk).toBe("A");
+  });
+
   it("parses exact values, cents, percentages, identities, and stable link IDs", async () => {
     const summaries = parseOpportunityCards(
       await fixture("opportunities.html"),
@@ -323,6 +330,15 @@ describe("parseOpportunityDetail", () => {
       ${validDetailBody()}
     </main>`;
     expect(parseOpportunityDetail(html, summary).risk).toBe("D");
+  });
+
+  it("falls back to the validated table risk when detail risk text is unavailable", () => {
+    const summary = parseOpportunityCards(validCard())[0]!;
+    const html = `<main data-page="opportunity-detail">
+      <span data-field="risk">Riesgo no disponible</span>
+      ${validDetailBody()}
+    </main>`;
+    expect(parseOpportunityDetail(html, summary).risk).toBe(summary.risk);
   });
 
   it("requires an explicit detail container", () => {
