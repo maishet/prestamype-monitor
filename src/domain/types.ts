@@ -1,4 +1,5 @@
-export type RiskGrade = "A+" | "A" | "B" | "C" | "D" | "E";
+export type RiskGrade = "A+" | "A" | "B" | "C" | "D" | "E" | "PROTEGIDA";
+export type InvestmentType = "Factoring" | "Confirming";
 export type Currency = "PEN" | "USD";
 
 export interface PaymentHistory {
@@ -27,11 +28,11 @@ export interface BlacklistEntry {
   evidence?: string | null;
 }
 
+
 export interface CollectionConflict {
-  supplier: PartyIdentity;
-  debtor: PartyIdentity;
-  status: string;
-  evidence: string | null;
+  party: PartyIdentity;
+  state: string;
+  stage: string;
 }
 
 export interface OpportunityFingerprintRecord {
@@ -43,7 +44,10 @@ export type OpportunityPersistenceMetadata = OpportunityFingerprintRecord;
 
 export interface Opportunity {
   id: string;
+  auctionCode: string;
   url: string;
+  commercialName: string;
+  investmentType: InvestmentType;
   supplier: PartyIdentity;
   debtor: PartyIdentity;
   risk: RiskGrade;
@@ -63,7 +67,7 @@ export interface Opportunity {
 export interface PortfolioSnapshot {
   availableBalanceCents: number | null;
   activeTotalCents: number | null;
-  exposureByTaxId: Readonly<Record<string, number>>;
+  exposureByParty: Readonly<Record<string, number>>;
   collectionConflicts?: readonly CollectionConflict[];
 }
 
@@ -76,6 +80,7 @@ export interface MonitorConfig {
   highPriorityScore: number;
   reviewScore: number;
   detailRefreshIntervalMs?: number;
+  minimumProtectedAnnualReturnPct?: number;
 }
 
 export interface Evaluation {

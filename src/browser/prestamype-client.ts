@@ -1,15 +1,18 @@
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { load } from "cheerio";
 
 import type { OpportunitySource } from "../application/ports.js";
 import type {
+  CollectionConflict,
   MonitorConfig,
   Opportunity,
-  PortfolioSnapshot,
   OpportunityFingerprintRecord,
+  PaymentHistory,
+  PortfolioSnapshot,
+  RiskGrade,
 } from "../domain/types.js";
+import { normalizeLegalName } from "../domain/normalization.js";
 import {
   PageStructureError,
   RateLimitError,
@@ -18,15 +21,24 @@ import {
   SessionExpiredError,
 } from "./errors.js";
 import {
-  parseOpportunityCards,
-  parseOpportunityDetail,
-  parseVisibleMoneyCents,
-  isProblematicCollectionStatus,
-  type OpportunitySummary,
-} from "./parsers.js";
+  LIVE_SELECTORS,
+  OPPORTUNITIES_URL,
+  isOpportunityTableLoading,
+  parseOpportunityPanel,
+  parseOpportunityRows,
+  parsePager,
+  parsePartyHistory,
+  parsePartyProfile,
+  parsePortfolioRows,
+  type OpportunityPanel,
+  type OpportunityRow,
+} from "./live-parsers.js";
+import { load } from "cheerio";
 
 export const ORIGIN = "https://www.prestamype.com";
 const APEX_ORIGIN = "https://prestamype.com";
+const APPLICATION_ASSET_ORIGIN = "https://d14bodb4yrsx8y.cloudfront.net";
+
 const OPPORTUNITIES_PATH = "/app/inversionista/oportunidades";
 const PORTFOLIO_PATH = "/app/inversionista/mis-inversiones";
 const PROTECTED_PATHS = new Set([
@@ -36,25 +48,24 @@ const PROTECTED_PATHS = new Set([
   "/app/inversionista/reportes",
   "/app/inversionista/dashboard",
 ]);
-const PROHIBITED_ACTION = /invertir|reservar|pagar|confirmar/i;
-const ALLOWED_ACTIONS = new Set([
-  "Filtros",
-  "Aplicar filtros",
-  "Ordenar por: Recomendado",
-  "Retorno mayor",
-  "A+",
-  "A",
-  "B",
-  "C",
-]);
+
+const PROHIBITED_ACTION =
+  /invertir|inversi[óo]n|reservar|pagar|confirmar|depositar|dep[óo]sito|retirar/i;
+
+const LETTER_RISKS: readonly RiskGrade[] = ["A+", "A", "B", "C", "D", "E"];
+const ACTIVE_PORTFOLIO_STATES = /por cobrar|en proceso/iu;
+const DEFAULT_DETAIL_REFRESH_MS = 15 * 60 * 1_000;
+const MAX_PAGES = 5;
 
 export interface LocatorLike {
   click(): Promise<void>;
   isVisible(): Promise<boolean>;
   isChecked?(): Promise<boolean>;
   textContent(): Promise<string | null>;
+  count?(): Promise<number>;
   nth?(index: number): LocatorLike;
   first?(): LocatorLike;
+  locator?(selector: string): LocatorLike;
 }
 
 export interface PageLike {
@@ -62,8 +73,6 @@ export interface PageLike {
   url(): string;
   content(): Promise<string>;
   locator(selector: string): LocatorLike;
-  getByText?(text: string, options: { exact: true }): LocatorLike;
-  getByRole(role: string, options: { name: string; exact: boolean }): LocatorLike;
   route(
     pattern: string,
     handler: (
@@ -102,32 +111,34 @@ export interface PrestamypeClientOptions {
   storageState: object;
   now?: () => number;
   deadlineMs?: number;
+  sleep?: (milliseconds: number) => Promise<void>;
 }
 
 export function shouldBlockResource(
   resourceType: string,
   rawUrl = ORIGIN,
 ): boolean {
-  if (["image", "font", "media"].includes(resourceType)) return true;
   let url: URL;
   try {
     url = new URL(rawUrl);
   } catch {
     return true;
   }
+  if (url.origin === APPLICATION_ASSET_ORIGIN)
+    return !["script", "stylesheet", "xhr", "fetch"].includes(resourceType);
+  if (["image", "font", "media"].includes(resourceType)) return true;
   if (url.origin === APEX_ORIGIN) return resourceType !== "document";
   if (url.origin !== ORIGIN) return true;
-  return !["document", "script", "xhr", "fetch"].includes(resourceType);
+  return !["document", "script", "stylesheet", "xhr", "fetch"].includes(
+    resourceType,
+  );
 }
 
 export function assertAllowedInteraction(interaction: {
   kind: "click";
   name: string;
 }): void {
-  if (
-    PROHIBITED_ACTION.test(interaction.name) ||
-    !ALLOWED_ACTIONS.has(interaction.name)
-  ) {
+  if (PROHIBITED_ACTION.test(interaction.name)) {
     throw new PageStructureError("UNSUPPORTED_VALUE", "interaction");
   }
 }
@@ -136,33 +147,72 @@ function fingerprint(value: object): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-function visibleCardFingerprint(
-  summary: OpportunitySummary | Opportunity,
-): string {
+export function opportunityRowKey(row: OpportunityRow): string {
   return fingerprint({
-    annualReturnPct: summary.annualReturnPct,
-    currency: summary.currency,
-    debtor: summary.debtor,
-    id: summary.id,
-    remainingAmountCents: summary.remainingAmountCents,
-    risk: summary.risk,
-    supplier: summary.supplier,
-    url: summary.url,
+    currency: row.currency,
+    estimatedPaymentAt: row.estimatedPaymentAt,
+    investmentType: row.investmentType,
+    legalName: normalizeLegalName(row.legalName),
+    totalAmountCents: row.totalAmountCents,
+  }).slice(0, 32);
+}
+
+function visibleFingerprint(visible: {
+  id: string;
+  risk: RiskGrade;
+  annualReturnPct: number;
+  fundedPct: number;
+}): string {
+  return fingerprint({
+    ...visible,
+    fundedPct: Math.round(visible.fundedPct * 100) / 100,
   });
 }
 
-export function summaryFingerprint(summary: OpportunitySummary): string {
-  return visibleCardFingerprint(summary);
+export function opportunityRowFingerprint(row: OpportunityRow): string {
+  return visibleFingerprint({
+    id: opportunityRowKey(row),
+    risk: rowRisk(row),
+    annualReturnPct: row.annualReturnPct,
+    fundedPct: row.fundedPct,
+  });
 }
 
 export function opportunityFingerprint(opportunity: Opportunity): string {
-  return visibleCardFingerprint(opportunity);
+  const total = opportunity.totalAmountCents;
+  return visibleFingerprint({
+    id: opportunity.id,
+    risk: opportunity.risk,
+    annualReturnPct: opportunity.annualReturnPct,
+    fundedPct: total > 0 ? (opportunity.fundedAmountCents / total) * 100 : 0,
+  });
+}
+
+export function rowRisk(row: OpportunityRow): RiskGrade {
+  return row.protectedCapital ? "PROTEGIDA" : (row.risk ?? "E");
+}
+
+function minimumReturnFor(config: MonitorConfig, risk: RiskGrade): number {
+  return risk === "PROTEGIDA"
+    ? (config.minimumProtectedAnnualReturnPct ?? config.minimumAnnualReturnPct)
+    : config.minimumAnnualReturnPct;
+}
+
+/** The deepest return worth walking to, across every risk band allowed. */
+function walkFloor(config: MonitorConfig): number {
+  const floors = config.allowedRisks.map((risk) =>
+    minimumReturnFor(config, risk),
+  );
+  return floors.length === 0
+    ? config.minimumAnnualReturnPct
+    : Math.min(...floors);
 }
 
 export class PrestamypeClient implements OpportunitySource {
   private readonly launcher: BrowserLauncher;
   private readonly now: () => number;
   private readonly deadlineMs: number;
+  private readonly sleep: (milliseconds: number) => Promise<void>;
   private browser: BrowserLike | null = null;
   private context: BrowserContextLike | null = null;
   private page: PageLike | null = null;
@@ -173,17 +223,27 @@ export class PrestamypeClient implements OpportunitySource {
   private resourcesClosePromise: Promise<void> | null = null;
   private cleanupScheduled = false;
   private scanDeadline: number | null = null;
+  private observedBalanceCents: number | null = null;
+  private readonly requestCounts = new Map<string, number>();
 
   constructor(private readonly options: PrestamypeClientOptions) {
     this.launcher = options.launcher ?? productionLauncher;
     this.now = options.now ?? Date.now;
     this.deadlineMs = options.deadlineMs ?? 25_000;
+    this.sleep =
+      options.sleep ??
+      ((milliseconds) =>
+        new Promise((resolve) => setTimeout(resolve, milliseconds)));
   }
 
   beginScan(): void {
     if (this.closed)
       throw new PageStructureError("UNSUPPORTED_VALUE", "clientState");
     this.scanDeadline = this.now() + this.deadlineMs;
+  }
+
+  availableBalanceCents(): number | null {
+    return this.observedBalanceCents;
   }
 
   private currentScanDeadline(): number {
@@ -198,97 +258,49 @@ export class PrestamypeClient implements OpportunitySource {
       const page = await this.getPage(deadline);
       await this.navigate(page, PORTFOLIO_PATH, deadline);
       await this.assertAuthenticated(page, deadline);
-      const $ = load(await this.withDeadline(page.content(), deadline));
-      const balanceText = $('[data-field="available-balance"]').first().text();
-      const parsedActiveTotal = parseOptionalPenCents(
-        $('[data-field="active-total"]').first().text(),
-      );
-      const exposureByTaxId: Record<string, number> = {};
-      const rows = $(PORTFOLIO_SELECTORS.exposureRow).toArray();
-      for (const row of rows) {
-        const taxId = $(row)
-          .find(PORTFOLIO_SELECTORS.taxId)
-          .first()
-          .text()
-          .trim();
-        if (!/^\d{11}$/.test(taxId))
-          throw new PageStructureError(
-            "INVALID_FIELD",
-            "portfolioExposure.taxId",
-          );
-        const amount = parseOptionalPenCents(
-          $(row).find(PORTFOLIO_SELECTORS.amount).first().text(),
-        );
-        if (amount === null)
-          throw new PageStructureError(
-            "MISSING_FIELD",
-            "portfolioExposure.amount",
-          );
-        exposureByTaxId[taxId] = (exposureByTaxId[taxId] ?? 0) + amount;
+      await this.waitForRows(page, deadline);
+
+      const exposureByParty: Record<string, number> = {};
+      const collectionConflicts: CollectionConflict[] = [];
+      let activeTotalCents = 0;
+      let rowsSeen = 0;
+
+      for (let page_ = 1; page_ <= MAX_PAGES; page_ += 1) {
+        const html = await this.withDeadline(page.content(), deadline);
+        for (const row of parsePortfolioRows(html)) {
+          rowsSeen += 1;
+          const party = normalizeLegalName(row.legalName);
+          if (ACTIVE_PORTFOLIO_STATES.test(row.state)) {
+            activeTotalCents += row.investedAmountCents;
+            exposureByParty[party] =
+              (exposureByParty[party] ?? 0) + row.investedAmountCents;
+          }
+          if (row.collectionStage !== null) {
+            collectionConflicts.push({
+              party: { legalName: row.legalName, taxId: null },
+              state: row.state,
+              stage: row.collectionStage,
+            });
+          }
+        }
+        if (!(await this.goToNextPage(page, html, deadline))) break;
       }
-      const collectionConflicts = $(PORTFOLIO_SELECTORS.collectionRow)
-        .toArray()
-        .flatMap((row) => {
-          const scope = $(row);
-          const required = (selector: string, field: string): string => {
-            const value = scope.find(selector).first().text().trim();
-            if (value === "")
-              throw new PageStructureError("MISSING_FIELD", field);
-            return value;
-          };
-          const identity = (role: "supplier" | "debtor") => {
-            const legalName = required(
-              role === "supplier"
-                ? PORTFOLIO_SELECTORS.supplierName
-                : PORTFOLIO_SELECTORS.debtorName,
-              `portfolioCollection.${role}.legalName`,
-            );
-            const rawTaxId = scope
-              .find(
-                role === "supplier"
-                  ? PORTFOLIO_SELECTORS.supplierTaxId
-                  : PORTFOLIO_SELECTORS.debtorTaxId,
-              )
-              .first()
-              .text()
-              .trim();
-            if (rawTaxId !== "" && !/^\d{11}$/.test(rawTaxId))
-              throw new PageStructureError(
-                "INVALID_FIELD",
-                `portfolioCollection.${role}.taxId`,
-              );
-            return { legalName, taxId: rawTaxId === "" ? null : rawTaxId };
-          };
-          const status = required(
-            PORTFOLIO_SELECTORS.collectionStatus,
-            "portfolioCollection.status",
-          );
-          const supplier = identity("supplier");
-          const debtor = identity("debtor");
-          if (!isProblematicCollectionStatus(status)) return [];
-          const evidence = scope
-            .find(PORTFOLIO_SELECTORS.collectionEvidence)
-            .first()
-            .text()
-            .trim();
-          return [
-            {
-              supplier,
-              debtor,
-              status,
-              evidence: evidence === "" ? null : evidence,
-            },
-          ];
-        });
+
+      console.info(
+        "Portfolio scanned",
+        JSON.stringify({
+          rows: rowsSeen,
+          parties: Object.keys(exposureByParty).length,
+          activeTotalCents,
+          collectionConflicts: collectionConflicts.length,
+        }),
+      );
       return {
-        availableBalanceCents: parseOptionalPenCents(balanceText),
-        activeTotalCents:
-          parsedActiveTotal !== null &&
-          parsedActiveTotal > 0 &&
-          rows.length === 0
-            ? null
-            : parsedActiveTotal,
-        exposureByTaxId,
+        // Only the detail panel renders the balance; the monitor folds in what
+        // the opportunity scan observes.
+        availableBalanceCents: this.observedBalanceCents,
+        activeTotalCents: rowsSeen === 0 ? null : activeTotalCents,
+        exposureByParty,
         ...(collectionConflicts.length === 0 ? {} : { collectionConflicts }),
       };
     } catch (error) {
@@ -306,11 +318,7 @@ export class PrestamypeClient implements OpportunitySource {
     const deadline = this.currentScanDeadline();
     const release = await this.acquireOperation(deadline);
     try {
-      return await this.listEligibleWithinDeadline(
-        config,
-        knownFingerprints,
-        deadline,
-      );
+      return await this.scanOpportunities(config, knownFingerprints, deadline);
     } catch (error) {
       this.closeOnDeadline(error);
       throw error;
@@ -319,78 +327,262 @@ export class PrestamypeClient implements OpportunitySource {
     }
   }
 
-  private async listEligibleWithinDeadline(
+  private async scanOpportunities(
     config: MonitorConfig,
     knownFingerprints: Readonly<Record<string, OpportunityFingerprintRecord>>,
     deadline: number,
   ): Promise<Opportunity[]> {
     const page = await this.getPage(deadline);
     await this.navigate(page, OPPORTUNITIES_PATH, deadline);
-    await this.assertAuthenticated(page, deadline);
-    const filtersOpened = await this.tryClickAccessible(page, "button", "Filtros", deadline);
-    if (filtersOpened) {
-      for (const risk of ["A+", "A", "B", "C"] as const)
-        await this.ensureRiskCheckbox(page, risk, config.allowedRisks.includes(risk), deadline);
-      await this.clickAccessible(page, "button", "Aplicar filtros", deadline);
-    }
-    const currentHtml = await this.withDeadline(page.content(), deadline);
-    if (!/Ordenar por:\s*Retorno mayor/iu.test(currentHtml)) {
-      // The control is not rendered in some authenticated sessions. Sorting
-      // is a presentation preference, so its absence must not disable scans.
-      try {
-        await this.clickAccessible(page, "button", "Ordenar por: Recomendado", deadline);
-        await this.clickAccessible(page, "option", "Retorno mayor", deadline);
-      } catch (error) {
-        if (!(error instanceof PageStructureError)) throw error;
+    await this.step("authenticate", () =>
+      this.assertAuthenticated(page, deadline),
+    );
+    await this.step("wait-rows", () => this.waitForRows(page, deadline));
+    await this.step("sort", () => this.sortByHighestReturn(page, deadline));
+    await this.step("wait-sorted-rows", () => this.waitForRows(page, deadline));
+
+    const floor = walkFloor(config);
+    const currencies = config.allowedCurrencies ?? [config.currency];
+    const results: Opportunity[] = [];
+    let scanned = 0;
+    let skippedUnchanged = 0;
+    let exhausted = false;
+
+    for (
+      let pageNumber = 1;
+      pageNumber <= MAX_PAGES && !exhausted;
+      pageNumber += 1
+    ) {
+      const html = await this.withDeadline(page.content(), deadline);
+      const rows = parseOpportunityRows(html);
+      for (const [index, row] of rows.entries()) {
+        scanned += 1;
+        if (row.annualReturnPct < floor) {
+          exhausted = true;
+          break;
+        }
+        const risk = rowRisk(row);
+        if (
+          !config.allowedRisks.includes(risk) ||
+          !currencies.includes(row.currency) ||
+          row.annualReturnPct < minimumReturnFor(config, risk)
+        )
+          continue;
+
+        const id = opportunityRowKey(row);
+        if (this.isUnchanged(row, id, knownFingerprints, config)) {
+          skippedUnchanged += 1;
+          continue;
+        }
+        results.push(
+          await this.openAndParseDetail(page, row, index, id, deadline),
+        );
       }
-    }
-    // The Vue table is populated asynchronously after navigation/filtering.
-    // Wait briefly for a real data row before taking the HTML snapshot.
-    const liveRows = page.locator("tr.row_table:not(.row_table--loading), div.row_table:not(.row_table--loading)");
-    const rowsDeadline = Math.min(deadline, this.now() + 12_000);
-    while (!(await this.withDeadline(liveRows.isVisible(), rowsDeadline))) {
-      if (this.now() >= rowsDeadline) break;
-      await this.withDeadline(new Promise((resolve) => setTimeout(resolve, 250)), rowsDeadline);
+      if (!exhausted && !(await this.goToNextPage(page, html, deadline))) break;
     }
 
-    const summaries = parseOpportunityCards(
-      await this.withDeadline(page.content(), deadline),
+    console.info(
+      "Opportunities scanned",
+      JSON.stringify({
+        scanned,
+        skippedUnchanged,
+        detailed: results.length,
+        floor,
+      }),
     );
-    const results: Opportunity[] = [];
-    for (const [summaryIndex, summary] of summaries.entries()) {
-      if (summary.annualReturnPct < config.minimumAnnualReturnPct) break;
-      if (
-        !config.allowedRisks.includes(summary.risk) ||
-        !(config.allowedCurrencies ?? [config.currency]).includes(summary.currency)
-      )
-        continue;
-      const known = knownFingerprints[summary.id];
-      const checkedAt =
-        known === undefined ? Number.NaN : Date.parse(known.detailCheckedAt);
-      const refreshInterval = config.detailRefreshIntervalMs ?? 15 * 60 * 1_000;
-      const recentlyChecked =
-        Number.isFinite(checkedAt) && this.now() - checkedAt < refreshInterval;
-      if (
-        known?.visibleFingerprint === summaryFingerprint(summary) &&
-        recentlyChecked
-      )
-        continue;
-      const rows = page.locator("tr.row_table:not(.row_table--loading), div.row_table:not(.row_table--loading)");
-      const row = rows.nth?.(summaryIndex);
-      if (row !== undefined && (await this.withDeadline(row.isVisible(), deadline))) {
-        await this.withDeadline(row.click(), deadline);
-        this.ensureDeadline(deadline);
-      } else {
-        await this.navigate(page, new URL(summary.url).pathname, deadline);
-      }
-      await this.assertAuthenticated(page, deadline);
-      results.push(parseOpportunityDetail(await this.withDeadline(page.content(), deadline), summary));
-      const closePanel = page.locator('button[aria-label="Cerrar"], button[aria-label="Close"]');
-      if (await this.withDeadline(closePanel.isVisible(), deadline))
-        await this.withDeadline(closePanel.click(), deadline);
-    }
     return results;
   }
+
+  private isUnchanged(
+    row: OpportunityRow,
+    id: string,
+    knownFingerprints: Readonly<Record<string, OpportunityFingerprintRecord>>,
+    config: MonitorConfig,
+  ): boolean {
+    const known = knownFingerprints[id];
+    if (known?.visibleFingerprint !== opportunityRowFingerprint(row))
+      return false;
+    const checkedAt = Date.parse(known.detailCheckedAt);
+    const refresh = config.detailRefreshIntervalMs ?? DEFAULT_DETAIL_REFRESH_MS;
+    return Number.isFinite(checkedAt) && this.now() - checkedAt < refresh;
+  }
+
+  private async openAndParseDetail(
+    page: PageLike,
+    row: OpportunityRow,
+    index: number,
+    id: string,
+    deadline: number,
+  ): Promise<Opportunity> {
+    await this.openRowPanel(page, index, deadline);
+    await this.assertAuthenticated(page, deadline);
+    const panel = parseOpportunityPanel(
+      await this.withDeadline(page.content(), deadline),
+    );
+    if (panel.availableBalanceCents !== null)
+      this.observedBalanceCents = panel.availableBalanceCents;
+
+    const debtor = await this.readPartyTab(page, "Deudor", deadline);
+    const supplier = await this.readPartyTab(page, "Proveedor", deadline);
+    await this.closePanel(page, deadline);
+
+    if (
+      debtor.history?.averageDelayDays !== undefined &&
+      debtor.history?.averageDelayDays !== null &&
+      debtor.history.averageDelayDays > 365
+    )
+      console.warn(
+        "Implausible average delay",
+        JSON.stringify({
+          auctionCode: panel.auctionCode,
+          averageDelayDays: debtor.history.averageDelayDays,
+        }),
+      );
+
+    return toOpportunity(id, row, panel, debtor, supplier);
+  }
+
+  private async readPartyTab(
+    page: PageLike,
+    label: "Deudor" | "Proveedor",
+    deadline: number,
+  ): Promise<{
+    history: PaymentHistory | null;
+    profile: ReturnType<typeof parsePartyProfile>;
+  }> {
+    const opened = await this.openPanelTab(page, label, deadline);
+    if (!opened) return { history: null, profile: null };
+    const html = await this.withDeadline(page.content(), deadline);
+    return {
+      history: parsePartyHistory(html),
+      profile: parsePartyProfile(html),
+    };
+  }
+
+  // ------------------------------------------------------------ interactions
+  private async safeClick(
+    locator: LocatorLike,
+    purpose: string,
+    deadline: number,
+  ): Promise<void> {
+    this.ensureDeadline(deadline);
+    const label = await this.withDeadline(locator.textContent(), deadline);
+    assertAllowedInteraction({ kind: "click", name: label ?? "" });
+    if (!(await this.withDeadline(locator.isVisible(), deadline)))
+      throw new PageStructureError("MISSING_FIELD", `interaction.${purpose}`);
+    await this.withDeadline(locator.click(), deadline);
+  }
+
+  private async waitForRows(page: PageLike, deadline: number): Promise<void> {
+    const limit = Math.min(deadline, this.now() + 12_000);
+    const started = this.now();
+    for (;;) {
+      const remaining = limit - this.now();
+      if (remaining <= 0) {
+        console.warn(
+          "Table still loading when the wait budget ran out",
+          JSON.stringify({ waitedMs: this.now() - started }),
+        );
+        this.logRequestSummary("table-timeout");
+        return;
+      }
+      const html = await this.withDeadline(page.content(), limit);
+      if (!isOpportunityTableLoading(html)) {
+        console.info(
+          "Table ready",
+          JSON.stringify({
+            waitedMs: this.now() - started,
+            bytes: html.length,
+          }),
+        );
+        this.logRequestSummary("table-ready");
+        return;
+      }
+      await this.withDeadline(this.sleep(Math.min(250, remaining)), limit + 50);
+    }
+  }
+
+  private async sortByHighestReturn(
+    page: PageLike,
+    deadline: number,
+  ): Promise<void> {
+    const trigger = page.locator(
+      ".multi-select.select-sort .multi-select-trigger",
+    );
+    const current =
+      (await this.withDeadline(trigger.textContent(), deadline)) ?? "";
+    if (/retorno\s+mayor/iu.test(current)) return;
+    if (!(await this.withDeadline(trigger.isVisible(), deadline))) {
+      console.warn("Sort control not rendered; scanning in the default order");
+      return;
+    }
+    await this.safeClick(trigger, "sort.open", deadline);
+    const option = page.locator(
+      ".multi-select-dropdown .multi-select-option:has-text('Retorno mayor')",
+    );
+    if (!(await this.withDeadline(option.isVisible(), deadline))) {
+      console.warn("Sort option 'Retorno mayor' not found");
+      return;
+    }
+    await this.safeClick(option, "sort.select", deadline);
+  }
+
+  private async openRowPanel(
+    page: PageLike,
+    index: number,
+    deadline: number,
+  ): Promise<void> {
+    const rows = page.locator(LIVE_SELECTORS.dataRow);
+    const row = rows.nth?.(index);
+    if (row?.locator === undefined)
+      throw new PageStructureError("MISSING_FIELD", "interaction.row");
+    const target = row.locator(
+      `${LIVE_SELECTORS.clientCell} ${LIVE_SELECTORS.clientName}`,
+    );
+    await this.safeClick(target, `row.${index}`, deadline);
+    const panel = page.locator(LIVE_SELECTORS.panel);
+    if (!(await this.withDeadline(panel.isVisible(), deadline)))
+      throw new PageStructureError("MISSING_FIELD", "panel");
+  }
+
+  private async openPanelTab(
+    page: PageLike,
+    label: string,
+    deadline: number,
+  ): Promise<boolean> {
+    const tab = page.locator(`${LIVE_SELECTORS.panelTab}:has-text('${label}')`);
+    if (!(await this.withDeadline(tab.isVisible(), deadline))) {
+      console.warn(`Panel tab not available: ${label}`);
+      return false;
+    }
+    await this.safeClick(tab, `panel.tab.${label}`, deadline);
+    return true;
+  }
+
+  private async closePanel(page: PageLike, deadline: number): Promise<void> {
+    const close = page.locator(
+      ".panel-header .icon-close-im, .panel-header button[aria-label='Cerrar']",
+    );
+    if (await this.withDeadline(close.isVisible(), deadline))
+      await this.safeClick(close, "panel.close", deadline);
+  }
+
+  /** Advances the paginator when the current page is exhausted. */
+  private async goToNextPage(
+    page: PageLike,
+    html: string,
+    deadline: number,
+  ): Promise<boolean> {
+    const pager = parsePager(load(html));
+    if (pager === null || pager.to >= pager.total) return false;
+    const next = page.locator(".pagination-content .next-button button");
+    if (!(await this.withDeadline(next.isVisible(), deadline))) return false;
+    await this.safeClick(next, "pager.next", deadline);
+    await this.waitForRows(page, deadline);
+    return true;
+  }
+
+  // -------------------------------------------------------------- lifecycle
 
   async close(): Promise<void> {
     if (this.closePromise !== null) return this.closePromise;
@@ -439,8 +631,12 @@ export class PrestamypeClient implements OpportunitySource {
           result.status === "rejected",
       );
       if (failure !== undefined) {
-        const message = failure.reason instanceof Error ? failure.reason.message : String(failure.reason);
-        if (!/context|target.*closed|failed to find context/iu.test(message)) throw failure.reason;
+        const message =
+          failure.reason instanceof Error
+            ? failure.reason.message
+            : String(failure.reason);
+        if (!/context|target.*closed|failed to find context/iu.test(message))
+          throw failure.reason;
       }
     })();
     return this.resourcesClosePromise;
@@ -475,8 +671,12 @@ export class PrestamypeClient implements OpportunitySource {
       this.page.setDefaultTimeout?.(12_000);
       await this.page.route("**/*", async (route, request) => {
         const routeDeadline = this.now() + 12_000;
-        if (shouldBlockResource(request.resourceType(), request.url()))
-          await this.withDeadline(route.abort(), routeDeadline);
+        const blocked = shouldBlockResource(
+          request.resourceType(),
+          request.url(),
+        );
+        this.recordRequest(request.url(), request.resourceType(), blocked);
+        if (blocked) await this.withDeadline(route.abort(), routeDeadline);
         else await this.withDeadline(route.continue(), routeDeadline);
       });
       this.assertInitializationOpen();
@@ -498,6 +698,7 @@ export class PrestamypeClient implements OpportunitySource {
       throw new PageStructureError("INVALID_URL", "navigation");
     const response = await this.withDeadline(page.goto(url.href), deadline);
     const status = response?.status();
+    console.info("Navigated", JSON.stringify({ path, status: status ?? null }));
     if (status === 403 || status === 429) throw new RateLimitError(status);
     const landed = new URL(page.url());
     if (isLoginPath(landed)) throw new SessionExpiredError();
@@ -517,70 +718,63 @@ export class PrestamypeClient implements OpportunitySource {
     )
       throw new SessionChallengeError();
     if (isLoginPath(new URL(page.url()))) throw new SessionExpiredError();
-    if (await this.withDeadline(page.locator('[data-page="authenticated"]').isVisible(), deadline)) return;
     const path = new URL(page.url()).pathname;
-    if (PROTECTED_PATHS.has(path)) {
-      const html = await this.withDeadline(page.content(), deadline);
-      if (/row_table|data-page=["']portfolio["']|Oportunidades|Inversionista/iu.test(html)) return;
-    }
+    if (!PROTECTED_PATHS.has(path))
+      throw new PageStructureError("MISSING_FIELD", "authenticatedPage");
+    const html = await this.withDeadline(page.content(), deadline);
+    if (
+      /class="[^"]*\brow_table\b|class="[^"]*\bheader_table\b|Inversionista/iu.test(
+        html,
+      )
+    )
+      return;
     throw new PageStructureError("MISSING_FIELD", "authenticatedPage");
   }
 
-  private async clickAccessible(
-    page: PageLike,
-    role: "button" | "checkbox" | "option",
-    name: string,
-    deadline: number,
-  ): Promise<void> {
-    this.ensureDeadline(deadline);
-    assertAllowedInteraction({ kind: "click", name });
-    let locator = page.getByRole(role, { name, exact: true });
-    if (!(await this.withDeadline(locator.isVisible(), deadline))) {
-      const fuzzy = page.getByRole(role, { name, exact: false });
-      locator = fuzzy.first?.() ?? fuzzy;
-      if (!(await this.withDeadline(locator.isVisible(), deadline))) {
-        let found: LocatorLike | undefined;
-        for (const index of [1, 2, 3]) {
-          const candidate = fuzzy.nth?.(index);
-          if (candidate !== undefined && await this.withDeadline(candidate.isVisible(), deadline)) { found = candidate; break; }
-        }
-        if (found === undefined) {
-          const textLocator = page.getByText?.(name, { exact: true });
-          if (textLocator !== undefined && await this.withDeadline(textLocator.isVisible(), deadline)) locator = textLocator;
-          else throw new PageStructureError("MISSING_FIELD", `interaction.${role}.${name}`);
-        } else locator = found;
-      }
+  private recordRequest(
+    rawUrl: string,
+    resourceType: string,
+    blocked: boolean,
+  ): void {
+    let origin: string;
+    try {
+      origin = new URL(rawUrl).origin;
+    } catch {
+      origin = "invalid";
     }
-    await this.withDeadline(locator.click(), deadline);
+    const key = `${blocked ? "blocked" : "allowed"} ${origin} ${resourceType}`;
+    this.requestCounts.set(key, (this.requestCounts.get(key) ?? 0) + 1);
   }
 
-  private async tryClickAccessible(
-    page: PageLike,
-    role: "button" | "checkbox" | "option",
-    name: string,
-    deadline: number,
-  ): Promise<boolean> {
+  /** Dumps and clears the request tally; called once per page milestone. */
+  private logRequestSummary(phase: string): void {
+    if (this.requestCounts.size === 0) return;
+    const summary = Object.fromEntries(
+      [...this.requestCounts.entries()].sort(
+        ([, left], [, right]) => right - left,
+      ),
+    );
+    console.info("Requests", JSON.stringify({ phase, summary }));
+    this.requestCounts.clear();
+  }
+
+  /** Wraps a scan phase so a failure names the phase instead of the stack. */
+  private async step<T>(phase: string, run: () => Promise<T>): Promise<T> {
+    const started = this.now();
     try {
-      await this.clickAccessible(page, role, name, deadline);
-      return true;
+      return await run();
     } catch (error) {
-      if (error instanceof PageStructureError) return false;
+      console.error(
+        "Scan phase failed",
+        JSON.stringify({
+          phase,
+          elapsedMs: this.now() - started,
+          error: error instanceof Error ? error.name : "unknown",
+        }),
+      );
+      this.logRequestSummary(`failed:${phase}`);
       throw error;
     }
-  }
-
-  private async ensureRiskCheckbox(
-    page: PageLike,
-    risk: "A+" | "A" | "B" | "C",
-    shouldBeChecked: boolean,
-    deadline: number,
-  ): Promise<void> {
-    const locator = page.getByRole("checkbox", { name: risk, exact: true });
-    if (!(await this.withDeadline(locator.isVisible(), deadline)))
-      throw new PageStructureError("MISSING_FIELD", `interaction.checkbox.${risk}`);
-    const checked = locator.isChecked === undefined ? undefined : await this.withDeadline(locator.isChecked(), deadline);
-    if (checked === undefined || checked !== shouldBeChecked)
-      await this.withDeadline(locator.click(), deadline);
   }
 
   private ensureDeadline(deadline: number): void {
@@ -663,39 +857,67 @@ export class PrestamypeClient implements OpportunitySource {
   }
 }
 
-export const PORTFOLIO_SELECTORS = {
-  exposureRow: "[data-portfolio-exposure]",
-  taxId: '[data-field="tax-id"]',
-  amount: '[data-field="amount"]',
-  collectionRow: "[data-portfolio-collection]",
-  supplierName: '[data-field="supplier-name"]',
-  supplierTaxId: '[data-field="supplier-tax-id"]',
-  debtorName: '[data-field="debtor-name"]',
-  debtorTaxId: '[data-field="debtor-tax-id"]',
-  collectionStatus: '[data-field="collection-status"]',
-  collectionEvidence: '[data-field="collection-evidence"]',
-} as const;
+function toOpportunity(
+  id: string,
+  row: OpportunityRow,
+  panel: OpportunityPanel,
+  debtor: {
+    history: PaymentHistory | null;
+    profile: {
+      legalName: string;
+      taxId: string | null;
+      risk: RiskGrade | null;
+    } | null;
+  },
+  supplier: {
+    history: PaymentHistory | null;
+    profile: {
+      legalName: string;
+      taxId: string | null;
+      risk: RiskGrade | null;
+    } | null;
+  },
+): Opportunity {
+  const risk = panel.protectedCapital
+    ? "PROTEGIDA"
+    : (panel.risk ?? debtor.profile?.risk ?? rowRisk(row));
+  return {
+    id,
+    auctionCode: panel.auctionCode,
+    url: OPPORTUNITIES_URL,
+    commercialName: panel.commercialName || row.commercialName,
+    investmentType: row.investmentType,
+    supplier: {
+      legalName: supplier.profile?.legalName ?? panel.legalName,
+      taxId: supplier.profile?.taxId ?? null,
+    },
+    debtor: {
+      legalName: debtor.profile?.legalName ?? panel.legalName,
+      taxId: debtor.profile?.taxId ?? null,
+    },
+    risk: LETTER_RISKS.includes(risk) || risk === "PROTEGIDA" ? risk : "E",
+    currency: panel.currency,
+    annualReturnPct: panel.annualReturnPct,
+    monthlyReturnPct: panel.monthlyReturnPct,
+    totalAmountCents: panel.totalAmountCents,
+    fundedAmountCents: panel.fundedAmountCents,
+    remainingAmountCents: panel.remainingAmountCents,
+    closesAt: panel.closesAt,
+    dueAt: panel.dueAt ?? row.estimatedPaymentAt,
+    debtorHistory: debtor.history,
+    supplierHistory: supplier.history,
+    collectionProblem: false,
+  };
+}
 
 function isAllowedNavigation(url: URL): boolean {
   if (url.origin !== ORIGIN || url.username !== "" || url.password !== "")
     return false;
-  return (
-    PROTECTED_PATHS.has(url.pathname) ||
-    /^\/app\/inversionista\/oportunidades\/[A-Za-z0-9_-]+$/.test(
-      url.pathname,
-    ) ||
-    isLoginPath(url)
-  );
+  return PROTECTED_PATHS.has(url.pathname) || isLoginPath(url);
 }
 
 function isLoginPath(url: URL): boolean {
   return url.origin === ORIGIN && /^\/iniciar-sesion\/?$/.test(url.pathname);
-}
-
-function parseOptionalPenCents(raw: string): number | null {
-  const compact = raw.trim();
-  if (compact === "") return null;
-  return parseVisibleMoneyCents(compact, "PEN", "portfolioAmount");
 }
 
 const productionLauncher: BrowserLauncher = {

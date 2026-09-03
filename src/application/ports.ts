@@ -11,6 +11,7 @@ import type {
 
 export interface OpportunitySource {
   beginScan?(): void;
+  availableBalanceCents?(): number | null;
   getPortfolio(): Promise<PortfolioSnapshot>;
   listEligibleOpportunities(
     config: MonitorConfig,

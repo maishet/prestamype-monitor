@@ -24,13 +24,21 @@
     "EnableReservedConcurrency": {
       "Type": "String",
       "Default": "false",
-      "AllowedValues": ["false", "true"],
+      "AllowedValues": [
+        "false",
+        "true"
+      ],
       "Description": "Set to true only after the account has Lambda concurrency quota above the default minimum"
     }
   },
   "Conditions": {
     "UseReservedConcurrency": {
-      "Fn::Equals": [{ "Ref": "EnableReservedConcurrency" }, "true"]
+      "Fn::Equals": [
+        {
+          "Ref": "EnableReservedConcurrency"
+        },
+        "true"
+      ]
     }
   },
   "Resources": {
@@ -45,10 +53,15 @@
       "Type": "AWS::SQS::Queue",
       "Properties": {
         "SqsManagedSseEnabled": true,
-        "VisibilityTimeout": 120,
+        "VisibilityTimeout": 180,
         "MessageRetentionPeriod": 86400,
         "RedrivePolicy": {
-          "deadLetterTargetArn": { "Fn::GetAtt": ["DeadLetterQueue", "Arn"] },
+          "deadLetterTargetArn": {
+            "Fn::GetAtt": [
+              "DeadLetterQueue",
+              "Arn"
+            ]
+          },
           "maxReceiveCount": 5
         }
       }
@@ -58,14 +71,32 @@
       "Properties": {
         "BillingMode": "PROVISIONED",
         "AttributeDefinitions": [
-          { "AttributeName": "PK", "AttributeType": "S" },
-          { "AttributeName": "SK", "AttributeType": "S" },
-          { "AttributeName": "GSI1PK", "AttributeType": "S" },
-          { "AttributeName": "GSI1SK", "AttributeType": "S" }
+          {
+            "AttributeName": "PK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "SK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "GSI1PK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "GSI1SK",
+            "AttributeType": "S"
+          }
         ],
         "KeySchema": [
-          { "AttributeName": "PK", "KeyType": "HASH" },
-          { "AttributeName": "SK", "KeyType": "RANGE" }
+          {
+            "AttributeName": "PK",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "SK",
+            "KeyType": "RANGE"
+          }
         ],
         "ProvisionedThroughput": {
           "ReadCapacityUnits": 1,
@@ -75,15 +106,25 @@
           "AttributeName": "expiresAt",
           "Enabled": true
         },
-        "SSESpecification": { "SSEEnabled": true },
+        "SSESpecification": {
+          "SSEEnabled": true
+        },
         "GlobalSecondaryIndexes": [
           {
             "IndexName": "EntityTypeIndex",
             "KeySchema": [
-              { "AttributeName": "GSI1PK", "KeyType": "HASH" },
-              { "AttributeName": "GSI1SK", "KeyType": "RANGE" }
+              {
+                "AttributeName": "GSI1PK",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "GSI1SK",
+                "KeyType": "RANGE"
+              }
             ],
-            "Projection": { "ProjectionType": "ALL" },
+            "Projection": {
+              "ProjectionType": "ALL"
+            },
             "ProvisionedThroughput": {
               "ReadCapacityUnits": 1,
               "WriteCapacityUnits": 1
@@ -100,8 +141,14 @@
           "Statement": [
             {
               "Effect": "Allow",
-              "Principal": { "Service": ["lambda.amazonaws.com"] },
-              "Action": ["sts:AssumeRole"]
+              "Principal": {
+                "Service": [
+                  "lambda.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "sts:AssumeRole"
+              ]
             }
           ]
         },
@@ -121,8 +168,15 @@
                     "dynamodb:UpdateItem"
                   ],
                   "Resource": [
-                    { "Fn::GetAtt": ["MonitorTable", "Arn"] },
-                    { "Fn::Sub": "${MonitorTable.Arn}/index/EntityTypeIndex" }
+                    {
+                      "Fn::GetAtt": [
+                        "MonitorTable",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::Sub": "${MonitorTable.Arn}/index/EntityTypeIndex"
+                    }
                   ]
                 },
                 {
@@ -134,11 +188,18 @@
                     "sqs:ReceiveMessage",
                     "sqs:SendMessage"
                   ],
-                  "Resource": { "Fn::GetAtt": ["ScanQueue", "Arn"] }
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "ScanQueue",
+                      "Arn"
+                    ]
+                  }
                 },
                 {
                   "Effect": "Allow",
-                  "Action": ["ssm:GetParameters"],
+                  "Action": [
+                    "ssm:GetParameters"
+                  ],
                   "Resource": [
                     {
                       "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${TelegramTokenParameterPath}"
@@ -153,14 +214,19 @@
                 },
                 {
                   "Effect": "Allow",
-                  "Action": ["kms:Decrypt"],
+                  "Action": [
+                    "kms:Decrypt"
+                  ],
                   "Resource": {
                     "Fn::Sub": "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/c7669c81-cf9d-4eca-8335-82efbd04282b"
                   }
                 },
                 {
                   "Effect": "Allow",
-                  "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
                   "Resource": {
                     "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-scan:*"
                   }
@@ -179,8 +245,14 @@
           "Statement": [
             {
               "Effect": "Allow",
-              "Principal": { "Service": ["lambda.amazonaws.com"] },
-              "Action": ["sts:AssumeRole"]
+              "Principal": {
+                "Service": [
+                  "lambda.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "sts:AssumeRole"
+              ]
             }
           ]
         },
@@ -192,17 +264,35 @@
               "Statement": [
                 {
                   "Effect": "Allow",
-                  "Action": ["dynamodb:GetItem", "dynamodb:UpdateItem"],
-                  "Resource": { "Fn::GetAtt": ["MonitorTable", "Arn"] }
+                  "Action": [
+                    "dynamodb:GetItem",
+                    "dynamodb:UpdateItem"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "MonitorTable",
+                      "Arn"
+                    ]
+                  }
                 },
                 {
                   "Effect": "Allow",
-                  "Action": ["sqs:SendMessage"],
-                  "Resource": { "Fn::GetAtt": ["ScanQueue", "Arn"] }
+                  "Action": [
+                    "sqs:SendMessage"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "ScanQueue",
+                      "Arn"
+                    ]
+                  }
                 },
                 {
                   "Effect": "Allow",
-                  "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
                   "Resource": {
                     "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-supervisor:*"
                   }
@@ -216,38 +306,70 @@
     "ScanFunction": {
       "Type": "AWS::Serverless::Function",
       "Properties": {
-        "FunctionName": { "Fn::Sub": "${AWS::StackName}-scan" },
+        "FunctionName": {
+          "Fn::Sub": "${AWS::StackName}-scan"
+        },
         "CodeUri": ".",
         "Handler": "handler.handler",
         "Runtime": "nodejs22.x",
-        "Architectures": ["x86_64"],
+        "Architectures": [
+          "x86_64"
+        ],
         "MemorySize": 2048,
-        "Timeout": 30,
+        "Timeout": 120,
         "ReservedConcurrentExecutions": {
-          "Fn::If": ["UseReservedConcurrency", 1, { "Ref": "AWS::NoValue" }]
+          "Fn::If": [
+            "UseReservedConcurrency",
+            1,
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
         },
-        "Layers": [{ "Ref": "BrowserDependenciesLayer" }],
-        "Role": { "Fn::GetAtt": ["ScanFunctionRole", "Arn"] },
+        "Layers": [
+          {
+            "Ref": "BrowserDependenciesLayer"
+          }
+        ],
+        "Role": {
+          "Fn::GetAtt": [
+            "ScanFunctionRole",
+            "Arn"
+          ]
+        },
         "Environment": {
           "Variables": {
-            "TABLE_NAME": { "Ref": "MonitorTable" },
-            "QUEUE_URL": { "Ref": "ScanQueue" },
+            "TABLE_NAME": {
+              "Ref": "MonitorTable"
+            },
+            "QUEUE_URL": {
+              "Ref": "ScanQueue"
+            },
             "TELEGRAM_TOKEN_PARAMETER": {
               "Ref": "TelegramTokenParameterPath"
             },
             "TELEGRAM_CHAT_ID_PARAMETER": {
               "Ref": "TelegramChatIdParameterPath"
             },
-            "SESSION_KEY_PARAMETER": { "Ref": "SessionKeyParameterPath" }
+            "SESSION_KEY_PARAMETER": {
+              "Ref": "SessionKeyParameterPath"
+            }
           }
         },
         "Events": {
           "ScanQueue": {
             "Type": "SQS",
             "Properties": {
-              "Queue": { "Fn::GetAtt": ["ScanQueue", "Arn"] },
+              "Queue": {
+                "Fn::GetAtt": [
+                  "ScanQueue",
+                  "Arn"
+                ]
+              },
               "BatchSize": 1,
-              "ScalingConfig": { "MaximumConcurrency": 2 },
+              "ScalingConfig": {
+                "MaximumConcurrency": 2
+              },
               "Enabled": true
             }
           }
@@ -260,9 +382,16 @@
           "Format": "esm",
           "Minify": true,
           "Sourcemap": false,
-          "EntryPoints": ["src/lambda/handler.ts"],
-          "External": ["@sparticuz/chromium", "playwright-core"],
-          "OutExtension": [".js=.mjs"],
+          "EntryPoints": [
+            "src/lambda/handler.ts"
+          ],
+          "External": [
+            "@sparticuz/chromium",
+            "playwright-core"
+          ],
+          "OutExtension": [
+            ".js=.mjs"
+          ],
           "Banner": [
             "js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);"
           ]
@@ -272,32 +401,59 @@
     "BrowserDependenciesLayer": {
       "Type": "AWS::Serverless::LayerVersion",
       "Properties": {
-        "LayerName": { "Fn::Sub": "${AWS::StackName}-browser-dependencies" },
+        "LayerName": {
+          "Fn::Sub": "${AWS::StackName}-browser-dependencies"
+        },
         "ContentUri": "layers/browser",
-        "CompatibleRuntimes": ["nodejs22.x"],
-        "CompatibleArchitectures": ["x86_64"],
+        "CompatibleRuntimes": [
+          "nodejs22.x"
+        ],
+        "CompatibleArchitectures": [
+          "x86_64"
+        ],
         "RetentionPolicy": "Delete"
       },
-      "Metadata": { "BuildMethod": "makefile" }
+      "Metadata": {
+        "BuildMethod": "makefile"
+      }
     },
     "SupervisorFunction": {
       "Type": "AWS::Serverless::Function",
       "Properties": {
-        "FunctionName": { "Fn::Sub": "${AWS::StackName}-supervisor" },
+        "FunctionName": {
+          "Fn::Sub": "${AWS::StackName}-supervisor"
+        },
         "CodeUri": ".",
         "Handler": "supervisor.supervisorHandler",
         "Runtime": "nodejs22.x",
-        "Architectures": ["x86_64"],
+        "Architectures": [
+          "x86_64"
+        ],
         "MemorySize": 1024,
         "Timeout": 30,
         "ReservedConcurrentExecutions": {
-          "Fn::If": ["UseReservedConcurrency", 1, { "Ref": "AWS::NoValue" }]
+          "Fn::If": [
+            "UseReservedConcurrency",
+            1,
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
         },
-        "Role": { "Fn::GetAtt": ["SupervisorFunctionRole", "Arn"] },
+        "Role": {
+          "Fn::GetAtt": [
+            "SupervisorFunctionRole",
+            "Arn"
+          ]
+        },
         "Environment": {
           "Variables": {
-            "TABLE_NAME": { "Ref": "MonitorTable" },
-            "QUEUE_URL": { "Ref": "ScanQueue" }
+            "TABLE_NAME": {
+              "Ref": "MonitorTable"
+            },
+            "QUEUE_URL": {
+              "Ref": "ScanQueue"
+            }
           }
         },
         "Events": {
@@ -317,9 +473,13 @@
           "Format": "esm",
           "Minify": true,
           "Sourcemap": false,
-          "EntryPoints": ["src/lambda/supervisor.ts"],
+          "EntryPoints": [
+            "src/lambda/supervisor.ts"
+          ],
           "External": [],
-          "OutExtension": [".js=.mjs"],
+          "OutExtension": [
+            ".js=.mjs"
+          ],
           "Banner": [
             "js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);"
           ]
@@ -329,7 +489,9 @@
     "ScanLogGroup": {
       "Type": "AWS::Logs::LogGroup",
       "Properties": {
-        "LogGroupName": { "Fn::Sub": "/aws/lambda/${AWS::StackName}-scan" },
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}-scan"
+        },
         "RetentionInDays": 7
       }
     },
@@ -344,9 +506,25 @@
     }
   },
   "Outputs": {
-    "FunctionName": { "Value": { "Ref": "ScanFunction" } },
-    "TableName": { "Value": { "Ref": "MonitorTable" } },
-    "QueueUrl": { "Value": { "Ref": "ScanQueue" } },
-    "Region": { "Value": { "Ref": "AWS::Region" } }
+    "FunctionName": {
+      "Value": {
+        "Ref": "ScanFunction"
+      }
+    },
+    "TableName": {
+      "Value": {
+        "Ref": "MonitorTable"
+      }
+    },
+    "QueueUrl": {
+      "Value": {
+        "Ref": "ScanQueue"
+      }
+    },
+    "Region": {
+      "Value": {
+        "Ref": "AWS::Region"
+      }
+    }
   }
 }

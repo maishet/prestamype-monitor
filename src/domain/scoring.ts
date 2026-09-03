@@ -39,6 +39,7 @@ export function scoreReturn(annualPct: number): number {
 }
 
 export function scoreRisk(risk: RiskGrade): number {
+  if (risk === "PROTEGIDA") return 10;
   if (risk === "A+" || risk === "A") return 10;
   if (risk === "B") return 8;
   if (risk === "C") return 6;

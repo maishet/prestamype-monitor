@@ -34,8 +34,12 @@ describe("SAM infrastructure", () => {
       ).Properties;
       expect(properties.Runtime).toBe("nodejs22.x");
       expect(properties.Architectures).toEqual(["x86_64"]);
-      expect(properties.MemorySize).toBe(1024);
-      expect(properties.Timeout).toBe(30);
+      const bounds =
+        logicalId === "ScanFunction"
+          ? { memory: 2048, timeout: 120 }
+          : { memory: 1024, timeout: 30 };
+      expect(properties.MemorySize).toBe(bounds.memory);
+      expect(properties.Timeout).toBe(bounds.timeout);
       expect(properties.ReservedConcurrentExecutions).toEqual({
         "Fn::If": ["UseReservedConcurrency", 1, { Ref: "AWS::NoValue" }],
       });
@@ -87,7 +91,9 @@ describe("SAM infrastructure", () => {
       "DeadLetterQueue",
     ).Properties;
     expect(queue.FifoQueue).not.toBe(true);
-    expect(queue.VisibilityTimeout).toBeGreaterThanOrEqual(120);
+    expect(queue.VisibilityTimeout).toBeGreaterThanOrEqual(
+      resource("AWS::Serverless::Function", "ScanFunction").Properties.Timeout,
+    );
     expect(queue.SqsManagedSseEnabled).toBe(true);
     expect(deadLetter.SqsManagedSseEnabled).toBe(true);
     expect(queue.RedrivePolicy).toEqual({

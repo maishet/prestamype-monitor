@@ -10,3 +10,4 @@ coverage/
 *storage-state*.json
 *credentials*.json
 .superpowers/
+captures/

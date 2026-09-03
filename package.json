@@ -15,7 +15,9 @@
     "auth:capture": "node --import tsx src/cli/capture-session.ts",
     "dry-run": "node --import tsx src/cli/dry-run.ts",
     "telegram:test": "node scripts/test-telegram.mjs",
-    "telegram:list-chats": "node scripts/telegram-list-chats.mjs"
+    "telegram:list-chats": "node scripts/telegram-list-chats.mjs",
+    "capture:dom": "node --import tsx src/cli/capture-dom.ts",
+    "build:fixtures": "node scripts/build-fixtures.mjs"
   },
   "keywords": [],
   "author": "",

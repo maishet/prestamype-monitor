@@ -15,6 +15,9 @@ const entries = [
 
 const opportunity: Opportunity = {
   id: "opportunity-1",
+  auctionCode: "M5dGmP0G",
+  commercialName: "CLIENTE",
+  investmentType: "Factoring",
   url: "https://example.test/opportunities/1",
   supplier: { taxId: "20517854523", legalName: "Otro proveedor" },
   debtor: { taxId: null, legalName: "Otro pagador" },

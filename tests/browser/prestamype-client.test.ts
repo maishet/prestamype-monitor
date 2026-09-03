@@ -1,674 +1,454 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { MonitorConfig } from "../../src/domain/types.js";
-import {
-  PageStructureError,
-  ScanDeadlineError,
-  RateLimitError,
-  SessionChallengeError,
-  SessionExpiredError,
-} from "../../src/browser/errors.js";
 import {
   PrestamypeClient,
   assertAllowedInteraction,
   opportunityFingerprint,
+  opportunityRowFingerprint,
+  opportunityRowKey,
+  rowRisk,
   shouldBlockResource,
-  summaryFingerprint,
-  type BrowserContextLike,
-  type BrowserLike,
   type BrowserLauncher,
   type LocatorLike,
   type PageLike,
 } from "../../src/browser/prestamype-client.js";
+import { parseOpportunityRows } from "../../src/browser/live-parsers.js";
+import {
+  PageStructureError,
+  SessionExpiredError,
+} from "../../src/browser/errors.js";
+import type { MonitorConfig } from "../../src/domain/types.js";
+
+const fixture = (name: string): string =>
+  readFileSync(resolve("tests/fixtures/live", name), "utf8");
+
+const TABLE = fixture("opportunities-table.html");
+const PANEL = fixture("panel-invertir-riesgo-letra.html");
+const DEUDOR = fixture("panel-deudor.html");
+const PROVEEDOR = fixture("panel-proveedor.html");
+const PORTFOLIO = fixture("mis-inversiones.html");
 
 const config: MonitorConfig = {
-  allowedRisks: ["A+", "A", "B", "C"],
-  minimumAnnualReturnPct: 15,
+  allowedRisks: ["A+", "A", "B", "C", "PROTEGIDA"],
+  minimumAnnualReturnPct: 12,
   currency: "PEN",
+  allowedCurrencies: ["PEN", "USD"],
   minimumInvestmentCents: 10_000,
   highPriorityScore: 80,
   reviewScore: 70,
-  detailRefreshIntervalMs: 15 * 60 * 1_000,
 };
 
-const cards = (
-  rows: readonly {
-    id: string;
-    risk: string;
-    annualReturn: string;
-    remaining?: string;
-  }[],
-) =>
-  rows
-    .map(
-      ({ id, risk, annualReturn, remaining = "S/ 1.000,00" }) => `
-    <article data-opportunity-card>
-      <a data-field="detail-link" href="/app/inversionista/oportunidades/${id}">Detalle</a>
-      <span data-field="supplier-name">Proveedor ${id}</span><span data-field="supplier-tax-id">20123456789</span>
-      <span data-field="debtor-name">Pagador ${id}</span><span data-field="debtor-tax-id">20987654321</span>
-      <span data-field="risk">${risk}</span><span data-field="currency">PEN</span>
-      <span data-field="annual-return">${annualReturn}</span><span data-field="remaining-amount">${remaining}</span>
-    </article>`,
-    )
-    .join("");
-
-const detail = (id: string): string => `<main data-page="opportunity-detail">
-  <span data-field="supplier-name">Proveedor ${id}</span><span data-field="supplier-tax-id">20123456789</span>
-  <span data-field="debtor-name">Pagador ${id}</span><span data-field="debtor-tax-id">20987654321</span>
-  <span data-field="risk">A</span><span data-field="currency">PEN</span>
-  <span data-field="annual-return">16,50%</span><span data-field="monthly-return">1,20%</span>
-  <span data-field="total-amount">S/ 2.000,00</span><span data-field="funded-amount">S/ 1.000,00</span>
-  <span data-field="remaining-amount">S/ 1.000,00</span>
-</main>`;
-
-class FakeLocator implements LocatorLike {
-  constructor(
-    private readonly visible = true,
-    private readonly text: string | null = null,
-  ) {}
-  clicks = 0;
-  async click(): Promise<void> {
-    this.clicks += 1;
-  }
-  async isVisible(): Promise<boolean> {
-    return this.visible;
-  }
-  async textContent(): Promise<string | null> {
-    return this.text;
-  }
+interface FakePageOptions {
+  readonly onClick?: (selector: string) => void;
+  readonly html?: () => string;
+  readonly table?: string;
 }
 
-class FakePage implements PageLike {
-  currentUrl = "https://www.prestamype.com/app/inversionista/portafolio";
-  html =
-    '<main data-page="portfolio"><span data-field="available-balance">S/ 50,00</span></main>';
-  readonly visits: string[] = [];
-  readonly actions: string[] = [];
-  readonly accessibleActions: { role: string; name: string; exact: boolean }[] =
-    [];
-  statusByPath: Record<string, number> = {};
-  listHtml = cards([{ id: "one", risk: "A", annualReturn: "16,50%" }]);
-  detailHtml: Record<string, string> = { one: detail("one") };
-  authenticated = true;
-  captcha = false;
-  sortConfirmation = "Retorno mayor";
-  neverContent = false;
-  contentGate: Promise<void> | null = null;
-  routeHandler:
-    | ((
-        route: { abort(): Promise<void>; continue(): Promise<void> },
-        request: { resourceType(): string; url(): string },
-      ) => Promise<void>)
-    | undefined;
+/**
+ * A page whose content is the captured markup. Clicks are recorded and drive
+ * the same state transitions the real slide-over does.
+ */
+function createFakePage(options: FakePageOptions = {}) {
+  const clicks: string[] = [];
+  const table = options.table ?? TABLE;
+  let current = table;
+  let url = "https://www.prestamype.com/app/inversionista/oportunidades";
 
-  async goto(url: string): Promise<{ status(): number } | null> {
-    this.visits.push(url);
-    this.currentUrl = url;
-    const path = new URL(url).pathname;
-    if (path.endsWith("/oportunidades")) this.html = this.listHtml;
-    else if (path.includes("/oportunidades/"))
-      this.html = this.detailHtml[path.split("/").at(-1)!] ?? "";
-    return { status: () => this.statusByPath[path] ?? 200 };
-  }
-  url(): string {
-    return this.currentUrl;
-  }
-  async content(): Promise<string> {
-    if (this.neverContent) return await new Promise<string>(() => undefined);
-    if (this.contentGate !== null) await this.contentGate;
-    return this.html;
-  }
-  locator(selector: string): LocatorLike {
-    this.actions.push(selector);
-    if (selector === '[data-page="authenticated"]')
-      return new FakeLocator(this.authenticated);
-    if (selector === '[data-challenge="captcha"]')
-      return new FakeLocator(this.captcha);
-    if (selector === '[data-action="sort-return-desc"]')
-      return new FakeLocator(true, "Retorno mayor");
-    if (selector === '[data-state="sort-return-desc"]')
-      return new FakeLocator(
-        this.sortConfirmation !== "",
-        this.sortConfirmation,
-      );
-    if (selector.startsWith('[data-filter-risk="'))
-      return new FakeLocator(true, selector);
-    return new FakeLocator(false);
-  }
-  getByRole(
-    role: string,
-    options: { name: string; exact: boolean },
-  ): LocatorLike {
-    this.accessibleActions.push({ role, ...options });
-    return new FakeLocator(true, options.name);
-  }
-  async route(
-    _pattern: string,
-    handler: NonNullable<FakePage["routeHandler"]>,
-  ): Promise<void> {
-    this.routeHandler = handler;
-  }
-  setDefaultNavigationTimeout(timeoutMs: number): void {
-    expect(timeoutMs).toBe(12_000);
-  }
+  const setHtml = (html: string): void => {
+    current = html;
+  };
+
+  const locator = (selector: string): LocatorLike => {
+    const self: LocatorLike = {
+      async click() {
+        clicks.push(selector);
+        options.onClick?.(selector);
+        if (selector.includes("cell-content")) setHtml(PANEL);
+        else if (selector.includes("Deudor")) setHtml(DEUDOR);
+        else if (selector.includes("Proveedor")) setHtml(PROVEEDOR);
+        else if (selector.includes("icon-close")) setHtml(table);
+      },
+      async isVisible() {
+        if (selector.includes("captcha")) return false;
+        if (selector.includes("next-button")) return false;
+        if (selector.includes("panel-main")) return current === PANEL;
+        return true;
+      },
+      async textContent() {
+        if (selector.includes("multi-select-trigger"))
+          return "Ordenar por: Retorno mayor";
+        if (selector.includes("cell-content")) return "METALVAL";
+        if (selector.includes("tab-item")) return "Deudor";
+        return "";
+      },
+      nth: () => self,
+      first: () => self,
+      locator: (nested: string) => locator(`${selector} ${nested}`),
+    };
+    return self;
+  };
+
+  const page: PageLike = {
+    async goto(target: string) {
+      url = target;
+      setHtml(target.includes("mis-inversiones") ? PORTFOLIO : table);
+      return { status: () => 200 };
+    },
+    url: () => url,
+    content: async () => options.html?.() ?? current,
+    locator,
+    route: async () => undefined,
+    setDefaultNavigationTimeout: () => undefined,
+    setDefaultTimeout: () => undefined,
+  };
+  return { page, clicks, setUrl: (value: string) => (url = value) };
 }
 
-function harness(page = new FakePage(), now: () => number = () => 0) {
-  const contextOptions: unknown[] = [];
-  let pageCount = 0;
-  let contextCloses = 0;
-  let browserCloses = 0;
-  const context: BrowserContextLike = {
-    newPage: async () => {
-      pageCount += 1;
-      return page;
-    },
-    close: async () => {
-      contextCloses += 1;
-    },
-  };
-  const browser: BrowserLike = {
-    newContext: async (options) => {
-      contextOptions.push(options);
-      return context;
-    },
-    close: async () => {
-      browserCloses += 1;
-    },
-  };
-  const launcher: BrowserLauncher = { launch: async () => browser };
-  const client = new PrestamypeClient({
-    launcher,
-    storageState: { cookies: [], origins: [] },
-    now,
-    deadlineMs: 25_000,
-  });
+function createLauncher(page: PageLike): BrowserLauncher {
   return {
-    client,
-    page,
-    contextOptions,
-    counts: () => ({ pageCount, contextCloses, browserCloses }),
+    launch: async () => ({
+      newContext: async () => ({
+        newPage: async () => page,
+        close: async () => undefined,
+        setDefaultTimeout: () => undefined,
+      }),
+      close: async () => undefined,
+    }),
   };
 }
 
-describe("safe browser policy", () => {
-  it("blocks heavy resources and every third-party request", () => {
-    for (const kind of ["image", "font", "media"])
-      expect(shouldBlockResource(kind, "https://www.prestamype.com/a")).toBe(
-        true,
-      );
+function createClient(page: PageLike, overrides: object = {}) {
+  return new PrestamypeClient({
+    launcher: createLauncher(page),
+    storageState: {},
+    deadlineMs: 60_000,
+    sleep: async () => undefined,
+    ...overrides,
+  });
+}
+
+describe("shouldBlockResource", () => {
+  it("allows the CloudFront bundle the single-page app is served from", () => {
+    const asset = "https://d14bodb4yrsx8y.cloudfront.net/assets/e893ef9.js";
+    // This is the regression that made every production scan evaluate zero
+    // opportunities: blocking it stops Vue from ever rendering the table.
+    expect(shouldBlockResource("script", asset)).toBe(false);
     expect(
-      shouldBlockResource("script", "https://google-analytics.com/a.js"),
-    ).toBe(true);
-    expect(shouldBlockResource("xhr", "https://evil.example/api")).toBe(true);
-    for (const kind of ["document", "script", "xhr", "fetch"])
-      expect(shouldBlockResource(kind, "https://www.prestamype.com/app")).toBe(
+      shouldBlockResource(
+        "stylesheet",
+        "https://d14bodb4yrsx8y.cloudfront.net/assets/css/d74978f.css",
+      ),
+    ).toBe(false);
+    expect(shouldBlockResource("image", asset)).toBe(true);
+  });
+
+  it("still allows the application's own documents and data calls", () => {
+    for (const type of ["document", "script", "xhr", "fetch"])
+      expect(shouldBlockResource(type, "https://www.prestamype.com/app")).toBe(
         false,
       );
-    expect(shouldBlockResource("document", "https://prestamype.com/")).toBe(
-      false,
-    );
-    expect(shouldBlockResource("script", "https://prestamype.com/app.js")).toBe(
-      true,
-    );
-    expect(shouldBlockResource("xhr", "https://api.prestamype.com/x")).toBe(
-      true,
-    );
+    expect(
+      shouldBlockResource("image", "https://www.prestamype.com/x.png"),
+    ).toBe(true);
   });
 
-  it("rejects unsafe navigation and prohibited interaction names", () => {
+  it("blocks every analytics and consent vendor on the page", () => {
+    for (const vendor of [
+      "https://www.hotjar.com/x.js",
+      "https://www.facebook.com/tr",
+      "https://consent.cookiebot.com/uc.js",
+      "https://display.popt.in/x.js",
+      "https://evil.example/x.js",
+    ])
+      expect(shouldBlockResource("script", vendor)).toBe(true);
+  });
+});
+
+describe("assertAllowedInteraction", () => {
+  it("refuses anything that could move money", () => {
     for (const name of [
       "Invertir",
-      "reservar ahora",
-      "PAGAR",
-      "Confirmar inversión",
+      "Realizar inversión",
+      "Realizar depósito",
+      "Confirmar",
+      "Pagar",
+      "Retirar",
     ])
       expect(() => assertAllowedInteraction({ kind: "click", name })).toThrow(
         PageStructureError,
       );
-    expect(() =>
-      assertAllowedInteraction({ kind: "click", name: "cualquier botón" }),
-    ).toThrow(PageStructureError);
-    expect(() =>
-      assertAllowedInteraction({ kind: "click", name: "Retorno mayor" }),
-    ).not.toThrow();
+  });
+
+  it("allows the navigation controls the scan needs", () => {
+    for (const name of ["Filtros", "Retorno mayor", "Deudor", "METALVAL", ""])
+      expect(() =>
+        assertAllowedInteraction({ kind: "click", name }),
+      ).not.toThrow();
   });
 });
 
-describe("PrestamypeClient", () => {
-  it("uses one fixed, headless context and closes idempotently", async () => {
-    const h = harness();
-    await h.client.getPortfolio();
-    await h.client.getPortfolio();
-    await h.client.close();
-    await h.client.close();
-    expect(h.contextOptions).toEqual([
-      {
-        locale: "es-PE",
-        timezoneId: "America/Lima",
-        viewport: { width: 1280, height: 720 },
-        storageState: { cookies: [], origins: [] },
-      },
-    ]);
-    expect(h.counts()).toEqual({
-      pageCount: 1,
-      contextCloses: 1,
-      browserCloses: 1,
+describe("row identity", () => {
+  const rows = parseOpportunityRows(TABLE);
+
+  it("gives every row on the page a distinct stable key", () => {
+    const keys = rows.map(opportunityRowKey);
+    expect(new Set(keys).size).toBe(rows.length);
+  });
+
+  it("keeps the key stable while funding progresses", () => {
+    const row = rows[0]!;
+    const advanced = { ...row, fundedPct: row.fundedPct + 10 };
+    expect(opportunityRowKey(advanced)).toBe(opportunityRowKey(row));
+    expect(opportunityRowFingerprint(advanced)).not.toBe(
+      opportunityRowFingerprint(row),
+    );
+  });
+
+  it("reports protected rows as their own grade", () => {
+    expect(rowRisk({ ...rows[0]!, protectedCapital: true, risk: null })).toBe(
+      "PROTEGIDA",
+    );
+    expect(rowRisk(rows[0]!)).toBe("C");
+  });
+});
+
+describe("PrestamypeClient scan", () => {
+  let fake: ReturnType<typeof createFakePage>;
+
+  beforeEach(() => {
+    fake = createFakePage();
+  });
+
+  it("opens the client name, never the row or its Invertir button", async () => {
+    const client = createClient(fake.page);
+    client.beginScan();
+    await client.listEligibleOpportunities(config, {});
+    await client.close();
+    const rowClicks = fake.clicks.filter((selector) =>
+      selector.includes("row_table"),
+    );
+    expect(rowClicks.length).toBeGreaterThan(0);
+    for (const selector of rowClicks) {
+      expect(selector).toContain(".cell-content.client .label");
+      expect(selector).not.toContain("action-column");
+    }
+  });
+
+  it("returns opportunities built from the row and its panel", async () => {
+    const client = createClient(fake.page);
+    client.beginScan();
+    const opportunities = await client.listEligibleOpportunities(config, {});
+    await client.close();
+
+    expect(opportunities.length).toBeGreaterThan(0);
+    const first = opportunities[0]!;
+    expect(first).toMatchObject({
+      auctionCode: "M5dGmP0G",
+      url: "https://www.prestamype.com/app/inversionista/oportunidades",
+      currency: "PEN",
+      annualReturnPct: 14.16,
+      risk: "C",
+      investmentType: "Factoring",
     });
+    expect(first.debtorHistory).toMatchObject({ totalAuctions: 51 });
+    expect(first.debtor.taxId).toBe("20123456789");
   });
 
-  it("orders, filters allowlisted risks, cuts off below 15%, and opens details sequentially", async () => {
-    const h = harness();
-    h.page.listHtml = cards([
-      { id: "one", risk: "A", annualReturn: "18,00%" },
-      { id: "two", risk: "B", annualReturn: "15,00%" },
-      { id: "low", risk: "C", annualReturn: "14,99%" },
-      { id: "after", risk: "A", annualReturn: "19,00%" },
-    ]);
-    h.page.detailHtml = { one: detail("one"), two: detail("two") };
-    const result = await h.client.listEligibleOpportunities(config, {});
-    expect(result.map((item) => item.id)).toEqual(["one", "two"]);
-    expect(h.page.visits.map((url) => new URL(url).pathname)).toEqual([
-      "/app/inversionista/oportunidades",
-      "/app/inversionista/oportunidades/one",
-      "/app/inversionista/oportunidades/two",
-    ]);
-    expect(
-      h.page.actions.some((selector) =>
-        /invertir|reservar|pagar|confirmar/i.test(selector),
-      ),
-    ).toBe(false);
-    expect(h.page.accessibleActions).toEqual([
-      { role: "button", name: "Filtros", exact: true },
-      { role: "checkbox", name: "A+", exact: true },
-      { role: "checkbox", name: "A", exact: true },
-      { role: "checkbox", name: "B", exact: true },
-      { role: "checkbox", name: "C", exact: true },
-      { role: "button", name: "Aplicar filtros", exact: true },
-      { role: "button", name: "Ordenar por: Recomendado", exact: true },
-      { role: "option", name: "Retorno mayor", exact: true },
-    ]);
-  });
-
-  it("skips unchanged visible cards", async () => {
-    const h = harness();
-    const [summary] = (
-      await import("../../src/browser/parsers.js")
-    ).parseOpportunityCards(h.page.listHtml);
-    const result = await h.client.listEligibleOpportunities(config, {
-      one: {
-        visibleFingerprint: summaryFingerprint(summary!),
-        detailCheckedAt: "2030-01-01T00:00:00.000Z",
-      },
-    });
-    expect(result).toEqual([]);
-    expect(h.page.visits).toHaveLength(1);
-  });
-
-  it("uses the same visible-card fingerprint for a summary and its detail", async () => {
-    const [summary] = (
-      await import("../../src/browser/parsers.js")
-    ).parseOpportunityCards(
-      cards([{ id: "one", risk: "A", annualReturn: "16,50%" }]),
+  it("stops walking once returns drop below the configured floor", async () => {
+    const client = createClient(fake.page);
+    client.beginScan();
+    const opportunities = await client.listEligibleOpportunities(
+      { ...config, minimumAnnualReturnPct: 14 },
+      {},
     );
-    const opportunity = (
-      await import("../../src/browser/parsers.js")
-    ).parseOpportunityDetail(detail("one"), summary!);
-    expect(summaryFingerprint(summary!)).toBe(
-      opportunityFingerprint(opportunity),
-    );
-    expect(
-      opportunityFingerprint({ ...opportunity, dueAt: "2030-01-01" }),
-    ).toBe(opportunityFingerprint(opportunity));
+    await client.close();
+    // Only the 14.84% and the two 14.16% rows clear a 14% floor.
+    expect(opportunities).toHaveLength(3);
   });
 
-  it("reopens only when visible card material changes", async () => {
-    const h = harness();
-    const { parseOpportunityCards, parseOpportunityDetail } =
-      await import("../../src/browser/parsers.js");
-    const [summary] = parseOpportunityCards(h.page.listHtml);
-    const persisted = opportunityFingerprint(
-      parseOpportunityDetail(detail("one"), summary!),
-    );
-    expect(
-      await h.client.listEligibleOpportunities(config, {
-        one: {
-          visibleFingerprint: persisted,
-          detailCheckedAt: "2030-01-01T00:00:00.000Z",
+  it("reaches protected auctions only when they get their own floor", async () => {
+    // The unfiltered table mixes protected rows (5-9%) among lettered ones.
+    const unfiltered = fixture("panel-invertir-protegida.html");
+    const rows = parseOpportunityRows(unfiltered);
+    expect(rows.some((row) => row.protectedCapital)).toBe(true);
+
+    const scan = async (extra: Partial<MonitorConfig>) => {
+      const page = createFakePage({ table: unfiltered });
+      const client = createClient(page.page);
+      client.beginScan();
+      const found = await client.listEligibleOpportunities(
+        { ...config, minimumAnnualReturnPct: 14, ...extra },
+        {},
+      );
+      await client.close();
+      return { found, clicks: page.clicks };
+    };
+
+    const strict = await scan({});
+    const lenient = await scan({ minimumProtectedAnnualReturnPct: 5 });
+    // A single floor stops the walk early; the protected floor reads deeper.
+    expect(lenient.clicks.length).toBeGreaterThan(strict.clicks.length);
+  });
+
+  it("skips a row whose visible values have not changed", async () => {
+    const rows = parseOpportunityRows(TABLE);
+    const known = Object.fromEntries(
+      rows.map((row) => [
+        opportunityRowKey(row),
+        {
+          visibleFingerprint: opportunityRowFingerprint(row),
+          detailCheckedAt: new Date().toISOString(),
         },
-      }),
-    ).toEqual([]);
-    h.page.listHtml = cards([{ id: "one", risk: "A", annualReturn: "17,00%" }]);
-    expect(
-      (
-        await h.client.listEligibleOpportunities(config, {
-          one: {
-            visibleFingerprint: persisted,
-            detailCheckedAt: "2030-01-01T00:00:00.000Z",
-          },
-        })
-      ).map((x) => x.id),
-    ).toEqual(["one"]);
+      ]),
+    );
+    const client = createClient(fake.page);
+    client.beginScan();
+    const opportunities = await client.listEligibleOpportunities(config, known);
+    await client.close();
+    expect(opportunities).toEqual([]);
+    expect(fake.clicks.filter((s) => s.includes("row_table"))).toEqual([]);
   });
 
-  it.each([
-    ["captcha", SessionChallengeError],
-    ["login", SessionExpiredError],
-    ["rate", RateLimitError],
-    ["sort", PageStructureError],
-  ] as const)(
-    "raises a safe typed error for %s",
-    async (scenario, ErrorType) => {
-      const h = harness();
-      if (scenario === "captcha") h.page.captcha = true;
-      if (scenario === "login")
-        h.page.currentUrl = "https://www.prestamype.com/iniciar-sesion";
-      if (scenario === "rate")
-        h.page.statusByPath["/app/inversionista/oportunidades"] = 429;
-      if (scenario === "sort") h.page.sortConfirmation = "";
-      if (scenario === "login")
-        h.page.goto = async () => ({ status: () => 200 });
-      const promise = h.client.listEligibleOpportunities(config, {});
-      await expect(promise).rejects.toBeInstanceOf(ErrorType);
-      await expect(
-        promise.catch((error: Error) => error.message),
-      ).resolves.not.toMatch(/<html|cookie|authorization/i);
-    },
-  );
-
-  it("rejects an evil final host and accepts the canonical www application destination", async () => {
-    const safe = harness();
-    await expect(safe.client.getPortfolio()).resolves.toBeDefined();
-    expect(safe.page.visits[0]).toBe(
-      "https://www.prestamype.com/app/inversionista/mis-inversiones",
+  it("reopens a row once the detail refresh interval has passed", async () => {
+    const rows = parseOpportunityRows(TABLE);
+    const known = Object.fromEntries(
+      rows.map((row) => [
+        opportunityRowKey(row),
+        {
+          visibleFingerprint: opportunityRowFingerprint(row),
+          detailCheckedAt: new Date(Date.now() - 3_600_000).toISOString(),
+        },
+      ]),
     );
+    const client = createClient(fake.page);
+    client.beginScan();
+    const opportunities = await client.listEligibleOpportunities(config, known);
+    await client.close();
+    expect(opportunities.length).toBeGreaterThan(0);
+  });
 
-    const evil = harness();
-    evil.page.goto = async () => {
-      evil.page.currentUrl =
-        "https://evil.prestamype.com/app/inversionista/portafolio";
+  it("hashes a stored opportunity the same way as the row it came from", async () => {
+    // C & M SERVICENTROS: the row the panel fixture belongs to. Its bar width
+    // (26.13%) has to hash the same as collected/total from the panel.
+    const row = parseOpportunityRows(TABLE).find(
+      (candidate) => candidate.commercialName === "C & M SERVICENTROS",
+    )!;
+    const opportunity = {
+      id: opportunityRowKey(row),
+      risk: rowRisk(row),
+      annualReturnPct: row.annualReturnPct,
+      fundedAmountCents: 4_677_257,
+      totalAmountCents: 17_900_810,
+    } as Parameters<typeof opportunityFingerprint>[0];
+    // If these drifted apart the scan would reopen every panel forever.
+    expect(opportunityFingerprint(opportunity)).toBe(
+      opportunityRowFingerprint(row),
+    );
+  });
+
+  it("reads the available balance out of the detail panel", async () => {
+    const client = createClient(fake.page);
+    client.beginScan();
+    expect(client.availableBalanceCents()).toBeNull();
+    await client.listEligibleOpportunities(config, {});
+    await client.close();
+    expect(client.availableBalanceCents()).toBe(0);
+  });
+});
+
+describe("PrestamypeClient portfolio", () => {
+  it("sums active exposure by normalized party and flags collections", async () => {
+    const fake = createFakePage();
+    const client = createClient(fake.page);
+    client.beginScan();
+    const portfolio = await client.getPortfolio();
+    await client.close();
+
+    expect(portfolio.collectionConflicts).toEqual([
+      {
+        party: { legalName: "CORPORACION LERIBE S.A.C.", taxId: null },
+        state: "Por cobrar",
+        stage: "Cobranza administrativa I",
+      },
+    ]);
+    // Only "Por cobrar" and "En proceso" positions are still at risk.
+    expect(portfolio.exposureByParty["SUPERDEPORTE PLUS PERU SAC"]).toBe(
+      680_752,
+    );
+    expect(portfolio.exposureByParty["HAUG S A"]).toBeUndefined();
+    expect(portfolio.activeTotalCents).toBeGreaterThan(0);
+  });
+});
+
+describe("PrestamypeClient failure handling", () => {
+  it("reports an expired session when the app redirects to the login page", async () => {
+    const fake = createFakePage();
+    fake.page.goto = async () => {
+      fake.setUrl("https://www.prestamype.com/iniciar-sesion");
       return { status: () => 200 };
     };
-    await expect(evil.client.getPortfolio()).rejects.toBeInstanceOf(
-      PageStructureError,
+    const client = createClient(fake.page);
+    client.beginScan();
+    await expect(client.listEligibleOpportunities(config, {})).rejects.toThrow(
+      SessionExpiredError,
     );
+    await client.close();
   });
 
-  it("treats a missing authenticated DOM marker as a structure change", async () => {
-    const h = harness();
-    h.page.authenticated = false;
-    await expect(
-      h.client.listEligibleOpportunities(config, {}),
-    ).rejects.toBeInstanceOf(PageStructureError);
-  });
-
-  it("checks the total deadline before every navigation/action", async () => {
-    let tick = 0;
-    const h = harness(new FakePage(), () => (tick += 10_000));
-    await expect(
-      h.client.listEligibleOpportunities(config, {}),
-    ).rejects.toBeInstanceOf(ScanDeadlineError);
-    expect(h.page.visits.length).toBeLessThanOrEqual(1);
-  });
-
-  it("shares one deadline across portfolio and listing, then resets on a new scan", async () => {
-    let now = 0;
-    const h = harness(new FakePage(), () => now);
-    h.client.beginScan();
-    await h.client.getPortfolio();
-    now = 20_000;
-    h.page.content = async () => {
-      now = 26_000;
-      return h.page.html;
-    };
-    await expect(
-      h.client.listEligibleOpportunities(config, {}),
-    ).rejects.toBeInstanceOf(ScanDeadlineError);
-    now = 30_000;
-    h.page.content = FakePage.prototype.content.bind(h.page);
-    h.client.beginScan();
-    await expect(h.client.getPortfolio()).resolves.toBeDefined();
-  });
-
-  it("reopens an unchanged card after the conservative detail refresh interval", async () => {
-    const now = Date.parse("2026-08-27T12:30:00.000Z");
-    const h = harness(new FakePage(), () => now);
-    const [summary] = (
-      await import("../../src/browser/parsers.js")
-    ).parseOpportunityCards(h.page.listHtml);
-    const known = {
-      one: {
-        visibleFingerprint: summaryFingerprint(summary!),
-        detailCheckedAt: "2026-08-27T12:00:00.000Z",
+  it("does not hang when the table never stops loading", async () => {
+    const loading = fixture("opportunities-table-loading.html");
+    const fake = createFakePage({ html: () => loading });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const now = vi.fn(() => 0);
+    let clock = 0;
+    now.mockImplementation(() => clock);
+    const client = createClient(fake.page, {
+      now,
+      sleep: async () => {
+        clock += 250;
       },
-    };
-    expect(
-      (await h.client.listEligibleOpportunities(config, known)).map(
-        (x) => x.id,
-      ),
-    ).toEqual(["one"]);
-  });
-
-  it("times out an actually hung Playwright operation near the deadline", async () => {
-    vi.useFakeTimers();
-    const h = harness(new FakePage(), () => Date.now());
-    h.page.neverContent = true;
-    const promise = h.client.listEligibleOpportunities(config, {});
-    const assertion = expect(promise).rejects.toBeInstanceOf(ScanDeadlineError);
-    await vi.advanceTimersByTimeAsync(25_001);
-    await assertion;
-    expect(h.counts()).toEqual({
-      pageCount: 1,
-      contextCloses: 1,
-      browserCloses: 1,
+      deadlineMs: 60_000,
     });
-  });
-
-  it("checks authentication again after each detail navigation", async () => {
-    const h = harness();
-    const originalGoto = h.page.goto.bind(h.page);
-    h.page.goto = async (url) => {
-      const response = await originalGoto(url);
-      if (url.endsWith("/one")) h.page.captcha = true;
-      return response;
-    };
-    await expect(
-      h.client.listEligibleOpportunities(config, {}),
-    ).rejects.toBeInstanceOf(SessionChallengeError);
-  });
-
-  it("treats a missing auth marker after detail navigation as a DOM change", async () => {
-    const h = harness();
-    const originalGoto = h.page.goto.bind(h.page);
-    h.page.goto = async (url) => {
-      const response = await originalGoto(url);
-      if (url.endsWith("/one")) h.page.authenticated = false;
-      return response;
-    };
-    await expect(
-      h.client.listEligibleOpportunities(config, {}),
-    ).rejects.toBeInstanceOf(PageStructureError);
-  });
-
-  it("aggregates visible portfolio exposure rows", async () => {
-    const h = harness();
-    h.page.html = `<main data-page="portfolio">
-      <span data-field="available-balance">S/ 50,00</span><span data-field="active-total">S/ 300,00</span>
-      <div data-portfolio-exposure><span data-field="tax-id">20123456789</span><span data-field="amount">S/ 100,00</span></div>
-      <div data-portfolio-exposure><span data-field="tax-id">20123456789</span><span data-field="amount">S/ 200,00</span></div>
-    </main>`;
-    expect(await h.client.getPortfolio()).toEqual({
-      availableBalanceCents: 5_000,
-      activeTotalCents: 30_000,
-      exposureByTaxId: { "20123456789": 30_000 },
-    });
-  });
-
-  it("parses observed portfolio money and problematic collection identities", async () => {
-    const h = harness();
-    h.page.html = `<main data-page="portfolio">
-      <span data-field="available-balance">S/ 0.00</span>
-      <span data-field="active-total">S/ 6,807.52</span>
-      <div data-portfolio-exposure><span data-field="tax-id">20987654321</span><span data-field="amount">S/ 6,807.52</span></div>
-      <div data-portfolio-collection>
-        <span data-field="supplier-name">Proveedor Cobranza SAC</span>
-        <span data-field="supplier-tax-id">20123456789</span>
-        <span data-field="debtor-name">Pagador Cobranza SA</span>
-        <span data-field="debtor-tax-id">20987654321</span>
-        <span data-field="collection-status">Cobranza administrativa I</span>
-        <span data-field="collection-evidence">Fila visible de cartera</span>
-      </div>
-    </main>`;
-    expect(await h.client.getPortfolio()).toMatchObject({
-      availableBalanceCents: 0,
-      activeTotalCents: 680_752,
-      collectionConflicts: [
-        {
-          supplier: {
-            legalName: "Proveedor Cobranza SAC",
-            taxId: "20123456789",
-          },
-          debtor: { legalName: "Pagador Cobranza SA", taxId: "20987654321" },
-          status: "Cobranza administrativa I",
-          evidence: "Fila visible de cartera",
-        },
-      ],
-    });
-  });
-
-  it("fails closed when a portfolio collection row is only partially structured", async () => {
-    const h = harness();
-    h.page.html = `<div data-portfolio-collection>
-      <span data-field="supplier-name">Proveedor incompleto</span>
-      <span data-field="collection-status">Cobranza legal</span>
-    </div>`;
-    await expect(h.client.getPortfolio()).rejects.toBeInstanceOf(
-      PageStructureError,
-    );
-  });
-
-  it("does not describe a positive portfolio as known when exposure rows are absent", async () => {
-    const h = harness();
-    h.page.html = `<main data-page="portfolio"><span data-field="active-total">S/ 300,00</span></main>`;
-    expect(await h.client.getPortfolio()).toEqual({
-      availableBalanceCents: null,
-      activeTotalCents: null,
-      exposureByTaxId: {},
-    });
-  });
-
-  it("rejects malformed visible portfolio exposure", async () => {
-    const h = harness();
-    h.page.html = `<main><span data-field="active-total">S/ 10,00</span>
-      <div data-portfolio-exposure><span data-field="tax-id">not-a-ruc</span><span data-field="amount">S/ 10,00</span></div></main>`;
-    await expect(h.client.getPortfolio()).rejects.toBeInstanceOf(
-      PageStructureError,
-    );
-  });
-
-  it("shares concurrent initialization", async () => {
-    const h = harness();
-    await Promise.all([h.client.getPortfolio(), h.client.getPortfolio()]);
-    expect(h.contextOptions).toHaveLength(1);
-    expect(h.counts().pageCount).toBe(1);
-  });
-
-  it("serializes concurrent public page operations without DOM interleaving", async () => {
-    const h = harness();
-    let release!: () => void;
-    h.page.contentGate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const first = h.client.getPortfolio();
-    await vi.waitFor(() => expect(h.page.visits).toHaveLength(1));
-    const second = h.client.getPortfolio();
-    await Promise.resolve();
-    expect(h.page.visits).toHaveLength(1);
-    release();
-    await Promise.all([first, second]);
-    expect(h.page.visits).toHaveLength(2);
+    client.beginScan();
+    // The wait must run out its budget and move on, not throw a deadline error.
+    const opportunities = await client.listEligibleOpportunities(config, {});
+    await client.close();
+    expect(opportunities).toEqual([]);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it("still closes the browser when context close throws", async () => {
-    const h = harness();
-    await h.client.getPortfolio();
-    const context = (h.client as unknown as { context: BrowserContextLike })
-      .context;
-    context.close = async () => {
-      throw new Error("context close failed");
-    };
-    await expect(h.client.close()).rejects.toThrow("context close failed");
-    expect(h.counts().browserCloses).toBe(1);
-  });
-
-  it("close waits for initialization in flight and prevents later use", async () => {
-    const page = new FakePage();
-    let release!: (browser: BrowserLike) => void;
-    let browserCloses = 0;
-    const browser: BrowserLike = {
-      newContext: async () => ({
-        newPage: async () => page,
+    const fake = createFakePage();
+    const launcher: BrowserLauncher = {
+      launch: async () => ({
+        newContext: async () => ({
+          newPage: async () => fake.page,
+          close: async () => {
+            throw new Error("Target page, context or browser has been closed");
+          },
+          setDefaultTimeout: () => undefined,
+        }),
         close: async () => undefined,
       }),
-      close: async () => {
-        browserCloses += 1;
-      },
-    };
-    const launcher: BrowserLauncher = {
-      launch: async () =>
-        await new Promise<BrowserLike>((resolve) => {
-          release = resolve;
-        }),
-    };
-    const client = new PrestamypeClient({ launcher, storageState: {} });
-    const use = client.getPortfolio();
-    const useRejected = expect(use).rejects.toBeInstanceOf(PageStructureError);
-    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
-    const closing = client.close();
-    release(browser);
-    await useRejected;
-    await closing;
-    expect(browserCloses).toBe(1);
-    await expect(client.getPortfolio()).rejects.toBeInstanceOf(
-      PageStructureError,
-    );
-  });
-
-  it("does not await a hung initialization after the public deadline and cleans up if it later resolves", async () => {
-    vi.useFakeTimers();
-    let release!: (browser: BrowserLike) => void;
-    let browserCloses = 0;
-    const browser: BrowserLike = {
-      newContext: async () => ({
-        newPage: async () => new FakePage(),
-        close: async () => undefined,
-      }),
-      close: async () => {
-        browserCloses += 1;
-      },
-    };
-    const launcher: BrowserLauncher = {
-      launch: async () =>
-        await new Promise<BrowserLike>((resolve) => {
-          release = resolve;
-        }),
     };
     const client = new PrestamypeClient({
       launcher,
       storageState: {},
-      now: () => Date.now(),
-      deadlineMs: 25_000,
+      deadlineMs: 60_000,
+      sleep: async () => undefined,
     });
-    const use = client.getPortfolio();
-    const rejected = expect(use).rejects.toBeInstanceOf(ScanDeadlineError);
-    await vi.advanceTimersByTimeAsync(25_001);
-    await rejected;
+    client.beginScan();
+    await client.getPortfolio();
     await expect(client.close()).resolves.toBeUndefined();
-    release(browser);
-    await vi.runAllTimersAsync();
-    await Promise.resolve();
-    expect(browserCloses).toBe(1);
+  });
+
+  it("refuses to work after it has been closed", async () => {
+    const fake = createFakePage();
+    const client = createClient(fake.page);
+    await client.close();
+    await expect(client.getPortfolio()).rejects.toThrow(PageStructureError);
   });
 });
-
-afterEach(() => vi.useRealTimers());

@@ -59,7 +59,7 @@ describe("runDryRun", () => {
     const root = resolve("tests/fixtures");
     const fixtureFs = {
       lstat: vi.fn(async (path: string) => ({
-        isSymbolicLink: () => path.endsWith("opportunities.html"),
+        isSymbolicLink: () => path.endsWith("opportunities-table.html"),
         isDirectory: () => path === root,
         isFile: () => path !== root,
       })),
@@ -368,6 +368,9 @@ describe("runDryRun", () => {
 
 const opportunity: Opportunity = {
   id: "opp-safe-1",
+  auctionCode: "M5dGmP0G",
+  commercialName: "CLIENTE",
+  investmentType: "Factoring",
   url: "https://prestamype.com/app/inversionista/oportunidades/opp-safe-1",
   supplier: { legalName: "Proveedor Demo S.A.C.", taxId: "20123456789" },
   debtor: { legalName: "Pagador Demo S.A.", taxId: "20987654321" },
@@ -388,5 +391,5 @@ const opportunity: Opportunity = {
 const portfolio: PortfolioSnapshot = {
   availableBalanceCents: 0,
   activeTotalCents: 0,
-  exposureByTaxId: {},
+  exposureByParty: {},
 };

@@ -25,6 +25,9 @@ const history: PaymentHistory = {
 
 const opportunity: Opportunity = {
   id: "opp-42",
+  auctionCode: "M5dGmP0G",
+  commercialName: "CLIENTE",
+  investmentType: "Factoring",
   url: "https://www.prestamype.com/app/inversionista/oportunidades/opp-42",
   supplier: { legalName: "Proveedor Andino S.A.C.", taxId: "20111111111" },
   debtor: { legalName: "Pagador Nacional S.A.", taxId: "20222222222" },
@@ -45,7 +48,7 @@ const opportunity: Opportunity = {
 const portfolio: PortfolioSnapshot = {
   availableBalanceCents: 250_000,
   activeTotalCents: 1_000_000,
-  exposureByTaxId: { "20222222222": 100_000 },
+  exposureByParty: { "PAGADOR NACIONAL S A": 100_000 },
 };
 
 const evaluation: Evaluation = {
@@ -127,7 +130,7 @@ describe("formatOpportunityAlert", () => {
     const base = {
       ...portfolio,
       activeTotalCents: 100_000,
-      exposureByTaxId: { "20222222222": 10_000 },
+      exposureByParty: { "PAGADOR NACIONAL S A": 10_000 },
     };
     const zero = formatOpportunityAlert(
       candidate,

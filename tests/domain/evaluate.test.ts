@@ -22,6 +22,9 @@ const history: PaymentHistory = {
 
 const opportunity: Opportunity = {
   id: "opp-1",
+  auctionCode: "M5dGmP0G",
+  commercialName: "CLIENTE",
+  investmentType: "Factoring",
   url: "https://example.test/opp-1",
   supplier: { legalName: "Proveedor SAC", taxId: "20111111111" },
   debtor: { legalName: "Deudor SAC", taxId: "20222222222" },
@@ -42,7 +45,7 @@ const opportunity: Opportunity = {
 const portfolio: PortfolioSnapshot = {
   availableBalanceCents: 0,
   activeTotalCents: 1_000_000,
-  exposureByTaxId: { "20222222222": 0 },
+  exposureByParty: { "DEUDOR SAC": 0 },
 };
 
 const leribe: BlacklistEntry = {
@@ -225,7 +228,7 @@ describe("evaluateOpportunity", () => {
       {
         portfolio: {
           ...portfolio,
-          exposureByTaxId: { "20222222222": Number.NaN },
+          exposureByParty: { "DEUDOR SAC": Number.NaN },
         },
       },
     );

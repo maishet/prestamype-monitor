@@ -116,9 +116,16 @@ function hasBlacklistIdentity(
 
 function collectError(errors: unknown[], error: unknown): void {
   errors.push(error);
-  const detail = error instanceof AggregateError
-    ? error.errors.map((item) => item instanceof Error ? `${item.name}: ${item.message}` : String(item))
-    : error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  const detail =
+    error instanceof AggregateError
+      ? error.errors.map((item) =>
+          item instanceof Error
+            ? `${item.name}: ${item.message}`
+            : String(item),
+        )
+      : error instanceof Error
+        ? `${error.name}: ${error.message}`
+        : String(error);
   console.error("Monitor error", detail);
 }
 
@@ -153,28 +160,20 @@ export async function runMonitor(
     const portfolio = await source.getPortfolio();
     const detectedEntries: BlacklistEntry[] = [];
     for (const conflict of portfolio.collectionConflicts ?? []) {
-      for (const party of [conflict.supplier, conflict.debtor]) {
-        const entry: BlacklistEntry = {
-          taxId: party.taxId,
-          normalizedName: normalizeLegalName(party.legalName),
-          reason: "Problema de cobranza detectado en cartera",
-          source: "portfolio-collection",
-          createdAt: now.toISOString(),
-          status: safeCollectionText(conflict.status),
-          evidence:
-            conflict.evidence === null
-              ? null
-              : safeCollectionText(conflict.evidence),
-        };
-        if (
-          hasBlacklistIdentity(party, [
-            ...persistedBlacklist,
-            ...detectedEntries,
-          ])
-        )
-          continue;
-        detectedEntries.push(entry);
-      }
+      const party = conflict.party;
+      if (
+        hasBlacklistIdentity(party, [...persistedBlacklist, ...detectedEntries])
+      )
+        continue;
+      detectedEntries.push({
+        taxId: party.taxId,
+        normalizedName: normalizeLegalName(party.legalName),
+        reason: `Cobranza en curso: ${safeCollectionText(conflict.stage)}`,
+        source: "portfolio-collection",
+        createdAt: now.toISOString(),
+        status: safeCollectionText(conflict.state),
+        evidence: safeCollectionText(conflict.stage),
+      });
     }
     if (detectedEntries.length > 0)
       await dependencies.repository.addBlacklistEntries(detectedEntries);
@@ -183,13 +182,18 @@ export async function runMonitor(
       dependencies.config,
       fingerprints,
     );
+    const observedBalance = source.availableBalanceCents?.() ?? null;
+    const effectivePortfolio: PortfolioSnapshot =
+      observedBalance === null
+        ? portfolio
+        : { ...portfolio, availableBalanceCents: observedBalance };
     // Phase one deliberately has no persistence or notification side effects. A
     // structural failure in any candidate therefore cannot leak a recommendation.
     const records = candidates.map((opportunity) => ({
       opportunity,
       evaluation: (dependencies.evaluate ?? evaluateOpportunity)({
         opportunity,
-        portfolio,
+        portfolio: effectivePortfolio,
         blacklistEntries,
         config: dependencies.config,
       }),
@@ -227,7 +231,7 @@ export async function runMonitor(
         const message = (dependencies.formatAlert ?? formatOpportunityAlert)(
           opportunity,
           evaluation,
-          portfolio,
+          effectivePortfolio,
           detectedAt ?? new Date(),
         );
         await dependencies.notifier.send(message);
@@ -253,8 +257,6 @@ export async function runMonitor(
         }
         throw errorWithCause(preDeliveryError, "Alert delivery failed");
       }
-      // Once send resolves, failure of completeAlert is ambiguous. Keep the lease
-      // instead of releasing it and risking an immediate duplicate Telegram alert.
       const completionErrors: unknown[] = [];
       for (const alertKey of claimedKeys) {
         try {

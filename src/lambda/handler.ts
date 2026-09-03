@@ -174,7 +174,7 @@ function assertRuntimeConfig(config: ScanRuntimeConfig): void {
       monitor === null ||
       !Array.isArray(monitor.allowedRisks) ||
       !monitor.allowedRisks.every((risk) =>
-        ["A+", "A", "B", "C", "D", "E"].includes(risk),
+        ["A+", "A", "B", "C", "D", "E", "PROTEGIDA"].includes(risk),
       ) ||
       !Number.isFinite(monitor.minimumAnnualReturnPct) ||
       !Number.isSafeInteger(monitor.minimumInvestmentCents) ||
@@ -567,7 +567,7 @@ function createProductionHandler(): ReturnType<typeof createScanHandler> {
         createSource: async () =>
           new PrestamypeClient({
             storageState: storageState as object,
-            deadlineMs: Math.max(1, Math.min(22_000, budgetMs)),
+            deadlineMs: Math.max(1, Math.min(100_000, budgetMs)),
           }),
         config,
       };

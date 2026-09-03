@@ -1,4 +1,5 @@
 import type { Opportunity, PortfolioSnapshot } from "./types.js";
+import { normalizeLegalName } from "./normalization.js";
 
 export function possibleInvestmentCents(
   opportunity: Pick<Opportunity, "remainingAmountCents">,
@@ -21,14 +22,12 @@ export function resultingConcentrationRatio(
   opportunity: Pick<Opportunity, "debtor" | "remainingAmountCents">,
   portfolio: Pick<
     PortfolioSnapshot,
-    "activeTotalCents" | "availableBalanceCents" | "exposureByTaxId"
+    "activeTotalCents" | "availableBalanceCents" | "exposureByParty"
   >,
 ): number | null {
-  const taxId = opportunity.debtor.taxId;
   const active = portfolio.activeTotalCents;
   const possible = possibleInvestmentCents(opportunity, portfolio);
   if (
-    taxId === null ||
     active === null ||
     !Number.isFinite(active) ||
     active < 0 ||
@@ -36,7 +35,9 @@ export function resultingConcentrationRatio(
   ) {
     return null;
   }
-  const recordedExposure = portfolio.exposureByTaxId[taxId];
+  const party = normalizeLegalName(opportunity.debtor.legalName);
+  if (party === "") return null;
+  const recordedExposure = portfolio.exposureByParty[party];
   if (
     recordedExposure !== undefined &&
     (!Number.isFinite(recordedExposure) || recordedExposure < 0)

@@ -30,6 +30,9 @@ const favorableHistory: PaymentHistory = {
 
 const opportunity: Opportunity = {
   id: "opp-1",
+  auctionCode: "M5dGmP0G",
+  commercialName: "CLIENTE",
+  investmentType: "Factoring",
   url: "https://example.test/opp-1",
   supplier: { legalName: "Proveedor SAC", taxId: "20111111111" },
   debtor: { legalName: "Deudor SAC", taxId: "20222222222" },
@@ -50,7 +53,7 @@ const opportunity: Opportunity = {
 const portfolio: PortfolioSnapshot = {
   availableBalanceCents: 0,
   activeTotalCents: 1_000_000,
-  exposureByTaxId: { "20222222222": 0 },
+  exposureByParty: { "DEUDOR SAC": 0 },
 };
 
 describe("scoring components", () => {
@@ -124,7 +127,7 @@ describe("scoring components", () => {
     ).toBe(2);
     expect(
       scoreConcentration(
-        { ...opportunity, debtor: { ...opportunity.debtor, taxId: null } },
+        { ...opportunity, debtor: { ...opportunity.debtor, legalName: "  " } },
         portfolio,
       ),
     ).toBe(2);
@@ -141,21 +144,21 @@ describe("scoring components", () => {
       scoreConcentration(opportunity, {
         ...portfolio,
         availableBalanceCents: 100_000,
-        exposureByTaxId: { "20222222222": 340_000 },
+        exposureByParty: { "DEUDOR SAC": 340_000 },
       }),
     ).toBe(3);
     expect(
       scoreConcentration(opportunity, {
         ...portfolio,
         availableBalanceCents: 100_000,
-        exposureByTaxId: { "20222222222": 615_000 },
+        exposureByParty: { "DEUDOR SAC": 615_000 },
       }),
     ).toBe(1);
     expect(
       scoreConcentration(opportunity, {
         ...portfolio,
         availableBalanceCents: 100_000,
-        exposureByTaxId: { "20222222222": 835_000 },
+        exposureByParty: { "DEUDOR SAC": 835_000 },
       }),
     ).toBe(0);
   });
@@ -165,7 +168,7 @@ describe("scoring components", () => {
     const base = {
       ...portfolio,
       activeTotalCents: 100_000,
-      exposureByTaxId: { "20222222222": 10_000 },
+      exposureByParty: { "DEUDOR SAC": 10_000 },
     };
     const zero = { ...base, availableBalanceCents: 0 };
     const hundred = { ...base, availableBalanceCents: 10_000 };
@@ -210,19 +213,19 @@ describe("scoring components", () => {
     expect(
       scoreConcentration(opportunity, {
         ...portfolio,
-        exposureByTaxId: { "20222222222": Number.POSITIVE_INFINITY },
+        exposureByParty: { "DEUDOR SAC": Number.POSITIVE_INFINITY },
       }),
     ).toBe(2);
     expect(
       scoreConcentration(opportunity, {
         ...portfolio,
-        exposureByTaxId: { "20222222222": -1 },
+        exposureByParty: { "DEUDOR SAC": -1 },
       }),
     ).toBe(2);
     expect(
       scoreConcentration(opportunity, {
         ...portfolio,
-        exposureByTaxId: {},
+        exposureByParty: {},
       }),
     ).toBe(5);
   });

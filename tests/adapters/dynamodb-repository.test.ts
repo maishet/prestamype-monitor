@@ -45,6 +45,9 @@ function conditionalFailure(): Error {
 
 const opportunity: Opportunity = {
   id: "opp-1",
+  auctionCode: "M5dGmP0G",
+  commercialName: "CLIENTE",
+  investmentType: "Factoring",
   url: "https://prestamype.com/opportunities/opp-1",
   supplier: { legalName: "Proveedor SAC", taxId: "20123456789" },
   debtor: { legalName: "Deudor SAC", taxId: "20987654321" },

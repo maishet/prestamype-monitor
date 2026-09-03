@@ -8,9 +8,10 @@ import { pathToFileURL } from "node:url";
 
 import type { OpportunitySource, SessionStore } from "../application/ports.js";
 import {
-  parseOpportunityCards,
-  parseOpportunityDetail,
-} from "../browser/parsers.js";
+  parseOpportunityPanel,
+  parseOpportunityRows,
+} from "../browser/live-parsers.js";
+import { opportunityRowKey, rowRisk } from "../browser/prestamype-client.js";
 import type { BrowserLauncher } from "../browser/prestamype-client.js";
 import { DEFAULT_CONFIG } from "../config/defaults.js";
 import { evaluateOpportunity } from "../domain/evaluate.js";
@@ -28,9 +29,10 @@ import {
 import { redactSensitiveText } from "../security/redaction.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+// Captures of the real site; see scripts/build-fixtures.mjs.
 const FIXTURE_FILES = {
-  list: "opportunities.html",
-  detail: "opportunity-detail.html",
+  list: "live/opportunities-table.html",
+  detail: "live/panel-invertir-riesgo-letra.html",
 } as const;
 
 export class DryRunError extends Error {
@@ -225,19 +227,39 @@ async function loadFixtures(
 const fixturePortfolio: PortfolioSnapshot = {
   availableBalanceCents: 0,
   activeTotalCents: 0,
-  exposureByTaxId: {},
+  exposureByParty: {},
 };
 
 async function runFixture(
   dependencies: DryRunDependencies,
 ): Promise<DryRunResult> {
   const fixtures = await loadFixtures(dependencies);
-  const summary = parseOpportunityCards(fixtures.list).find(
-    (candidate) => candidate.id === "opp-a-16",
+  const panel = parseOpportunityPanel(fixtures.detail);
+  const row = parseOpportunityRows(fixtures.list).find(
+    (candidate) => candidate.commercialName === panel.commercialName,
   );
-  if (summary === undefined)
-    throw new DryRunError("Sanitized fixture is invalid");
-  const opportunity = parseOpportunityDetail(fixtures.detail, summary);
+  if (row === undefined) throw new DryRunError("Sanitized fixture is invalid");
+  const opportunity: Opportunity = {
+    id: opportunityRowKey(row),
+    auctionCode: panel.auctionCode,
+    url: "https://www.prestamype.com/app/inversionista/oportunidades",
+    commercialName: panel.commercialName,
+    investmentType: row.investmentType,
+    supplier: { legalName: panel.legalName, taxId: null },
+    debtor: { legalName: panel.legalName, taxId: null },
+    risk: panel.protectedCapital ? "PROTEGIDA" : (panel.risk ?? rowRisk(row)),
+    currency: panel.currency,
+    annualReturnPct: panel.annualReturnPct,
+    monthlyReturnPct: panel.monthlyReturnPct,
+    totalAmountCents: panel.totalAmountCents,
+    fundedAmountCents: panel.fundedAmountCents,
+    remainingAmountCents: panel.remainingAmountCents,
+    closesAt: panel.closesAt,
+    dueAt: panel.dueAt,
+    debtorHistory: null,
+    supplierHistory: null,
+    collectionProblem: false,
+  };
   const evaluation = evaluateOpportunity({
     opportunity,
     portfolio: fixturePortfolio,

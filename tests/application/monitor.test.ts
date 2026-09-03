@@ -18,6 +18,9 @@ import type {
 
 const opportunity: Opportunity = {
   id: "opp-1",
+  auctionCode: "M5dGmP0G",
+  commercialName: "CLIENTE",
+  investmentType: "Factoring",
   url: "https://prestamype.com/oportunidad/opp-1",
   supplier: { legalName: "Proveedor SAC", taxId: "201" },
   debtor: { legalName: "Pagador SAC", taxId: "202" },
@@ -38,7 +41,7 @@ const opportunity: Opportunity = {
 const portfolio: PortfolioSnapshot = {
   availableBalanceCents: 100_000,
   activeTotalCents: 0,
-  exposureByTaxId: {},
+  exposureByParty: {},
 };
 
 function setup(
@@ -404,16 +407,20 @@ describe("runMonitor", () => {
     expect(context.repository.claimAlert).not.toHaveBeenCalled();
   });
 
-  it("adds both parties from portfolio collection conflicts before evaluation", async () => {
+  it("adds every party under collection from the portfolio before evaluation", async () => {
     const context = setup();
     const conflictPortfolio: PortfolioSnapshot = {
       ...portfolio,
       collectionConflicts: [
         {
-          supplier: { legalName: "Proveedor SAC", taxId: "201" },
-          debtor: { legalName: "Pagador SAC", taxId: "202" },
-          status: "Cobranza administrativa I",
-          evidence: "Fila visible de cartera",
+          party: { legalName: "Proveedor SAC", taxId: "201" },
+          state: "Por cobrar",
+          stage: "Cobranza administrativa I",
+        },
+        {
+          party: { legalName: "Pagador SAC", taxId: "202" },
+          state: "Por cobrar",
+          stage: "Cobranza administrativa I",
         },
       ],
     };
@@ -461,13 +468,14 @@ describe("runMonitor", () => {
       ...portfolio,
       collectionConflicts: [
         {
-          supplier: {
-            legalName: "Proveedor S.A.C.",
-            taxId: "20123456789",
-          },
-          debtor: { legalName: "Pagador S.A.", taxId: "20987654321" },
-          status: "Cobranza legal",
-          evidence: "Fila auditada",
+          party: { legalName: "Proveedor S.A.C.", taxId: "20123456789" },
+          state: "Por cobrar",
+          stage: "Cobranza legal",
+        },
+        {
+          party: { legalName: "Pagador S.A.", taxId: "20987654321" },
+          state: "Por cobrar",
+          stage: "Cobranza legal",
         },
       ],
     };
@@ -486,7 +494,7 @@ describe("runMonitor", () => {
           taxId: "20123456789",
           normalizedName: "PROVEEDOR SAC",
           source: "portfolio-collection",
-          evidence: "Fila auditada",
+          evidence: "Cobranza legal",
           createdAt: "2026-08-27T12:00:00.000Z",
         }),
         expect.objectContaining({ taxId: "20987654321" }),
