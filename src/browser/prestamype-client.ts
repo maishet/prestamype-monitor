@@ -62,6 +62,7 @@ export interface LocatorLike {
   click(): Promise<void>;
   isVisible(): Promise<boolean>;
   textContent(): Promise<string | null>;
+  locator?(selector: string): LocatorLike;
   nth?(index: number): LocatorLike;
   first?(): LocatorLike;
 }
@@ -537,12 +538,26 @@ export class PrestamypeClient implements OpportunitySource {
       if (summary.rowIndex !== undefined) {
         const row = page.locator("tr.row_table:not(.row_table--loading)").nth?.(summary.rowIndex);
         if (row === undefined) continue;
-        await this.withDeadline(row.click(), deadline);
+        const rowTarget =
+          row.locator?.(".client")?.first?.() ??
+          row.locator?.("td")?.first?.() ??
+          row;
+        await this.withDeadline(rowTarget.click(), deadline);
         await this.waitForDetailNavigation(page, deadline);
         const landed = new URL(page.url());
-        if (!/^\/app\/inversionista\/oportunidades\/[A-Za-z0-9_-]+$/.test(landed.pathname)) continue;
-        detailPath = landed.pathname;
-        summary = { ...summary, id: landed.pathname.split("/").at(-1)!, url: landed.href };
+        const detailRoute = /^\/app\/inversionista\/oportunidades\/[A-Za-z0-9_-]+$/.test(landed.pathname);
+        if (!detailRoute) {
+          try {
+            const detailVisible = await page.locator('[data-page="opportunity-detail"], .opportunity-detail-page').isVisible();
+            const panelVisible = await page.getByText?.("Detalle de inversión", { exact: true })?.isVisible();
+            if (!detailVisible && !panelVisible) continue;
+          } catch {
+            continue;
+          }
+        } else {
+          detailPath = landed.pathname;
+          summary = { ...summary, id: landed.pathname.split("/").at(-1)!, url: landed.href };
+        }
       } else {
         await this.navigate(page, detailPath, deadline);
       }
@@ -561,6 +576,13 @@ export class PrestamypeClient implements OpportunitySource {
     for (;;) {
       const path = new URL(page.url()).pathname;
       if (/^\/app\/inversionista\/oportunidades\/[A-Za-z0-9_-]+$/.test(path)) return;
+      // The SPA can render the detail view as an in-place panel without changing URL.
+      try {
+        if (await page.locator('[data-page="opportunity-detail"], .opportunity-detail-page').isVisible()) return;
+        if (await page.getByText?.("Detalle de inversión", { exact: true })?.isVisible()) return;
+      } catch {
+        // Keep polling until the bounded scan deadline.
+      }
       const remaining = deadline - this.now();
       if (remaining <= 250) return;
       await this.withDeadline(new Promise<void>((resolve) => setTimeout(resolve, 250)), deadline);

@@ -333,6 +333,20 @@ describe("parseOpportunityDetail", () => {
     );
   });
 
+  it("parses the in-place investment detail panel", () => {
+    const summary = parseOpportunityCards(validCard())[0]!;
+    const html = `<main><h2>Detalle de inversión</h2>
+      <p>Riesgo C</p><p>Monto de la subasta S/250.990,68</p>
+      <p>Recaudado S/47.314,25</p><p>Restante S/203.676,43</p>
+      <p>Retorno 14,84% anual</p><p>1,16% mensual</p></main>`;
+    const parsed = parseOpportunityDetail(html, summary);
+    expect(parsed.totalAmountCents).toBe(25_099_068);
+    expect(parsed.fundedAmountCents).toBe(4_731_425);
+    expect(parsed.remainingAmountCents).toBe(20_367_643);
+    expect(parsed.annualReturnPct).toBe(14.84);
+    expect(parsed.monthlyReturnPct).toBe(1.16);
+  });
+
   it("extracts the money portion when a live detail amount includes funding percent", () => {
     const summary = parseOpportunityCards(validCard())[0]!;
     const html = `<main data-page="opportunity-detail">

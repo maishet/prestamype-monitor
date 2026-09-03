@@ -107,8 +107,11 @@ export function parseOpportunityDetail(
 ): Opportunity {
   const $ = load(html);
   const page = findFirst($.root(), PRESTAMYPE_SELECTORS.detailPage);
-  if (page.length === 0)
-    throw new PageStructureError("MISSING_FIELD", "detailPage");
+  if (page.length === 0) {
+    const panelHeading = $("*").filter((_, element) => $(element).text().trim() === "Detalle de inversión").first();
+    if (panelHeading.length === 0) throw new PageStructureError("MISSING_FIELD", "detailPage");
+    return parseLiveInvestmentPanel($, summary);
+  }
 
   const currency = parseOptionalCurrency(page) ?? summary.currency;
   let detailRisk = summary.risk;
@@ -172,6 +175,32 @@ export function parseOpportunityDetail(
       currency,
     ),
     collectionProblem: parseCollectionProblem(page),
+  };
+}
+
+function parseLiveInvestmentPanel($: CheerioAPI, summary: OpportunitySummary): Opportunity {
+  const text = $("body").text().replaceAll(/\s+/gu, " ").trim();
+  const capture = (label: string, field: string): number => {
+    const match = text.match(new RegExp(`${label}\\s*(?:S\\/|PEN)?\\s*([\\d.,]+)`, "iu"));
+    if (!match?.[1]) throw new PageStructureError("INVALID_FIELD", field);
+    return parseCents(match[1], field, summary.currency);
+  };
+  const annual = text.match(/Retorno\s+([\d.,]+)\s*%\s*anual/iu);
+  const monthly = text.match(/([\d.,]+)\s*%\s*mensual/iu);
+  const risk = text.match(/Riesgo\s*([A-E](?:\+)?)/iu)?.[1]?.toUpperCase();
+  return {
+    ...summary,
+    risk: risk && ["A+", "A", "B", "C", "D", "E"].includes(risk) ? risk as Opportunity["risk"] : summary.risk,
+    annualReturnPct: annual?.[1] ? parsePercentage(`${annual[1]}%`, "annualReturnPct") : summary.annualReturnPct,
+    monthlyReturnPct: monthly?.[1] ? parsePercentage(`${monthly[1]}%`, "monthlyReturnPct") : null,
+    totalAmountCents: capture("Monto de la subasta", "totalAmountCents"),
+    fundedAmountCents: capture("Recaudado", "fundedAmountCents"),
+    remainingAmountCents: capture("Restante", "remainingAmountCents"),
+    closesAt: null,
+    dueAt: null,
+    debtorHistory: null,
+    supplierHistory: null,
+    collectionProblem: false,
   };
 }
 
