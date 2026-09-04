@@ -251,11 +251,11 @@
           "Schedule": {
             "Type": "Schedule",
             "Properties": {
-              "Schedule": "rate(5 minutes)",
+              "Schedule": "cron(0/5 14-23 ? * * *)",
               "Name": {
                 "Fn::Sub": "${AWS::StackName}-scan-schedule"
               },
-              "Description": "Runs one read-only Prestamype scan.",
+              "Description": "One read-only Prestamype scan every five minutes while the market is open. EventBridge cron is UTC and Peru has no DST, so 14:00-23:55 UTC is a fixed 09:00-18:55 in Lima.",
               "Enabled": true
             }
           }

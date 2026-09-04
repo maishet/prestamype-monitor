@@ -62,14 +62,17 @@ describe("SAM infrastructure", () => {
     });
   });
 
-  it("drives the cadence from a schedule and never retries a failed scan", () => {
+  it("scans on Lima market hours only and never retries a failed scan", () => {
     const properties = resource(
       "AWS::Serverless::Function",
       "ScanFunction",
     ).Properties;
     expect(properties.Events.Schedule).toMatchObject({
       Type: "Schedule",
-      Properties: { Schedule: "rate(5 minutes)", Enabled: true },
+      // 14:00-23:55 UTC is 09:00-18:55 in Lima, which observes no DST. Outside
+      // those hours Prestamype accepts no auctions, so a scan would only burn
+      // free-tier GB-seconds against a table that cannot have changed.
+      Properties: { Schedule: "cron(0/5 14-23 ? * * *)", Enabled: true },
     });
     // A retried scan would double the work; the next tick is five minutes away.
     expect(properties.EventInvokeConfig).toMatchObject({
