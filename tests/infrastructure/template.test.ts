@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -208,7 +208,11 @@ describe("SAM infrastructure", () => {
       CompatibleArchitectures: ["x86_64"],
       RetentionPolicy: "Delete",
     });
-    expect(browserLayer.Metadata.BuildMethod).toBe("makefile");
+    // A makefile build needed `make` on the machine running it, which Windows
+    // does not ship: `sam build` failed and every deploy had to be assembled by
+    // hand. SAM's own Node builder produces the same nodejs/node_modules layout
+    // from the same lockfile, with no tool to install first.
+    expect(browserLayer.Metadata.BuildMethod).toBe("nodejs22.x");
     const layerPackage = JSON.parse(
       readFileSync(resolve(root, "layers/browser/package.json"), "utf8"),
     ) as JsonObject;
@@ -224,11 +228,7 @@ describe("SAM infrastructure", () => {
     expect(layerLock.packages[""].dependencies).toEqual(
       layerPackage.dependencies,
     );
-    const layerMakefile = readFileSync(
-      resolve(root, "layers/browser/Makefile"),
-      "utf8",
-    );
-    expect(layerMakefile).toContain("npm ci --omit=dev");
+    expect(existsSync(resolve(root, "layers/browser/Makefile"))).toBe(false);
 
     const entrypoints = [["ScanFunction", "src/lambda/handler.ts"]] as const;
     for (const [logicalId, entrypoint] of entrypoints) {

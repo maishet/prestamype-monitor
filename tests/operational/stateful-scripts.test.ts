@@ -328,50 +328,78 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
     "SessionExpiredError",
     "SessionChallengeError",
     "PageStructureError",
-  ])(
-    "resumes a disabled recoverable manual pause (%s) without sending",
-    (reason) => {
-      const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-      const statePath = `${dir}\\state.json`;
-      const config = {
-        ...structuredClone(fullConfig),
-        paused_until: { S: "manual" },
-        pause_reason: { S: reason },
-        rate_limit_count: { N: "2" },
-        unrelated: { S: "preserve-me" },
-      };
-      try {
-        writeFileSync(
-          statePath,
-          JSON.stringify({ config, messages: [], blacklist: {}, calls: [] }),
-        );
-        run(shell, "resume-monitor.ps1", statePath);
-        const state = JSON.parse(readFileSync(statePath, "utf8"));
-        expect(state.config.paused_until).toBeUndefined();
-        expect(state.config.pause_reason).toBeUndefined();
-        expect(state.config.enabled).toEqual({ BOOL: false });
-        expect(state.config.rate_limit_count).toEqual({ N: "2" });
-        expect(state.config.unrelated).toEqual({ S: "preserve-me" });
-        expect(state.messages).toEqual([]);
-        expect(state.calls.at(-1).input.ConditionExpression).toContain(
-          "pause_reason = :reason",
-        );
-        for (const call of state.calls)
-          if (call.inputPath)
-            expect(() => readFileSync(call.inputPath)).toThrow();
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
-    },
-  );
+  ])("resumes a recoverable manual pause (%s) without sending", (reason) => {
+    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
+    const statePath = `${dir}\\state.json`;
+    const config = {
+      ...structuredClone(fullConfig),
+      // The handler pauses without touching enabled, so this is the only
+      // shape a real pause ever has.
+      enabled: { BOOL: true },
+      paused_until: { S: "manual" },
+      pause_reason: { S: reason },
+      rate_limit_count: { N: "2" },
+      unrelated: { S: "preserve-me" },
+    };
+    try {
+      writeFileSync(
+        statePath,
+        JSON.stringify({ config, messages: [], blacklist: {}, calls: [] }),
+      );
+      run(shell, "resume-monitor.ps1", statePath);
+      const state = JSON.parse(readFileSync(statePath, "utf8"));
+      expect(state.config.paused_until).toBeUndefined();
+      expect(state.config.pause_reason).toBeUndefined();
+      // Resume clears the pause and leaves enabled to activate/deactivate.
+      expect(state.config.enabled).toEqual({ BOOL: true });
+      expect(state.config.rate_limit_count).toEqual({ N: "2" });
+      expect(state.config.unrelated).toEqual({ S: "preserve-me" });
+      expect(state.messages).toEqual([]);
+      expect(state.calls.at(-1).input.ConditionExpression).toContain(
+        "pause_reason = :reason",
+      );
+      for (const call of state.calls)
+        if (call.inputPath)
+          expect(() => readFileSync(call.inputPath)).toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
+  it("resumes a paused monitor that is also deactivated", () => {
+    // activate/deactivate own `enabled`; resume owns the pause. Coupling the
+    // two is what made the documented recovery path impossible to run: the
+    // handler pauses without touching enabled, so the script demanded a state
+    // that never occurs.
+    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
+    const statePath = `${dir}\\state.json`;
+    const config = {
+      ...structuredClone(fullConfig),
+      enabled: { BOOL: false },
+      paused_until: { S: "manual" },
+      pause_reason: { S: "SessionExpiredError" },
+    };
+    try {
+      writeFileSync(
+        statePath,
+        JSON.stringify({ config, messages: [], blacklist: {}, calls: [] }),
+      );
+      run(shell, "resume-monitor.ps1", statePath);
+      const state = JSON.parse(readFileSync(statePath, "utf8"));
+      expect(state.config.paused_until).toBeUndefined();
+      expect(state.config.pause_reason).toBeUndefined();
+      expect(state.config.enabled).toEqual({ BOOL: false });
+      expect(state.messages).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it.each([
-    ["cost pause", "manual", "cost:MONTHLY_LIMIT", false],
-    ["rate limit manual pause", "manual", "RateLimitError", false],
-    ["other manual pause", "manual", "OperatorPause", false],
-    ["timed pause", "2026-09-01T12:00:00.000Z", "SessionExpiredError", false],
-    ["enabled pause", "manual", "SessionExpiredError", true],
-    ["missing reason", "manual", null, false],
+    ["cost pause", "manual", "cost:MONTHLY_LIMIT", true],
+    ["rate limit manual pause", "manual", "RateLimitError", true],
+    ["other manual pause", "manual", "OperatorPause", true],
+    ["timed pause", "2026-09-01T12:00:00.000Z", "SessionExpiredError", true],
+    ["missing reason", "manual", null, true],
   ])(
     "rejects %s without update or send",
     (_label, pausedUntil, reason, enabled) => {
@@ -541,7 +569,12 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
       "wrong Dynamo attribute type",
       {
         ...structuredClone(fullConfig),
-        enabled: { S: "false" },
+        costLimits: {
+          M: {
+            configuredMemoryGb: { S: "1" },
+            monthlyGbSecondsLimit: { N: "400000" },
+          },
+        },
         paused_until: { S: "manual" },
         pause_reason: { S: "SessionExpiredError" },
       },

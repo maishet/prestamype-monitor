@@ -13,9 +13,9 @@ function Has-Property([object]$Value, [string]$Name) {
     return $null -ne $Value -and @($Value.PSObject.Properties | ForEach-Object { $_.Name }) -contains $Name
 }
 
-function Is-CompleteDisabledConfig([object]$Item) {
+function Is-CompletePausedConfig([object]$Item) {
     try {
-        if ($Item.PK.S -cne "CONFIG" -or $Item.SK.S -cne "MONITOR" -or $Item.enabled.BOOL -ne $false) { return $false }
+        if ($Item.PK.S -cne "CONFIG" -or $Item.SK.S -cne "MONITOR") { return $false }
         $monitor = $Item.monitor.M
         $cost = $Item.costLimits.M
         foreach ($name in @("allowedRisks", "minimumAnnualReturnPct", "currency", "minimumInvestmentCents", "highPriorityScore", "reviewScore", "detailRefreshIntervalMs")) {
@@ -67,8 +67,8 @@ try {
     $readText = & aws dynamodb get-item --region $Region --cli-input-json ("file://" + $tempPath) --output json
     if ($LASTEXITCODE -ne 0) { throw "No se pudo leer la configuracion." }
     $response = $readText | ConvertFrom-Json
-    if (-not (Has-Property $response "Item") -or -not (Is-CompleteDisabledConfig $response.Item)) {
-        throw "No se puede reanudar: la configuracion falta, es invalida o no esta deshabilitada."
+    if (-not (Has-Property $response "Item") -or -not (Is-CompletePausedConfig $response.Item)) {
+        throw "No se puede reanudar: la configuracion falta o es invalida."
     }
     $item = $response.Item
     if (-not (Has-Property $item "paused_until") -or $item.paused_until.S -cne "manual" -or -not (Has-Property $item "pause_reason")) {
@@ -83,9 +83,8 @@ try {
         TableName = $tableName
         Key = @{ PK = @{ S = "CONFIG" }; SK = @{ S = "MONITOR" } }
         UpdateExpression = "REMOVE paused_until, pause_reason"
-        ConditionExpression = "enabled = :disabled AND paused_until = :manual AND pause_reason = :reason"
+        ConditionExpression = "attribute_exists(PK) AND paused_until = :manual AND pause_reason = :reason"
         ExpressionAttributeValues = @{
-            ":disabled" = @{ BOOL = $false }
             ":manual" = @{ S = "manual" }
             ":reason" = @{ S = $reason }
         }
@@ -102,4 +101,4 @@ try {
     if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force }
 }
 
-Write-Output "Pausa recuperable retirada; el monitor sigue deshabilitado y no se envio ningun mensaje."
+Write-Output "Pausa recuperable retirada; el flag enabled quedo como estaba y no se envio ningun mensaje."

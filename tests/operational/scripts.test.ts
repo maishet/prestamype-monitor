@@ -155,7 +155,7 @@ describe("operational PowerShell scripts", () => {
     }
   });
 
-  it("resumes only an exact disabled recoverable manual pause without enqueueing", () => {
+  it("resumes only an exact recoverable manual pause without enqueueing", () => {
     const resume = source("resume-monitor.ps1");
     expect(resume).toContain('Read-Host "Escribe exactamente REANUDAR');
     expect(resume).toContain('$confirmation -cne "REANUDAR"');
@@ -167,7 +167,11 @@ describe("operational PowerShell scripts", () => {
     ])
       expect(resume).toContain(reason);
     expect(resume).toContain("ConsistentRead = $true");
-    expect(resume).toContain("enabled = :disabled");
+    expect(resume).toContain("attribute_exists(PK)");
+    // A pause and the enabled flag are separate concerns: the handler pauses
+    // without touching enabled, so requiring a value for it here made the
+    // documented recovery path impossible to run.
+    expect(resume).not.toMatch(/enabled = :/u);
     expect(resume).toContain("paused_until = :manual");
     expect(resume).toContain("pause_reason = :reason");
     expect(resume).toContain("REMOVE paused_until, pause_reason");

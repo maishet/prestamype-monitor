@@ -22,7 +22,7 @@ describe("local Lambda build smoke", () => {
       layerChromiumBin: true,
       layerPlaywrightCore: true,
       templateLayerLinked: true,
-      layerMakefileCi: true,
+      layerBuildsWithoutMake: true,
       runtimeHandler: true,
       runtimePlaywright: true,
       runtimeChromiumArgs: true,

@@ -501,6 +501,25 @@ describe("PrestamypeClient failure handling", () => {
     warn.mockRestore();
   });
 
+  it("refuses to report an unrendered portfolio as an empty one", async () => {
+    const loading = fixture("opportunities-table-loading.html");
+    const fake = createFakePage({ html: () => loading });
+    let clock = 0;
+    const client = createClient(fake.page, {
+      now: () => clock,
+      sleep: async () => {
+        clock += 250;
+      },
+      deadlineMs: 60_000,
+    });
+    client.beginScan();
+    // Zero rows would read as no exposure to anybody, and the concentration
+    // score is worth five points of a recommendation to invest.
+    await expect(client.getPortfolio()).rejects.toThrow(
+      "The portfolio table did not render",
+    );
+    await client.close();
+  });
   it("closes only the browser and lets it take its context along", async () => {
     const order: string[] = [];
     const fake = createFakePage();

@@ -54,7 +54,8 @@ if (service === "cloudformation") {
     const expectedReason = input.ExpressionAttributeValues[":reason"]?.S;
     if (
       state.failResumeCondition ||
-      state.config?.enabled?.BOOL !== false ||
+      // Mirrors attribute_exists(PK): resume does not look at enabled.
+      !state.config ||
       state.config?.paused_until?.S !== "manual" ||
       state.config?.pause_reason?.S !== expectedReason
     ) {

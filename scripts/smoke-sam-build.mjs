@@ -114,10 +114,6 @@ export async function runSmokeBuild() {
     const template = JSON.parse(await readFile(join(root, "template.yaml")));
     const scanLayers = template.Resources.ScanFunction.Properties.Layers;
     const layer = template.Resources.BrowserDependenciesLayer;
-    const layerMakefile = await readFile(
-      join(root, "layers", "browser", "Makefile"),
-      "utf8",
-    );
     result = {
       scanBundle:
         existsSync(scanBundle) && Object.keys(scan.metafile.outputs).length > 0,
@@ -138,8 +134,10 @@ export async function runSmokeBuild() {
         JSON.stringify(scanLayers) ===
           JSON.stringify([{ Ref: "BrowserDependenciesLayer" }]) &&
         layer?.Properties?.ContentUri === "layers/browser" &&
-        layer?.Metadata?.BuildMethod === "makefile",
-      layerMakefileCi: layerMakefile.includes("npm ci --omit=dev"),
+        layer?.Metadata?.BuildMethod === "nodejs22.x",
+      layerBuildsWithoutMake: !existsSync(
+        join(root, "layers", "browser", "Makefile"),
+      ),
       runtimeHandler: runtimeProbe.handler,
       runtimePlaywright: runtimeProbe.playwright,
       runtimeChromiumArgs: runtimeProbe.chromiumArgs,

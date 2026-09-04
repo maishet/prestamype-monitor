@@ -304,7 +304,7 @@
         "RetentionPolicy": "Delete"
       },
       "Metadata": {
-        "BuildMethod": "makefile"
+        "BuildMethod": "nodejs22.x"
       }
     },
     "ScanLogGroup": {

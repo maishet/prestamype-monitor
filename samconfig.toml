@@ -1,0 +1,13 @@
+version = 0.1
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.deploy.parameters]
+stack_name = "prestamype-monitor"
+resolve_s3 = true
+region = "sa-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "TelegramTokenParameterPath=/prestamype/prod/telegram-token TelegramChatIdParameterPath=/prestamype/prod/telegram-chat-id SessionKeyParameterPath=/prestamype/prod/session-key"

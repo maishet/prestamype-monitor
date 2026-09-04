@@ -353,7 +353,12 @@ export class PrestamypeClient implements OpportunitySource {
       const page = await this.getPage(deadline);
       await this.navigate(page, PORTFOLIO_PATH, deadline);
       await this.assertAuthenticated(page, deadline);
-      await this.waitForRows(page, deadline);
+      // A table that never rendered parses as an empty portfolio, and an empty
+      // portfolio reads as no exposure to anybody: concentration would be scored
+      // against holdings that were merely unread, and it is worth five points.
+      // Failing costs this one scan, and the next tick is three minutes away.
+      if (!(await this.waitForRows(page, deadline)))
+        throw new Error("The portfolio table did not render");
 
       const exposureByParty: Record<string, number> = {};
       const collectionConflicts: CollectionConflict[] = [];
@@ -624,13 +629,16 @@ export class PrestamypeClient implements OpportunitySource {
     }
   }
 
-  private async waitForRows(page: PageLike, deadline: number): Promise<void> {
-    await this.waitForContent(
-      page,
-      "table",
-      (html) => !isOpportunityTableLoading(html),
-      deadline,
-      12_000,
+  /** False when the budget ran out with the table still unrendered. */
+  private async waitForRows(page: PageLike, deadline: number): Promise<boolean> {
+    return (
+      (await this.waitForContent(
+        page,
+        "table",
+        (html) => !isOpportunityTableLoading(html),
+        deadline,
+        12_000,
+      )) !== null
     );
   }
 
@@ -721,7 +729,10 @@ export class PrestamypeClient implements OpportunitySource {
     const next = page.locator(".pagination-content .next-button button");
     if (!(await this.withDeadline(next.isVisible(), deadline))) return false;
     await this.safeClick(next, "pager.next", deadline);
-    await this.waitForRows(page, deadline);
+    // The pager said there are more rows, so stopping quietly here would report
+    // a partial portfolio as if it were the whole of it.
+    if (!(await this.waitForRows(page, deadline)))
+      throw new Error("A further page of rows did not render");
     return true;
   }
 
