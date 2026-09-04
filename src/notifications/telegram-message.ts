@@ -189,6 +189,21 @@ function formatRisk(risk: Opportunity["risk"]): string {
   return risk === "PROTEGIDA" ? "Protegida 🛡" : `Riesgo ${risk}`;
 }
 
+function trustedOpportunityUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "www.prestamype.com" ||
+      !url.pathname.startsWith("/app/inversionista/oportunidades")
+    )
+      return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
 function formatFundingProgress(fundedPct: number): string {
   const boundedPct = Math.min(100, Math.max(0, fundedPct));
   const filled = Math.round((boundedPct / 100) * FUNDING_PROGRESS_SEGMENTS);
@@ -361,6 +376,15 @@ export function formatOpportunityAlert(
     ),
     "essential",
   );
+
+  const url = trustedOpportunityUrl(opportunity.url);
+  if (url !== null)
+    push(
+      withGap(
+        `🔗 <a href="${escapeHtml(url)}">Abrir oportunidad en Prestamype</a>`,
+      ),
+      "essential",
+    );
 
   return renderWithinTelegramLimit(lines);
 }

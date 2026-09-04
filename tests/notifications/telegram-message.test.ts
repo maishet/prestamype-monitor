@@ -109,10 +109,9 @@ describe("formatOpportunityAlert", () => {
 
   it("leaves out what the reader cannot act on", () => {
     const message = format({}, {}, { availableBalanceCents: 0 });
-    // Deliberately absent: the balance, the auction code and the link.
+    // Deliberately absent: the balance and the auction code.
     expect(message).not.toContain("saldo");
     expect(message).not.toContain("código");
-    expect(message).not.toContain("<a href");
   });
 
   it("says how urgent the close is rather than only when it is", () => {
@@ -228,17 +227,32 @@ describe("formatOpportunityAlert", () => {
     );
   });
 
-  it("never renders a URL, however hostile the stored one is", () => {
+  it("renders a trusted Prestamype link at the end", () => {
+    const lines = format().split("\n");
+    expect(lines.at(-1)).toBe(
+      '🔗 <a href="https://www.prestamype.com/app/inversionista/oportunidades">Abrir oportunidad en Prestamype</a>',
+    );
+  });
+
+  it("only renders trusted Prestamype opportunity URLs", () => {
     for (const url of [
       "javascript:alert(1)",
       "https://evil.example/app/inversionista/oportunidades",
-      "https://www.prestamype.com/app/inversionista/oportunidades",
+      "https://www.prestamype.com/otra-ruta",
     ]) {
       const message = format({ url });
       expect(message).not.toContain("<a href");
       expect(message).not.toContain("evil.example");
       expect(message).not.toContain("javascript:");
     }
+
+    expect(
+      format({
+        url: "https://www.prestamype.com/app/inversionista/oportunidades?x=1&y=2",
+      }),
+    ).toContain(
+      '<a href="https://www.prestamype.com/app/inversionista/oportunidades?x=1&amp;y=2">',
+    );
   });
 
   it("stays within Telegram's limit when every field is oversized", () => {
