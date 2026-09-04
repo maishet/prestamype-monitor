@@ -25,7 +25,7 @@ function Is-CompleteDisabledConfig([object]$Item) {
             if (-not (Has-Property $cost $name)) { return $false }
         }
         $risks = @($monitor.allowedRisks.L | ForEach-Object { $_.S })
-        if ($risks.Count -eq 0 -or @($risks | Where-Object { $_ -notin @("A+", "A", "B", "C", "D", "E") }).Count -gt 0) { return $false }
+        if ($risks.Count -eq 0 -or @($risks | Where-Object { $_ -notin @("A+", "A", "B", "C", "D", "E", "PROTEGIDA") }).Count -gt 0) { return $false }
         foreach ($number in @($monitor.minimumAnnualReturnPct.N, $monitor.highPriorityScore.N, $monitor.reviewScore.N, $cost.configuredMemoryGb.N, $cost.monthlyGbSecondsLimit.N)) {
             if ($number -notmatch '^\d+(?:\.\d+)?$') { return $false }
         }

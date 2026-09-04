@@ -15,7 +15,7 @@ if ($ValidateOnly -or $WhatIfPreference) { Write-Output "Validación local corre
 $updates = @{}
 if ($PSBoundParameters.ContainsKey("AllowedRisks")) {
     $risks = @($AllowedRisks -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
-    if ($risks.Count -eq 0 -or @($risks | Where-Object { $_ -notin @("A+", "A", "B", "C", "D", "E") }).Count -gt 0) { throw "AllowedRisks debe contener riesgos A+, A, B, C, D o E separados por comas." }
+    if ($risks.Count -eq 0 -or @($risks | Where-Object { $_ -notin @("A+", "A", "B", "C", "D", "E", "PROTEGIDA") }).Count -gt 0) { throw "AllowedRisks debe contener riesgos A+, A, B, C, D, E o PROTEGIDA separados por comas." }
     $updates["monitor.allowedRisks"] = @{ L = @($risks | ForEach-Object { @{ S = $_ } }) }
 }
 if ($PSBoundParameters.ContainsKey("AllowedCurrencies")) {

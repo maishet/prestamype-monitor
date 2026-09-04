@@ -25,6 +25,9 @@ export function matchesBlacklist<T extends BlacklistComparable>(
   }
 
   const normalizedName = normalizeLegalName(party.legalName);
+  // An anonymous party matches nothing. The supplier has no published identity,
+  // so comparing its empty name would match any malformed blacklist entry.
+  if (normalizedName === "") return null;
 
   return (
     entries.find(

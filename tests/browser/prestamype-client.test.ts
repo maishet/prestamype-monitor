@@ -144,6 +144,29 @@ describe("shouldBlockResource", () => {
     expect(shouldBlockResource("image", asset)).toBe(true);
   });
 
+  it("allows the API host the table's rows actually come from", () => {
+    // The app booted fine once CloudFront was allowed and then hung forever on
+    // its loading row, because every data call goes to this other subdomain.
+    for (const type of ["xhr", "fetch"])
+      expect(
+        shouldBlockResource(type, "https://api.prestamype.com/v1/auctions"),
+      ).toBe(false);
+    // Data only: no documents or scripts from the API host.
+    for (const type of ["document", "script", "stylesheet"])
+      expect(
+        shouldBlockResource(type, "https://api.prestamype.com/whatever"),
+      ).toBe(true);
+  });
+
+  it("blocks other prestamype subdomains that are not the app or its API", () => {
+    expect(
+      shouldBlockResource(
+        "script",
+        "https://creditos-hipotecarios.prestamype.com/x.js",
+      ),
+    ).toBe(true);
+  });
+
   it("still allows the application's own documents and data calls", () => {
     for (const type of ["document", "script", "xhr", "fetch"])
       expect(shouldBlockResource(type, "https://www.prestamype.com/app")).toBe(
@@ -348,6 +371,21 @@ describe("PrestamypeClient scan", () => {
     );
   });
 
+  it("leaves the supplier anonymous instead of copying the debtor", async () => {
+    const client = createClient(fake.page);
+    client.beginScan();
+    const [opportunity] = await client.listEligibleOpportunities(config, {});
+    await client.close();
+    // The site publishes the debtor's name and RUC but only the supplier's
+    // industry, so labelling the debtor as supplier would be a real mistake.
+    expect(opportunity!.debtor.legalName).not.toBe("");
+    expect(opportunity!.debtor.taxId).toBe("20123456789");
+    expect(opportunity!.supplier.legalName).toBe("");
+    expect(opportunity!.supplier.taxId).toBeNull();
+    // The supplier's history is published even though its identity is not.
+    expect(opportunity!.supplierHistory).toMatchObject({ paidOnTime: 260 });
+  });
+
   it("reads the available balance out of the detail panel", async () => {
     const client = createClient(fake.page);
     client.beginScan();
@@ -397,6 +435,34 @@ describe("PrestamypeClient failure handling", () => {
     await client.close();
   });
 
+  it("checks visibility before reading text, which auto-waits", async () => {
+    // textContent() blocks for the whole locator timeout on a missing element.
+    // Asking for it first turned an absent sort control into a failed scan.
+    const order: string[] = [];
+    const fake = createFakePage();
+    const original = fake.page.locator;
+    fake.page.locator = (selector: string) => {
+      const inner = original(selector);
+      return {
+        ...inner,
+        isVisible: async () => {
+          order.push(`isVisible:${selector}`);
+          return inner.isVisible();
+        },
+        textContent: async () => {
+          order.push(`textContent:${selector}`);
+          return inner.textContent();
+        },
+      };
+    };
+    const client = createClient(fake.page);
+    client.beginScan();
+    await client.listEligibleOpportunities(config, {});
+    await client.close();
+    const sortCalls = order.filter((entry) => entry.includes("select-sort"));
+    expect(sortCalls[0]).toMatch(/^isVisible:/u);
+  });
+
   it("does not hang when the table never stops loading", async () => {
     const loading = fixture("opportunities-table-loading.html");
     const fake = createFakePage({ html: () => loading });
@@ -418,6 +484,50 @@ describe("PrestamypeClient failure handling", () => {
     expect(opportunities).toEqual([]);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it("does not fail a finished scan because the browser was slow to close", async () => {
+    const fake = createFakePage();
+    const launcher: BrowserLauncher = {
+      launch: async () => ({
+        newContext: async () => ({
+          newPage: async () => fake.page,
+          close: () => new Promise<void>(() => undefined),
+          setDefaultTimeout: () => undefined,
+        }),
+        close: async () => undefined,
+      }),
+    };
+    let clock = 0;
+    const client = new PrestamypeClient({
+      launcher,
+      storageState: {},
+      deadlineMs: 60_000,
+      now: () => clock,
+      sleep: async () => {
+        clock += 250;
+      },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    client.beginScan();
+    await client.getPortfolio();
+
+    // Fake timers only for the shutdown, so the 12s cleanup budget elapses
+    // without the test actually waiting for it.
+    vi.useFakeTimers();
+    try {
+      const closing = client.close();
+      await vi.advanceTimersByTimeAsync(13_000);
+      // The result is already persisted by this point; throwing here would only
+      // make SQS redeliver a scan that succeeded.
+      await expect(closing).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Browser cleanup"),
+      );
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
   });
 
   it("still closes the browser when context close throws", async () => {

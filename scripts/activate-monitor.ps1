@@ -20,7 +20,7 @@ function Is-CompleteEnabledConfig([object]$Response) {
         foreach ($name in @("allowedRisks", "minimumAnnualReturnPct", "currency", "minimumInvestmentCents", "highPriorityScore", "reviewScore", "detailRefreshIntervalMs")) { if (-not (Has-Property $m $name)) { return $false } }
         foreach ($name in @("configuredMemoryGb", "monthlyGbSecondsLimit")) { if (-not (Has-Property $c $name)) { return $false } }
         $risks = @($m.allowedRisks.L | ForEach-Object { $_.S })
-        if ($risks.Count -eq 0 -or @($risks | Where-Object { $_ -notin @("A+", "A", "B", "C", "D", "E") }).Count -gt 0) { return $false }
+        if ($risks.Count -eq 0 -or @($risks | Where-Object { $_ -notin @("A+", "A", "B", "C", "D", "E", "PROTEGIDA") }).Count -gt 0) { return $false }
         foreach ($number in @($m.minimumAnnualReturnPct.N, $m.highPriorityScore.N, $m.reviewScore.N, $c.configuredMemoryGb.N, $c.monthlyGbSecondsLimit.N)) { if ($number -notmatch '^\d+(?:\.\d+)?$') { return $false } }
         foreach ($integer in @($m.minimumInvestmentCents.N, $m.detailRefreshIntervalMs.N)) { if ($integer -notmatch '^\d+$') { return $false } }
         $annual = [double]$m.minimumAnnualReturnPct.N; $minimum = [long]$m.minimumInvestmentCents.N; $high = [double]$m.highPriorityScore.N; $review = [double]$m.reviewScore.N; $refresh = [long]$m.detailRefreshIntervalMs.N; $memory = [double]$c.configuredMemoryGb.N; $monthly = [double]$c.monthlyGbSecondsLimit.N

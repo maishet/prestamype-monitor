@@ -24,6 +24,7 @@ import {
   LIVE_SELECTORS,
   OPPORTUNITIES_URL,
   isOpportunityTableLoading,
+  isPanelOpen,
   parseOpportunityPanel,
   parseOpportunityRows,
   parsePager,
@@ -37,7 +38,19 @@ import { load } from "cheerio";
 
 export const ORIGIN = "https://www.prestamype.com";
 const APEX_ORIGIN = "https://prestamype.com";
+/**
+ * The whole single-page app is served from CloudFront. Blocking it — which the
+ * original resource policy did — aborts every script the page needs, so Vue
+ * never boots and the scan evaluates nothing. Analytics vendors stay blocked.
+ */
 const APPLICATION_ASSET_ORIGIN = "https://d14bodb4yrsx8y.cloudfront.net";
+
+/**
+ * The table's rows arrive from here, not from the www host. Blocking it let the
+ * app boot and then hang forever on its loading row, which is indistinguishable
+ * from a slow page unless the blocked requests are logged.
+ */
+const APPLICATION_API_ORIGIN = "https://api.prestamype.com";
 
 const OPPORTUNITIES_PATH = "/app/inversionista/oportunidades";
 const PORTFOLIO_PATH = "/app/inversionista/mis-inversiones";
@@ -49,6 +62,12 @@ const PROTECTED_PATHS = new Set([
   "/app/inversionista/dashboard",
 ]);
 
+/**
+ * Never click anything that could move money. This is checked against the
+ * rendered text of the element about to be clicked, so it also guards clicks
+ * made by CSS selector — the opportunities table puts an "Invertir" button in
+ * every row, and the detail panel a "Realizar inversión" one.
+ */
 const PROHIBITED_ACTION =
   /invertir|inversi[óo]n|reservar|pagar|confirmar|depositar|dep[óo]sito|retirar/i;
 
@@ -126,6 +145,9 @@ export function shouldBlockResource(
   }
   if (url.origin === APPLICATION_ASSET_ORIGIN)
     return !["script", "stylesheet", "xhr", "fetch"].includes(resourceType);
+  // Data only: the API host has no reason to serve documents or scripts here.
+  if (url.origin === APPLICATION_API_ORIGIN)
+    return !["xhr", "fetch"].includes(resourceType);
   if (["image", "font", "media"].includes(resourceType)) return true;
   if (url.origin === APEX_ORIGIN) return resourceType !== "document";
   if (url.origin !== ORIGIN) return true;
@@ -147,6 +169,10 @@ function fingerprint(value: object): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+/**
+ * Identity of a row across scans. The table exposes no id and no link, so this
+ * is derived from the fields that do not move while an auction is open.
+ */
 export function opportunityRowKey(row: OpportunityRow): string {
   return fingerprint({
     currency: row.currency,
@@ -157,6 +183,13 @@ export function opportunityRowKey(row: OpportunityRow): string {
   }).slice(0, 32);
 }
 
+/**
+ * What is visible about an auction, so funding progress reopens the panel.
+ *
+ * The row and the stored opportunity must hash identically or every scan would
+ * reopen every panel, so this uses only fields both carry, with the funded
+ * share rounded to the two decimals the site itself renders.
+ */
 function visibleFingerprint(visible: {
   id: string;
   risk: RiskGrade;
@@ -452,7 +485,16 @@ export class PrestamypeClient implements OpportunitySource {
   }> {
     const opened = await this.openPanelTab(page, label, deadline);
     if (!opened) return { history: null, profile: null };
-    const html = await this.withDeadline(page.content(), deadline);
+    // The tab's cards arrive on their own request too. A tab that never fills
+    // costs this party its history, not the whole opportunity.
+    const html = await this.waitForContent(
+      page,
+      `tab:${label}`,
+      (content) => parsePartyHistory(content) !== null,
+      deadline,
+      8_000,
+    );
+    if (html === null) return { history: null, profile: null };
     return {
       history: parsePartyHistory(html),
       profile: parsePartyProfile(html),
@@ -466,40 +508,68 @@ export class PrestamypeClient implements OpportunitySource {
     deadline: number,
   ): Promise<void> {
     this.ensureDeadline(deadline);
-    const label = await this.withDeadline(locator.textContent(), deadline);
-    assertAllowedInteraction({ kind: "click", name: label ?? "" });
+    // Visibility first: it is a non-waiting check, while textContent auto-waits
+    // for the full locator timeout on an element that may not exist at all.
     if (!(await this.withDeadline(locator.isVisible(), deadline)))
       throw new PageStructureError("MISSING_FIELD", `interaction.${purpose}`);
+    const label = await this.withDeadline(locator.textContent(), deadline);
+    assertAllowedInteraction({ kind: "click", name: label ?? "" });
     await this.withDeadline(locator.click(), deadline);
   }
 
-  private async waitForRows(page: PageLike, deadline: number): Promise<void> {
-    const limit = Math.min(deadline, this.now() + 12_000);
+  /**
+   * Polls the rendered page until `ready` accepts it, or the budget runs out.
+   *
+   * Everything on this site arrives after the navigation resolves: the tables,
+   * the slide-over panel and each of its tabs. Playwright's own waiting is not
+   * usable here because `isVisible` never waits and `textContent` waits for the
+   * full locator timeout, so both turn a slow page into a failed scan. Running
+   * out of budget returns null and is the caller's problem, never an error.
+   */
+  private async waitForContent(
+    page: PageLike,
+    label: string,
+    ready: (html: string) => boolean,
+    deadline: number,
+    budgetMs: number,
+  ): Promise<string | null> {
+    const limit = Math.min(deadline, this.now() + budgetMs);
     const started = this.now();
     for (;;) {
       const remaining = limit - this.now();
       if (remaining <= 0) {
         console.warn(
-          "Table still loading when the wait budget ran out",
-          JSON.stringify({ waitedMs: this.now() - started }),
+          "Wait budget ran out",
+          JSON.stringify({ waitingFor: label, waitedMs: this.now() - started }),
         );
-        this.logRequestSummary("table-timeout");
-        return;
+        this.logRequestSummary(`timeout:${label}`);
+        return null;
       }
       const html = await this.withDeadline(page.content(), limit);
-      if (!isOpportunityTableLoading(html)) {
+      if (ready(html)) {
         console.info(
-          "Table ready",
+          "Ready",
           JSON.stringify({
+            waitingFor: label,
             waitedMs: this.now() - started,
             bytes: html.length,
           }),
         );
-        this.logRequestSummary("table-ready");
-        return;
+        this.logRequestSummary(`ready:${label}`);
+        return html;
       }
       await this.withDeadline(this.sleep(Math.min(250, remaining)), limit + 50);
     }
+  }
+
+  private async waitForRows(page: PageLike, deadline: number): Promise<void> {
+    await this.waitForContent(
+      page,
+      "table",
+      (html) => !isOpportunityTableLoading(html),
+      deadline,
+      12_000,
+    );
   }
 
   private async sortByHighestReturn(
@@ -509,13 +579,16 @@ export class PrestamypeClient implements OpportunitySource {
     const trigger = page.locator(
       ".multi-select.select-sort .multi-select-trigger",
     );
-    const current =
-      (await this.withDeadline(trigger.textContent(), deadline)) ?? "";
-    if (/retorno\s+mayor/iu.test(current)) return;
+    // isVisible does not auto-wait but textContent does, so the check has to
+    // come first: asking a missing element for its text blocks for the whole
+    // locator timeout and fails the scan instead of degrading it.
     if (!(await this.withDeadline(trigger.isVisible(), deadline))) {
       console.warn("Sort control not rendered; scanning in the default order");
       return;
     }
+    const current =
+      (await this.withDeadline(trigger.textContent(), deadline)) ?? "";
+    if (/retorno\s+mayor/iu.test(current)) return;
     await this.safeClick(trigger, "sort.open", deadline);
     const option = page.locator(
       ".multi-select-dropdown .multi-select-option:has-text('Retorno mayor')",
@@ -540,9 +613,17 @@ export class PrestamypeClient implements OpportunitySource {
       `${LIVE_SELECTORS.clientCell} ${LIVE_SELECTORS.clientName}`,
     );
     await this.safeClick(target, `row.${index}`, deadline);
-    const panel = page.locator(LIVE_SELECTORS.panel);
-    if (!(await this.withDeadline(panel.isVisible(), deadline)))
-      throw new PageStructureError("MISSING_FIELD", "panel");
+    // The slide-over mounts and then fills itself from a second request, so it
+    // is not enough for it to exist: wait until the auction code is rendered.
+    const html = await this.waitForContent(
+      page,
+      "panel",
+      (content) =>
+        isPanelOpen(content) && /C[oó]digo de subasta/iu.test(content),
+      deadline,
+      8_000,
+    );
+    if (html === null) throw new PageStructureError("MISSING_FIELD", "panel");
   }
 
   private async openPanelTab(
@@ -635,8 +716,19 @@ export class PrestamypeClient implements OpportunitySource {
           failure.reason instanceof Error
             ? failure.reason.message
             : String(failure.reason);
-        if (!/context|target.*closed|failed to find context/iu.test(message))
+        // Chromium sometimes takes longer than the cleanup budget to shut down
+        // on Lambda. The scan has already produced and persisted its result by
+        // then, so failing here only makes SQS redeliver work that succeeded;
+        // the container reclaims the process either way.
+        if (failure.reason instanceof ScanDeadlineError) {
+          console.warn(
+            "Browser cleanup exceeded its budget; leaving it to the runtime",
+          );
+        } else if (
+          !/context|target.*closed|failed to find context/iu.test(message)
+        ) {
           throw failure.reason;
+        }
       }
     })();
     return this.resourcesClosePromise;
@@ -887,8 +979,11 @@ function toOpportunity(
     url: OPPORTUNITIES_URL,
     commercialName: panel.commercialName || row.commercialName,
     investmentType: row.investmentType,
+    // Prestamype never publishes the supplier's name or tax id: its tab shows
+    // only industry and economic activity. Falling back to the panel heading
+    // would silently label the debtor as the supplier, so leave it empty.
     supplier: {
-      legalName: supplier.profile?.legalName ?? panel.legalName,
+      legalName: supplier.profile?.legalName ?? "",
       taxId: supplier.profile?.taxId ?? null,
     },
     debtor: {

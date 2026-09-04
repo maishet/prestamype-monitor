@@ -28,7 +28,6 @@ export interface BlacklistEntry {
   evidence?: string | null;
 }
 
-
 export interface CollectionConflict {
   party: PartyIdentity;
   state: string;
