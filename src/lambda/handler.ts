@@ -25,6 +25,11 @@ import type {
   MonthlyCostUsage,
 } from "../runtime/cost-guard.js";
 import { assessMonthlyUsage } from "../runtime/cost-guard.js";
+import {
+  containerResources,
+  exitForFreshContainer,
+  isSpentContainer,
+} from "../runtime/container.js";
 
 export interface ScanRuntimeConfig {
   readonly enabled: boolean;
@@ -288,6 +293,7 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
     );
     const started = Date.now();
     let metered = false;
+    let spentContainer = false;
     try {
       let config = await dependencies.store.loadConfig();
       if (config?.pending_runtime_alert !== undefined) {
@@ -403,6 +409,7 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
       if ((config.rate_limit_count ?? 0) !== 0)
         await savePatch(config, { rate_limit_count: 0, pause_reason: null });
     } catch (error) {
+      if (isSpentContainer(error)) spentContainer = true;
       const kind = runtimeErrorKind(error);
       const savedError = storedRuntimeError(
         error,
@@ -458,6 +465,7 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
     } finally {
       clearTimeout(timer);
       const durationMs = Math.max(0, Date.now() - started);
+      console.info("Container", JSON.stringify(containerResources()));
       if (metered) {
         try {
           await dependencies.store.incrementMonthlyUsage(monthOf(now), {
@@ -466,6 +474,14 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
         } catch {
           /* never mask the primary result */
         }
+      }
+      if (spentContainer) {
+        console.error(
+          "Container can no longer run a browser; exiting so Lambda replaces it",
+        );
+        // A tick for the runtime to flush that line before the sandbox goes.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        exitForFreshContainer();
       }
     }
   };

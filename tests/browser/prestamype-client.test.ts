@@ -13,6 +13,7 @@ import {
   type BrowserLauncher,
   type LocatorLike,
   type PageLike,
+  reapBrowserProcesses,
 } from "../../src/browser/prestamype-client.js";
 import { parseOpportunityRows } from "../../src/browser/live-parsers.js";
 import {
@@ -500,7 +501,7 @@ describe("PrestamypeClient failure handling", () => {
     warn.mockRestore();
   });
 
-  it("closes page, context and browser in that order, one at a time", async () => {
+  it("closes only the browser and lets it take its context along", async () => {
     const order: string[] = [];
     const fake = createFakePage();
     fake.page.close = async () => {
@@ -529,23 +530,20 @@ describe("PrestamypeClient failure handling", () => {
     client.beginScan();
     await client.getPortfolio();
     await client.close();
-    // Closing the context and the browser at once deadlocked on Lambda.
-    expect(order).toEqual(["page", "context", "browser"]);
+    // Closing the context first is the step that hung on Lambda, and when it
+    // hung the browser process was never closed at all.
+    expect(order).toEqual(["browser"]);
   });
-
-  it("abandons the rest of the shutdown when a step overruns", async () => {
+  it("reports the kill when the browser will not close in time", async () => {
     const fake = createFakePage();
-    const order: string[] = [];
     const launcher: BrowserLauncher = {
       launch: async () => ({
         newContext: async () => ({
           newPage: async () => fake.page,
-          close: () => new Promise<void>(() => undefined),
+          close: async () => undefined,
           setDefaultTimeout: () => undefined,
         }),
-        close: async () => {
-          order.push("browser");
-        },
+        close: () => new Promise<void>(() => undefined),
       }),
     };
     let clock = 0;
@@ -567,18 +565,23 @@ describe("PrestamypeClient failure handling", () => {
       const closing = client.close();
       await vi.advanceTimersByTimeAsync(4_000);
       await expect(closing).resolves.toBeUndefined();
-      // Waiting on the browser too would just add more billed time.
-      expect(order).toEqual([]);
+      // The scan must never end believing a wedged Chromium shut itself down:
+      // that belief is what let eight of them pile up into the 2 GB ceiling.
       expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("Browser cleanup"),
-        expect.stringContaining("context"),
+        expect.stringContaining("had to be killed"),
+        expect.stringContaining("reaped"),
       );
     } finally {
       vi.useRealTimers();
       warn.mockRestore();
     }
   });
-
+  it("never reaps anything outside Lambda", () => {
+    // The sweep matches any Chromium in the container. On a developer machine
+    // that is the browser they have open, so the guard is not a nicety.
+    expect(process.env.AWS_LAMBDA_FUNCTION_NAME).toBeUndefined();
+    expect(reapBrowserProcesses()).toBe(0);
+  });
   it("still closes the browser when context close throws", async () => {
     const fake = createFakePage();
     const launcher: BrowserLauncher = {

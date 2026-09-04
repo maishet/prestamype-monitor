@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
@@ -75,8 +76,10 @@ const LETTER_RISKS: readonly RiskGrade[] = ["A+", "A", "B", "C", "D", "E"];
 const ACTIVE_PORTFOLIO_STATES = /por cobrar|en proceso/iu;
 const DEFAULT_DETAIL_REFRESH_MS = 15 * 60 * 1_000;
 const MAX_PAGES = 5;
-/** Per-step budget when shutting the browser down. */
-const CLEANUP_STEP_MS = 3_000;
+/** How long the browser gets to shut itself down before it is killed. */
+const CLEANUP_BUDGET_MS = 3_000;
+/** Chromium under @sparticuz ships as either of these. */
+const BROWSER_PROCESS = /chrom|headless_shell/iu;
 
 export interface LocatorLike {
   click(): Promise<void>;
@@ -134,6 +137,55 @@ export interface PrestamypeClientOptions {
   now?: () => number;
   deadlineMs?: number;
   sleep?: (milliseconds: number) => Promise<void>;
+}
+
+/**
+ * Kills any Chromium still running in this container, and says how many.
+ *
+ * A graceful close is not something we can insist on. When the shutdown was
+ * abandoned mid-way the browser process stayed alive, and because Lambda keeps
+ * a warm container between invocations, every abandoned scan stacked another
+ * Chromium: eight scans reached the 2 GB ceiling and from there every
+ * navigation failed for want of memory. A signal is the one instruction a
+ * wedged process cannot ignore.
+ *
+ * Only this container is visible from here and it runs one invocation at a
+ * time, so anything still breathing is ours to reap. It is deliberately inert
+ * anywhere but inside Lambda: on a developer machine the same sweep would kill
+ * the browser they happen to have open.
+ */
+export function reapBrowserProcesses(): number {
+  if (
+    process.platform !== "linux" ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME === undefined
+  )
+    return 0;
+  let entries: string[];
+  try {
+    entries = readdirSync("/proc");
+  } catch {
+    return 0;
+  }
+  let reaped = 0;
+  for (const entry of entries) {
+    if (!/^\d+$/u.test(entry)) continue;
+    const pid = Number(entry);
+    if (pid === process.pid) continue;
+    let commandLine: string;
+    try {
+      commandLine = readFileSync(`/proc/${entry}/cmdline`, "utf8");
+    } catch {
+      continue; // Exited between listing the directory and reading it.
+    }
+    if (!BROWSER_PROCESS.test(commandLine)) continue;
+    try {
+      process.kill(pid, "SIGKILL");
+      reaped += 1;
+    } catch {
+      // Already gone, which is the outcome we wanted anyway.
+    }
+  }
+  return reaped;
 }
 
 export function shouldBlockResource(
@@ -701,59 +753,47 @@ export class PrestamypeClient implements OpportunitySource {
 
   private async closeResources(): Promise<void> {
     if (this.resourcesClosePromise !== null) return this.resourcesClosePromise;
-    const page = this.page;
-    const context = this.context;
     const browser = this.browser;
     this.page = null;
     this.context = null;
     this.browser = null;
     this.resourcesClosePromise = (async () => {
-      // One at a time, in order. Closing the context and the browser
-      // concurrently deadlocked under @sparticuz/chromium on Lambda and cost
-      // about twelve seconds of billed time on every scan; a short budget per
-      // step keeps that off the invoice. Anything still open is left to the
-      // deferred cleanup, which the next invocation resumes.
+      // Closing the browser closes its contexts and pages with it, so this is
+      // the only step worth taking. Closing them separately first was not
+      // merely redundant: the context close is what hangs, and abandoning the
+      // shutdown there left the browser process behind for the warm container
+      // to inherit. Whatever survives the budget is killed outright.
       const started = this.now();
-      const steps: readonly [string, (() => Promise<void>) | undefined][] = [
-        ["page", page?.close === undefined ? undefined : () => page.close!()],
-        ["context", context === null ? undefined : () => context.close()],
-        ["browser", browser === null ? undefined : () => browser.close()],
-      ];
-      const unexpected: unknown[] = [];
-      let abandoned: string | null = null;
-      for (const [label, close] of steps) {
-        if (close === undefined) continue;
+      let unexpected: unknown;
+      let closedItself = true;
+      if (browser !== null) {
         try {
-          await this.withDeadline(close(), this.now() + CLEANUP_STEP_MS);
+          await this.withDeadline(
+            browser.close(),
+            this.now() + CLEANUP_BUDGET_MS,
+          );
         } catch (error) {
+          closedItself = false;
           const message =
             error instanceof Error ? error.message : String(error);
-          if (error instanceof ScanDeadlineError) {
-            // A step that overruns leaves the rest to the runtime: pressing on
-            // would only add more billed waiting to a scan that already ended.
-            abandoned = label;
-            break;
-          }
-          if (!/context|target.*closed|failed to find context/iu.test(message))
-            unexpected.push(error);
+          if (
+            !(error instanceof ScanDeadlineError) &&
+            !/context|target.*closed|failed to find context/iu.test(message)
+          )
+            unexpected = error;
         }
       }
-      if (abandoned !== null) {
-        console.warn(
-          "Browser cleanup exceeded its budget; leaving it to the runtime",
-          JSON.stringify({ step: abandoned, elapsedMs: this.now() - started }),
-        );
-      } else {
-        console.info(
-          "Browser closed",
-          JSON.stringify({ elapsedMs: this.now() - started }),
-        );
-      }
-      if (unexpected.length > 0) throw unexpected[0];
+      const reaped = reapBrowserProcesses();
+      const detail = JSON.stringify({
+        elapsedMs: this.now() - started,
+        reaped,
+      });
+      if (closedItself) console.info("Browser closed", detail);
+      else console.warn("Browser had to be killed to close", detail);
+      if (unexpected !== undefined) throw unexpected;
     })();
     return this.resourcesClosePromise;
   }
-
   private async getPage(deadline: number): Promise<PageLike> {
     if (this.closed)
       throw new PageStructureError("UNSUPPORTED_VALUE", "clientState");
