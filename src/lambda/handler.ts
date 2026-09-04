@@ -1,6 +1,5 @@
-import type { Context, SQSEvent } from "aws-lambda";
+import type { Context, ScheduledEvent } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { SQSClient } from "@aws-sdk/client-sqs";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 
 import {
@@ -9,11 +8,6 @@ import {
   type MonitorRunResult,
 } from "../application/monitor.js";
 import { DynamoRepository } from "../adapters/dynamodb-repository.js";
-import {
-  createSqsScheduler,
-  SqsSchedulerError,
-  type ScheduleNextScan,
-} from "../adapters/sqs-scheduler.js";
 import { loadRuntimeSecrets } from "../adapters/parameter-store.js";
 import { PrestamypeClient } from "../browser/prestamype-client.js";
 import type { EncryptedSession, MonitorConfig } from "../domain/types.js";
@@ -40,8 +34,6 @@ export interface ScanRuntimeConfig {
   readonly monitor: MonitorConfig;
   readonly costLimits: MonthlyCostLimits;
   readonly next_scan_at?: string;
-  readonly last_message_id?: string;
-  readonly successor_scheduled_for_message_id?: string;
   readonly cost_warning_month?: string;
   readonly pending_runtime_alert?: PendingRuntimeAlert;
   readonly [key: string]: unknown;
@@ -50,7 +42,6 @@ export interface ScanRuntimeConfig {
 export interface PendingRuntimeAlert {
   readonly key: string;
   readonly message: string;
-  readonly terminal_message_id?: string;
   readonly warning_month?: string;
 }
 
@@ -64,11 +55,6 @@ export interface ScanRuntimeStore {
   loadEncryptedSession(options?: {
     signal: AbortSignal;
   }): Promise<unknown | null>;
-  claimScheduleSlot(
-    owner: string,
-    expiresAtEpochSeconds: number,
-  ): Promise<boolean>;
-  releaseScheduleSlot(owner: string): Promise<void>;
 }
 
 export interface ScanHandlerDependencies {
@@ -77,7 +63,6 @@ export interface ScanHandlerDependencies {
     usage: MonthlyCostUsage,
     limits: MonthlyCostLimits,
   ) => CostDecision;
-  readonly scheduleNextScan: ScheduleNextScan;
   readonly loadSecrets: (options?: {
     signal: AbortSignal;
   }) => Promise<{ sessionKey: Uint8Array }>;
@@ -109,32 +94,26 @@ export interface LambdaContextLike {
 
 type ScanInvocationKind = "scan" | "scan-once";
 
+/**
+ * An EventBridge schedule invokes the function directly, so a run is either
+ * that rule firing or a deliberate one-off payload. Nothing else is accepted.
+ */
 function invocationKind(event: unknown): ScanInvocationKind | undefined {
   try {
-    if (typeof event !== "object" || event === null) return undefined;
-    const records = (event as { Records?: unknown }).Records;
-    if (!Array.isArray(records) || records.length !== 1) return undefined;
-    const record = records[0] as Record<string, unknown>;
-    if (
-      typeof record !== "object" ||
-      record === null ||
-      typeof record.messageId !== "string" ||
-      !/^[A-Za-z0-9-]{1,128}$/.test(record.messageId) ||
-      (record.eventSource !== undefined && record.eventSource !== "aws:sqs") ||
-      typeof record.body !== "string" ||
-      record.body.length > 1_024
-    )
+    if (typeof event !== "object" || event === null || Array.isArray(event))
       return undefined;
-    const body = JSON.parse(record.body) as unknown;
+    const record = event as Record<string, unknown>;
     if (
-      typeof body === "object" &&
-      body !== null &&
-      ((body as Record<string, unknown>).kind === "scan" ||
-        (body as Record<string, unknown>).kind === "scan-once") &&
-      (body as Record<string, unknown>).schemaVersion === 1 &&
-      Object.keys(body as object).length === 2
+      record.source === "aws.events" &&
+      record["detail-type"] === "Scheduled Event"
     )
-      return (body as { kind: ScanInvocationKind }).kind;
+      return "scan";
+    if (
+      record.schemaVersion === 1 &&
+      Object.keys(record).length === 2 &&
+      (record.kind === "scan" || record.kind === "scan-once")
+    )
+      return record.kind;
     return undefined;
   } catch {
     return undefined;
@@ -229,6 +208,16 @@ function requestIdFrom(context: LambdaContextLike): string | undefined {
   }
 }
 
+/**
+ * The request id, but only when it is safe to use inside a stored key. A
+ * malformed one must not be able to poison the pending-alert outbox, whose key
+ * is validated on the way back out.
+ */
+function runIdFrom(context: LambdaContextLike): string {
+  const id = requestIdFrom(context);
+  return id !== undefined && /^[A-Za-z0-9-]{1,128}$/.test(id) ? id : "unknown";
+}
+
 export function createScanHandler(dependencies: ScanHandlerDependencies) {
   const savePatch = async (
     base: ScanRuntimeConfig,
@@ -255,8 +244,6 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
         typeof pending.message !== "string" ||
         pending.message.length === 0 ||
         pending.message.length > 1_000 ||
-        (pending.terminal_message_id !== undefined &&
-          !/^[A-Za-z0-9-]{1,128}$/.test(pending.terminal_message_id)) ||
         (pending.warning_month !== undefined &&
           !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(pending.warning_month))
       )
@@ -275,9 +262,6 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
       void _pending;
       await dependencies.store.saveConfig({
         ...withoutPending,
-        ...(pending.terminal_message_id === undefined
-          ? {}
-          : { last_message_id: pending.terminal_message_id }),
         ...(pending.warning_month === undefined
           ? {}
           : { cost_warning_month: pending.warning_month }),
@@ -315,8 +299,7 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
       if ((kind === "scan" && !enabled(config)) || isPaused(config, now))
         return;
       assertRuntimeConfig(config);
-      const messageId = (event as SQSEvent).Records[0]?.messageId ?? "unknown";
-      if (config.last_message_id === messageId) return;
+      const runId = runIdFrom(context);
       if (remainingMillis(context) < 3_000) return;
       const usage = await dependencies.store.incrementMonthlyUsage(
         monthOf(now),
@@ -338,7 +321,6 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
         const pending: PendingRuntimeAlert = {
           key: `cost-pause:${monthOf(now)}`,
           message: `Cost guard paused: ${cost.reason}`,
-          terminal_message_id: messageId,
         };
         await savePatch(config, {
           paused_until: "manual",
@@ -379,37 +361,9 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
           throw new LambdaRuntimeError("Runtime alert delivery failed");
         config = (await dependencies.store.loadConfig()) ?? config;
       }
-      const successorAccepted =
-        kind === "scan-once" ||
-        config.successor_scheduled_for_message_id === messageId ||
-        (config.successor_scheduled_for_message_id === undefined &&
-          typeof config.next_scan_at === "string" &&
-          Date.parse(config.next_scan_at) > now.getTime());
-      if (!successorAccepted) {
-        if (remainingMillis(context) < 3_000) return;
-        const claimed = await dependencies.store.claimScheduleSlot(
-          messageId,
-          Math.floor(now.getTime() / 1_000) + 15 * 24 * 3_600,
-        );
-        if (claimed) {
-          try {
-            await dependencies.scheduleNextScan(undefined, {
-              signal: controller.signal,
-            });
-          } catch (error) {
-            if (!(error instanceof SqsSchedulerError) || !error.accepted)
-              await dependencies.store.releaseScheduleSlot(messageId);
-            throw error;
-          }
-        }
-      }
-      if (
-        kind === "scan" &&
-        config.successor_scheduled_for_message_id !== messageId
-      )
-        await savePatch(config, {
-          successor_scheduled_for_message_id: messageId,
-        });
+      // Nothing to schedule: the EventBridge rule fires on its own cadence, so
+      // a failed run is simply retried by the next tick instead of being
+      // chained, claimed and tracked by this function.
       controller.signal.throwIfAborted();
       if (remainingMillis(context) < 5_000) return;
       const encrypted = await dependencies.store.loadEncryptedSession({
@@ -438,7 +392,7 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
       controller.signal.throwIfAborted();
       if (remainingMillis(context) < 5_000) return;
       const result = await dependencies.runMonitor(monitorDependencies, {
-        owner: messageId,
+        owner: runId,
         lockTtlSeconds: 120,
         alertLeaseSeconds: 300,
       });
@@ -446,12 +400,8 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
         await dependencies.store.incrementMonthlyUsage(monthOf(now), {
           scans: 1,
         });
-      await savePatch(config, {
-        last_message_id: messageId,
-        ...((config.rate_limit_count ?? 0) !== 0
-          ? { rate_limit_count: 0, pause_reason: null }
-          : {}),
-      });
+      if ((config.rate_limit_count ?? 0) !== 0)
+        await savePatch(config, { rate_limit_count: 0, pause_reason: null });
     } catch (error) {
       const kind = runtimeErrorKind(error);
       const savedError = storedRuntimeError(
@@ -460,7 +410,7 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
         requestIdFrom(context),
       );
       const current = await dependencies.store.loadConfig();
-      const messageId = (event as SQSEvent).Records[0]?.messageId ?? "unknown";
+      const runId = runIdFrom(context);
       if (current === null) throw error;
       let patch: Record<string, unknown> = { last_error: savedError };
       if (kind === "SessionExpiredError" || kind === "SessionChallengeError")
@@ -468,7 +418,6 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
           ...patch,
           paused_until: "manual",
           pause_reason: kind,
-          last_message_id: messageId,
         };
       if (kind === "RateLimitError") {
         const count = (current.rate_limit_count ?? 0) + 1;
@@ -482,14 +431,12 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
               ? "manual"
               : new Date(now.getTime() + duration).toISOString(),
           pause_reason: kind,
-          last_message_id: messageId,
         };
       }
       if (kind === "PageStructureError") {
         const pending: PendingRuntimeAlert = {
-          key: `page-structure:${messageId}`,
+          key: `page-structure:${runId}`,
           message: `PageStructureError: ${savedError.message}`,
-          terminal_message_id: messageId,
         };
         patch = {
           ...patch,
@@ -538,15 +485,9 @@ function createProductionHandler(): ReturnType<typeof createScanHandler> {
     client: DynamoDBDocumentClient.from(new DynamoDBClient({})),
     tableName: requiredEnvironment("TABLE_NAME"),
   });
-  const scheduleNextScan = createSqsScheduler({
-    client: new SQSClient({}),
-    queueUrl: requiredEnvironment("QUEUE_URL"),
-    configStore: repository,
-  });
   return createScanHandler({
     store: repository,
     assessCost: assessMonthlyUsage,
-    scheduleNextScan,
     loadSecrets: loadRuntimeSecrets,
     decryptSession: decryptStoredSession,
     createMonitorDependencies: async (
@@ -591,7 +532,8 @@ function createProductionHandler(): ReturnType<typeof createScanHandler> {
 }
 
 export async function handler(
-  event: SQSEvent,
+  // Either the EventBridge rule or a deliberate one-off payload.
+  event: ScheduledEvent | { kind: string; schemaVersion: number },
   context: Context,
 ): Promise<void> {
   productionHandler ??= createProductionHandler();

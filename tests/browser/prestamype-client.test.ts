@@ -220,6 +220,20 @@ describe("row identity", () => {
     expect(new Set(keys).size).toBe(rows.length);
   });
 
+  it("ignores funding moves too small for the site to even display", () => {
+    const row = rows[0]!;
+    // The table prints whole percent; re-opening a panel because funding went
+    // from 34.31% to 34.34% was what kept the scan from ever skipping a row.
+    const nudged = { ...row, fundedPct: row.fundedPct + 0.03 };
+    expect(opportunityRowFingerprint(nudged)).toBe(
+      opportunityRowFingerprint(row),
+    );
+    const moved = { ...row, fundedPct: row.fundedPct + 1.5 };
+    expect(opportunityRowFingerprint(moved)).not.toBe(
+      opportunityRowFingerprint(row),
+    );
+  });
+
   it("keeps the key stable while funding progresses", () => {
     const row = rows[0]!;
     const advanced = { ...row, fundedPct: row.fundedPct + 10 };
@@ -486,8 +500,42 @@ describe("PrestamypeClient failure handling", () => {
     warn.mockRestore();
   });
 
-  it("does not fail a finished scan because the browser was slow to close", async () => {
+  it("closes page, context and browser in that order, one at a time", async () => {
+    const order: string[] = [];
     const fake = createFakePage();
+    fake.page.close = async () => {
+      order.push("page");
+    };
+    const launcher: BrowserLauncher = {
+      launch: async () => ({
+        newContext: async () => ({
+          newPage: async () => fake.page,
+          close: async () => {
+            order.push("context");
+          },
+          setDefaultTimeout: () => undefined,
+        }),
+        close: async () => {
+          order.push("browser");
+        },
+      }),
+    };
+    const client = new PrestamypeClient({
+      launcher,
+      storageState: {},
+      deadlineMs: 60_000,
+      sleep: async () => undefined,
+    });
+    client.beginScan();
+    await client.getPortfolio();
+    await client.close();
+    // Closing the context and the browser at once deadlocked on Lambda.
+    expect(order).toEqual(["page", "context", "browser"]);
+  });
+
+  it("abandons the rest of the shutdown when a step overruns", async () => {
+    const fake = createFakePage();
+    const order: string[] = [];
     const launcher: BrowserLauncher = {
       launch: async () => ({
         newContext: async () => ({
@@ -495,7 +543,9 @@ describe("PrestamypeClient failure handling", () => {
           close: () => new Promise<void>(() => undefined),
           setDefaultTimeout: () => undefined,
         }),
-        close: async () => undefined,
+        close: async () => {
+          order.push("browser");
+        },
       }),
     };
     let clock = 0;
@@ -511,18 +561,17 @@ describe("PrestamypeClient failure handling", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     client.beginScan();
     await client.getPortfolio();
-
-    // Fake timers only for the shutdown, so the 12s cleanup budget elapses
-    // without the test actually waiting for it.
+    clock += 60_000;
     vi.useFakeTimers();
     try {
       const closing = client.close();
-      await vi.advanceTimersByTimeAsync(13_000);
-      // The result is already persisted by this point; throwing here would only
-      // make SQS redeliver a scan that succeeded.
+      await vi.advanceTimersByTimeAsync(4_000);
       await expect(closing).resolves.toBeUndefined();
+      // Waiting on the browser too would just add more billed time.
+      expect(order).toEqual([]);
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining("Browser cleanup"),
+        expect.stringContaining("context"),
       );
     } finally {
       vi.useRealTimers();

@@ -4,16 +4,10 @@ import type {
   PaymentHistory,
   PortfolioSnapshot,
 } from "../domain/types.js";
-import {
-  possibleInvestmentCents,
-  resultingConcentrationRatio,
-} from "../domain/investment-projection.js";
 import { redactSensitiveText } from "../security/redaction.js";
 
 const TELEGRAM_MESSAGE_LIMIT = 4_000;
 const MAX_TEXT_FIELD_RENDERED_LENGTH = 400;
-const MAX_DETAIL_RENDERED_LENGTH = 480;
-const MAX_LINK_RENDERED_LENGTH = 600;
 const MAX_WARNINGS = 12;
 
 type TechnicalAlertType =
@@ -105,86 +99,121 @@ function formatLimaDateTime(value: Date | string): string {
     : limaDateTimeFormatter.format(date);
 }
 
-function formatOptionalDate(value: string | null): string {
-  return value === null ? "no disponible" : formatLimaDateTime(value);
-}
-
-function formatHistory(history: PaymentHistory | null): string {
-  if (history === null) return "no disponible";
-  return `${history.paidOnTime}/${history.totalAuctions} pagadas a tiempo; ${history.overdue} vencidas`;
-}
-
-function boundedItems(
-  values: readonly string[],
-  totalRenderedBudget: number,
-  maximumItems: number,
-  omittedLabel: string,
-): readonly string[] {
-  if (values.length === 0) return ["Ninguna"];
-
-  const selected =
-    values.length <= maximumItems
-      ? values
-      : [
-          ...values.slice(0, Math.ceil(maximumItems / 2)),
-          ...values.slice(-Math.floor(maximumItems / 2)),
-        ];
-  const omitted = values.length - selected.length;
-  const counter = omitted > 0 ? `${omitted} ${omittedLabel}` : null;
-  const structuralLength =
-    selected.length * 2 + Math.max(0, selected.length - 1);
-  const counterLength = counter === null ? 0 : counter.length + 1;
-  const perItemBudget = Math.max(
-    16,
-    Math.floor(
-      (totalRenderedBudget - structuralLength - counterLength) /
-        selected.length,
-    ),
-  );
-  const rendered = selected.map((item) => `• ${safeText(item, perItemBudget)}`);
-  if (counter !== null) rendered.push(counter);
-  return rendered;
-}
-
-function decisionPresentation(decision: Evaluation["decision"]): {
-  title: string;
-  label: string;
-} {
+function decisionPresentation(decision: Evaluation["decision"]): string {
   switch (decision) {
     case "INVEST":
-      return { title: "🔴 OPORTUNIDAD ALTA", label: "INVERTIR" };
+      return "🔴 INVERTIR";
     case "REVIEW":
-      return { title: "🟡 OPORTUNIDAD PARA REVISAR", label: "REVISAR" };
+      return "🟡 REVISAR";
     case "DO_NOT_INVEST":
-      return { title: "⛔ NO INVERTIR", label: "NO INVERTIR" };
+      return "⛔ NO INVERTIR";
     case "IGNORE":
-      return { title: "ℹ️ OPORTUNIDAD REGISTRADA", label: "IGNORAR" };
+      return "ℹ️ REGISTRADA";
   }
 }
 
-function safeHttpsUrl(value: string): string | null {
-  try {
-    const url = new URL(value);
-    const isPrestamypeHost = url.hostname === "www.prestamype.com";
-    if (
-      url.protocol !== "https:" ||
-      !isPrestamypeHost ||
-      url.username !== "" ||
-      url.password !== "" ||
-      url.search !== "" ||
-      url.hash !== "" ||
-      !/^\/app\/inversionista\/oportunidades\/[A-Za-z0-9_-]+$/.test(
-        url.pathname,
-      ) ||
-      `<a href="${escapeHtml(url.href)}">Abrir oportunidad</a>`.length >
-        MAX_LINK_RENDERED_LENGTH
-    ) {
-      return null;
-    }
-    return url.href;
-  } catch {
-    return null;
+const SPANISH_MONTHS = [
+  "ene",
+  "feb",
+  "mar",
+  "abr",
+  "may",
+  "jun",
+  "jul",
+  "ago",
+  "sep",
+  "oct",
+  "nov",
+  "dic",
+] as const;
+
+/**
+ * Formats a calendar date without moving it.
+ *
+ * Prestamype publishes closing and payment dates with no time of day. Parsing
+ * one as an instant put it at midnight UTC, and rendering that in Lima (UTC-5)
+ * showed the day before — "03 sep 2026" arrived as "02/09/2026, 19:00".
+ */
+function formatCalendarDate(value: string | null): string | null {
+  if (value === null) return null;
+  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (parts === null) {
+    const rendered = formatLimaDateTime(value);
+    return rendered === "no disponible" ? null : rendered;
   }
+  const month = SPANISH_MONTHS[Number(parts[2]) - 1];
+  return month === undefined ? null : `${parts[3]} ${month} ${parts[1]}`;
+}
+
+/** Drops decimals that carry no information: "0.00%" reads worse than "0%". */
+function formatCompactPercentage(value: number): string {
+  if (!Number.isFinite(value)) return "no disponible";
+  const rounded = Math.round(value * 100) / 100;
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(2)}%`;
+}
+
+/** Days between two calendar dates, or null when either is unusable. */
+function daysBetween(from: Date, to: string | null): number | null {
+  if (to === null) return null;
+  const target = Date.parse(
+    /^\d{4}-\d{2}-\d{2}$/.test(to) ? `${to}T12:00:00Z` : to,
+  );
+  if (!Number.isFinite(target)) return null;
+  return Math.round((target - from.getTime()) / 86_400_000);
+}
+
+/**
+ * How long is left to act. An auction closing today is worth reading now; a
+ * date alone does not convey that.
+ */
+function formatUrgency(closesAt: string | null, now: Date): string | null {
+  const date = formatCalendarDate(closesAt);
+  if (date === null) return null;
+  const days = daysBetween(now, closesAt);
+  if (days === null) return `Cierra ${date}`;
+  if (days <= 0) return "Cierra hoy";
+  if (days === 1) return "Cierra mañana";
+  return `Cierra en ${days} días`;
+}
+
+/** "S/11.1M" — magnitude is the point, not the cents. */
+function formatMagnitude(cents: number): string {
+  const units = cents / 100;
+  if (units >= 1_000_000) return `S/${(units / 1_000_000).toFixed(1)}M`;
+  if (units >= 1_000) return `S/${Math.round(units / 1_000)}k`;
+  return formatMoney(cents);
+}
+
+function formatRisk(risk: Opportunity["risk"]): string {
+  return risk === "PROTEGIDA" ? "Protegida 🛡" : `Riesgo ${risk}`;
+}
+
+/** "51 subastas · 43 a tiempo · mora 0.46% · S/11.1M histórico" */
+function formatCompactHistory(history: PaymentHistory | null): string | null {
+  if (history === null) return null;
+  const parts = [
+    `${history.totalAuctions} subastas`,
+    `${history.paidOnTime} a tiempo`,
+  ];
+  if (history.paidLate > 0) parts.push(`${history.paidLate} con retraso`);
+  if (history.overdue > 0) parts.push(`${history.overdue} vencidas`);
+  if (history.delinquencyPct !== null)
+    parts.push(`mora ${formatCompactPercentage(history.delinquencyPct)}`);
+  // A large historical volume says the payer is established; a long average
+  // delay says the opposite. Both are omitted when the tab does not publish
+  // them, which is always the case for the supplier.
+  if (
+    history.averageDelayDays !== null &&
+    history.averageDelayDays > 0 &&
+    history.averageDelayDays <= 365
+  )
+    parts.push(`retraso medio ${Math.round(history.averageDelayDays)} d`);
+  if (
+    history.historicalAmountCents !== null &&
+    history.historicalAmountCents > 0
+  )
+    parts.push(`${formatMagnitude(history.historicalAmountCents)} histórico`);
+  return parts.join(" · ");
 }
 
 function renderWithinTelegramLimit(lines: readonly MessageLine[]): string {
@@ -223,166 +252,71 @@ export function formatOpportunityAlert(
   portfolio: PortfolioSnapshot,
   detectedAt: Date,
 ): string {
-  const presentation = decisionPresentation(evaluation.decision);
-  const url = safeHttpsUrl(opportunity.url);
-  const warnings = boundedItems(
-    evaluation.warnings,
-    1_100,
-    MAX_WARNINGS,
-    "advertencias omitidas",
-  );
-  const reasons = boundedItems(
-    evaluation.reasons.slice(0, 3),
-    850,
-    3,
-    "razones omitidas",
-  );
-  const sameParty =
-    opportunity.supplier.legalName.trim().toLocaleLowerCase("es-PE") ===
-    opportunity.debtor.legalName.trim().toLocaleLowerCase("es-PE");
-  const possibleAmount = possibleInvestmentCents(opportunity, portfolio);
+  void portfolio;
+  const lines: MessageLine[] = [];
+  const push = (html: string, priority: MessageLine["priority"] = "normal") =>
+    lines.push({ html, priority });
 
-  const lines: MessageLine[] = [
-    { html: `<b>${presentation.title}</b>`, priority: "essential" },
-    {
-      html: `Decisión: <b>${presentation.label}</b>`,
-      priority: "essential",
-    },
-    {
-      html: `Empresa: ${safeText(opportunity.supplier.legalName)}`,
-      priority: "essential",
-    },
-  ];
-
-  if (!sameParty) {
-    lines.push({
-      html: `Pagador: ${safeText(opportunity.debtor.legalName)}`,
-      priority: "essential",
-    });
-  }
-
-  lines.push(
-    {
-      html: `Score: ${Number.isFinite(evaluation.score) ? evaluation.score.toFixed(1) : "no disponible"}/100`,
-      priority: "essential",
-    },
-    { html: "⚠️ Advertencias:", priority: "essential" },
-    ...warnings.map((html): MessageLine => ({ html, priority: "essential" })),
-    { html: "✅ Razones:", priority: "essential" },
-    ...reasons.map((html): MessageLine => ({ html, priority: "essential" })),
-    ...(evaluation.reasons.length > 3
-      ? [
-          {
-            html: `${evaluation.reasons.length - 3} razones adicionales`,
-            priority: "essential" as const,
-          },
-        ]
-      : []),
-    url === null
-      ? {
-          html: "Enlace: no disponible (URL inválida)",
-          priority: "essential",
-        }
-      : {
-          html: `<a href="${escapeHtml(url)}">Abrir oportunidad</a>`,
-          priority: "essential",
-        },
-    {
-      html: `Riesgo: ${safeText(opportunity.risk)}`,
-      priority: "normal",
-    },
-    {
-      html: `Retorno anual: ${formatPercentage(opportunity.annualReturnPct)}`,
-      priority: "normal",
-    },
+  push(
+    `<b>${decisionPresentation(evaluation.decision)} · ${safeText(
+      opportunity.commercialName || opportunity.debtor.legalName,
+    )}</b>`,
+    "essential",
   );
 
-  if (opportunity.monthlyReturnPct !== null) {
-    lines.push({
-      html: `Retorno mensual: ${formatPercentage(opportunity.monthlyReturnPct)}`,
-      priority: "normal",
-    });
-  }
-
-  lines.push(
-    {
-      html: `Restante: ${formatMoney(opportunity.remainingAmountCents)}`,
-      priority: "normal",
-    },
-    {
-      html: `Saldo disponible: ${portfolio.availableBalanceCents === null ? "no disponible" : formatMoney(portfolio.availableBalanceCents)}`,
-      priority: "normal",
-    },
-    {
-      html: `Monto posible: ${possibleAmount === null ? "no disponible" : formatMoney(possibleAmount)}`,
-      priority: "normal",
-    },
-    {
-      html: `Concentración resultante: ${formatResultingConcentration(opportunity, portfolio)}`,
-      priority: "normal",
-    },
+  const monthly =
+    opportunity.monthlyReturnPct === null
+      ? ""
+      : ` (${formatPercentage(opportunity.monthlyReturnPct)} mensual)`;
+  push(
+    `${formatRisk(opportunity.risk)} · ${safeText(opportunity.investmentType)} · ${formatPercentage(
+      opportunity.annualReturnPct,
+    )} anual${monthly}`,
+    "essential",
   );
 
-  if (portfolio.availableBalanceCents === 0) {
-    lines.push({
-      html: "Sin liquidez disponible; no ejecutar inversión",
-      priority: "normal",
-    });
-  }
+  const fundedPct =
+    opportunity.totalAmountCents > 0
+      ? Math.round(
+          (opportunity.fundedAmountCents / opportunity.totalAmountCents) * 100,
+        )
+      : 0;
+  push(
+    `Restante ${formatMoney(opportunity.remainingAmountCents)} de ${formatMoney(
+      opportunity.totalAmountCents,
+    )} (${fundedPct}% financiado)`,
+    "essential",
+  );
 
-  lines.push(
-    {
-      html: `Detectada: ${formatLimaDateTime(detectedAt)}`,
-      priority: "normal",
-    },
-    {
-      html: `ID: ${safeText(opportunity.id)}`,
-      priority: "detail",
-    },
-    {
-      html: `Monto total: ${formatMoney(opportunity.totalAmountCents)}`,
-      priority: "detail",
-    },
-    {
-      html: `Financiado: ${formatMoney(opportunity.fundedAmountCents)}`,
-      priority: "detail",
-    },
-    {
-      html: `Cierre: ${formatOptionalDate(opportunity.closesAt)}`,
-      priority: "detail",
-    },
-    {
-      html: `Vencimiento: ${formatOptionalDate(opportunity.dueAt)}`,
-      priority: "detail",
-    },
-    {
-      html: `Historial pagador: ${formatHistory(opportunity.debtorHistory)}`,
-      priority: "detail",
-    },
-    {
-      html: `Historial proveedor: ${formatHistory(opportunity.supplierHistory)}`,
-      priority: "detail",
-    },
-    {
-      html: `Desglose: ${safeText(
-        Object.entries(evaluation.components)
-          .map(([name, score]) => `${name} ${score}`)
-          .join(" · "),
-        MAX_DETAIL_RENDERED_LENGTH,
-      )}`,
-      priority: "detail",
-    },
+  // How long there is to act, and how long the money would be committed. Both
+  // are what an annual rate has to be judged against.
+  const urgency = formatUrgency(opportunity.closesAt, detectedAt);
+  const due = formatCalendarDate(opportunity.dueAt);
+  const term = daysBetween(detectedAt, opportunity.dueAt);
+  const timing = [
+    urgency,
+    due === null
+      ? null
+      : `pago ${due}${term === null || term < 0 ? "" : ` (${term} días)`}`,
+  ].filter((part) => part !== null);
+  if (timing.length > 0) push(timing.join(" · "), "essential");
+
+  const debtorHistory = formatCompactHistory(opportunity.debtorHistory);
+  if (debtorHistory !== null) push(`Deudor ${debtorHistory}`);
+  const supplierHistory = formatCompactHistory(opportunity.supplierHistory);
+  if (supplierHistory !== null) push(`Proveedor ${supplierHistory}`, "detail");
+
+  for (const warning of evaluation.warnings.slice(0, MAX_WARNINGS))
+    push(`⚠️ ${safeText(warning)}`, "essential");
+
+  push(
+    `Score ${
+      Number.isFinite(evaluation.score) ? evaluation.score.toFixed(1) : "?"
+    }/100`,
+    "essential",
   );
 
   return renderWithinTelegramLimit(lines);
-}
-
-function formatResultingConcentration(
-  opportunity: Opportunity,
-  portfolio: PortfolioSnapshot,
-): string {
-  const ratio = resultingConcentrationRatio(opportunity, portfolio);
-  return ratio === null ? "no disponible" : `${(ratio * 100).toFixed(1)}%`;
 }
 
 const technicalTitles: Readonly<Record<TechnicalAlertType, string>> = {

@@ -254,7 +254,6 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
       ]);
       expect(state.messages).toEqual([
         {
-          QueueUrl: "https://sqs.sa-east-1.amazonaws.com/123456789012/scan",
           MessageBody: '{"kind":"scan-once","schemaVersion":1}',
         },
       ]);
@@ -283,78 +282,14 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
       run(shell, "activate-monitor.ps1", statePath, "ACTIVAR\n");
       run(shell, "activate-monitor.ps1", statePath, "ACTIVAR\n");
       let state = JSON.parse(readFileSync(statePath, "utf8"));
-      expect(state.messages).toHaveLength(1);
+      // The schedule owns the cadence, so activation enqueues nothing.
+      expect(state.messages).toHaveLength(0);
       expect(state.config.enabled).toEqual({ BOOL: true });
       expect(state.config.activation_owner).toBeUndefined();
-      expect(Date.parse(state.config.next_scan_at.S)).not.toBeNaN();
       run(shell, "deactivate-monitor.ps1", statePath);
       state = JSON.parse(readFileSync(statePath, "utf8"));
       expect(state.config.enabled).toEqual({ BOOL: false });
       expect(state.config.monitor).toEqual(fullConfig.monitor);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("rolls back only its own failed activation", () => {
-    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-    const statePath = `${dir}\\state.json`;
-    try {
-      writeFileSync(
-        statePath,
-        JSON.stringify({
-          config: structuredClone(fullConfig),
-          messages: [],
-          blacklist: {},
-          calls: [],
-          failSend: true,
-        }),
-      );
-      expect(() =>
-        run(shell, "activate-monitor.ps1", statePath, "ACTIVAR\n"),
-      ).toThrow();
-      const state = JSON.parse(readFileSync(statePath, "utf8"));
-      expect(state.messages).toHaveLength(0);
-      expect(state.config.enabled).toEqual({ BOOL: false });
-      expect(state.config.activation_owner).toBeUndefined();
-      expect(state.config.monitor).toEqual(fullConfig.monitor);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("disables a partially activated monitor after SQS accepts but next_scan_at cannot persist", () => {
-    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-    const statePath = `${dir}\\state.json`;
-    try {
-      writeFileSync(
-        statePath,
-        JSON.stringify({
-          config: structuredClone(fullConfig),
-          messages: [],
-          blacklist: {},
-          calls: [],
-          failActivationPersistence: true,
-        }),
-      );
-      expect(() =>
-        run(shell, "activate-monitor.ps1", statePath, "ACTIVAR\n"),
-      ).toThrow(/mensaje fue aceptado|Command failed/);
-      const state = JSON.parse(readFileSync(statePath, "utf8"));
-      expect(state.messages).toEqual([
-        expect.objectContaining({
-          MessageBody: '{"kind":"scan","schemaVersion":1}',
-        }),
-      ]);
-      expect(state.config.enabled).toEqual({ BOOL: false });
-      expect(state.config.activation_owner).toBeUndefined();
-      expect(state.config.next_scan_at).toBeUndefined();
-      expect(
-        state.calls.filter(
-          (call: { args: string[] }) =>
-            call.args[0] === "sqs" && call.args[1] === "send-message",
-        ),
-      ).toHaveLength(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -368,38 +303,11 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
     ],
     [
       "stale owner",
-      { ...structuredClone(fullConfig), activation_owner: { S: "foreign" } },
+      { ...structuredClone(fullConfig), paused_until: { S: "manual" } },
     ],
-  ])(
-    "rejects %s config after a conditional failure without enqueue",
-    (_label, config) => {
-      const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-      const statePath = `${dir}\\state.json`;
-      try {
-        writeFileSync(
-          statePath,
-          JSON.stringify({ config, messages: [], blacklist: {}, calls: [] }),
-        );
-        expect(() =>
-          run(shell, "activate-monitor.ps1", statePath, "ACTIVAR\n"),
-        ).toThrow(/configuracion falta|Command failed/);
-        const state = JSON.parse(readFileSync(statePath, "utf8"));
-        expect(state.messages).toHaveLength(0);
-        expect(state.config).toEqual(config);
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
-    },
-  );
-
-  it("rejects enabled config when any activation owner is present", () => {
+  ])("rejects %s config after a conditional failure", (_label, config) => {
     const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
     const statePath = `${dir}\\state.json`;
-    const config = {
-      ...structuredClone(fullConfig),
-      enabled: { BOOL: true },
-      activation_owner: { S: "foreign-owner" },
-    };
     try {
       writeFileSync(
         statePath,
@@ -407,16 +315,10 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
       );
       expect(() =>
         run(shell, "activate-monitor.ps1", statePath, "ACTIVAR\n"),
-      ).toThrow();
+      ).toThrow(/configuracion falta|Command failed/);
       const state = JSON.parse(readFileSync(statePath, "utf8"));
       expect(state.messages).toHaveLength(0);
       expect(state.config).toEqual(config);
-      expect(
-        state.calls.filter(
-          (call: { args: string[] }) =>
-            call.args[0] === "dynamodb" && call.args[1] === "update-item",
-        ),
-      ).toHaveLength(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -735,11 +637,6 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
       run(shell, "resume-monitor.ps1", statePath);
       state = JSON.parse(readFileSync(statePath, "utf8"));
 
-      const scheduleNextScan = vi.fn(async () => ({
-        messageId: "unused",
-        delaySeconds: 75,
-        scheduledAt: "2026-09-01T00:01:15.000Z",
-      }));
       const runMonitor = vi.fn(async () => ({
         acquired: true,
         evaluated: 0,
@@ -788,8 +685,6 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
             ciphertext: "AA==",
             authTag: "AA==",
           })),
-          claimScheduleSlot: vi.fn(async () => true),
-          releaseScheduleSlot: vi.fn(async () => undefined),
         },
         assessCost: vi.fn(() => ({
           action: "CONTINUE" as const,
@@ -797,7 +692,6 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
           utilizationRatio: 0,
           reason: "USAGE" as const,
         })),
-        scheduleNextScan,
         loadSecrets: vi.fn(async () => ({ sessionKey: new Uint8Array(32) })),
         decryptSession: vi.fn(() => ({})),
         createMonitorDependencies: vi.fn(async () => ({}) as never),
@@ -806,27 +700,16 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
         clock: () => new Date("2026-09-01T00:00:00.000Z"),
       });
       await handler(
-        {
-          Records: [
-            {
-              messageId: "recovery-one-shot",
-              body: '{"kind":"scan-once","schemaVersion":1}',
-            },
-          ],
-        },
+        { kind: "scan-once", schemaVersion: 1 },
         { getRemainingTimeInMillis: () => 30_000 },
       );
       expect(runMonitor).toHaveBeenCalledOnce();
-      expect(scheduleNextScan).not.toHaveBeenCalled();
 
-      run(shell, "activate-monitor.ps1", statePath);
+      run(shell, "activate-monitor.ps1", statePath, "ACTIVAR\n");
       state = JSON.parse(readFileSync(statePath, "utf8"));
       expect(state.config.enabled).toEqual({ BOOL: true });
-      expect(state.messages).toEqual([
-        expect.objectContaining({
-          MessageBody: '{"kind":"scan","schemaVersion":1}',
-        }),
-      ]);
+      // Activation only flips the flag; the schedule triggers the next scan.
+      expect(state.messages).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

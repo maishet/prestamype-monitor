@@ -374,57 +374,6 @@ export class DynamoRepository implements MonitorRepository, SessionStore {
     }
   }
 
-  async claimScheduleSlot(
-    owner: string,
-    expiresAtEpochSeconds: number,
-  ): Promise<boolean> {
-    assertBounded(owner, MAX_OWNER_LENGTH);
-    assertEpoch(expiresAtEpochSeconds);
-    const now = Math.floor(this.#clock().getTime() / 1_000);
-    const digest = createHash("sha256").update(owner, "utf8").digest("hex");
-    const key = {
-      PK: `SCHEDULE#MESSAGE#${digest}`,
-      SK: `SCHEDULE#MESSAGE#${digest}`,
-    };
-    try {
-      await this.#send(
-        new PutCommand({
-          TableName: this.#tableName,
-          Item: { ...key, owner, expiresAt: expiresAtEpochSeconds },
-          ConditionExpression: "attribute_not_exists(PK) OR expiresAt <= :now",
-          ExpressionAttributeValues: { ":now": now },
-        }),
-      );
-      return true;
-    } catch (error) {
-      if (isConditionalFailure(error)) return false;
-      return wrap(error);
-    }
-  }
-
-  async releaseScheduleSlot(owner: string): Promise<void> {
-    assertBounded(owner, MAX_OWNER_LENGTH);
-    const digest = createHash("sha256").update(owner, "utf8").digest("hex");
-    const key = {
-      PK: `SCHEDULE#MESSAGE#${digest}`,
-      SK: `SCHEDULE#MESSAGE#${digest}`,
-    };
-    try {
-      await this.#send(
-        new DeleteCommand({
-          TableName: this.#tableName,
-          Key: key,
-          ConditionExpression: "#owner = :owner",
-          ExpressionAttributeNames: { "#owner": "owner" },
-          ExpressionAttributeValues: { ":owner": owner },
-        }),
-      );
-    } catch (error) {
-      if (isConditionalFailure(error)) return;
-      wrap(error);
-    }
-  }
-
   async getBlacklist(): Promise<readonly BlacklistEntry[]> {
     try {
       const unique = new Map<string, BlacklistEntry>();

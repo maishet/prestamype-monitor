@@ -79,13 +79,12 @@ describe("operational PowerShell scripts", () => {
     expect(resumeParameters).not.toMatch(/\$(Confirm|Confirmation)\b/i);
   });
 
-  it("keeps one-shot and chained scan bodies distinct and blacklist writes immutable", () => {
+  it("keeps the one-shot body explicit and blacklist writes immutable", () => {
     expect(source("invoke-once.ps1")).toContain(
       '{"kind":"scan-once","schemaVersion":1}',
     );
-    expect(source("activate-monitor.ps1")).toContain(
-      '{"kind":"scan","schemaVersion":1}',
-    );
+    // Activation no longer enqueues anything: the schedule owns the cadence.
+    expect(source("activate-monitor.ps1")).not.toContain('"kind"');
     const seed = source("seed-blacklist.ps1");
     expect(seed).toContain("CORPORACION LERIBE SAC");
     expect(seed).toContain("20517854523");
@@ -110,17 +109,16 @@ describe("operational PowerShell scripts", () => {
     expect(bootstrap).toContain("$process.Dispose()");
   });
 
-  it("uses owner-conditional idempotent activation and rollback", () => {
+  it("activates only a complete, unpaused, disabled configuration", () => {
     const activation = source("activate-monitor.ps1");
     expect(activation).not.toContain("attribute_not_exists(enabled)");
     expect(activation).toContain("attribute_exists(monitor)");
     expect(activation).toContain("attribute_exists(costLimits)");
+    expect(activation).toContain("attribute_not_exists(paused_until)");
     expect(activation).toContain("enabled = :disabled");
-    expect(activation).toContain(
-      "activation_owner = :owner AND enabled = :enabled",
-    );
     expect(activation).toContain("ConditionalCheckFailedException");
-    expect(activation).toContain("REMOVE activation_owner");
+    // There is nothing left to roll back once the queue is gone.
+    expect(activation).not.toContain("activation_owner");
   });
 
   it("bootstraps the complete disabled runtime config before prompting for secrets", () => {
@@ -145,7 +143,6 @@ describe("operational PowerShell scripts", () => {
   it("passes operational payloads through cli input files, not inline JSON", () => {
     for (const name of [
       "seed-blacklist.ps1",
-      "invoke-once.ps1",
       "activate-monitor.ps1",
       "deactivate-monitor.ps1",
       "resume-monitor.ps1",

@@ -62,7 +62,6 @@ async function bundle(entryPoint, outputDirectory, entryName, external = []) {
 export async function runSmokeBuild() {
   const temporaryRoot = await mkdtemp(join(tmpdir(), "prestamype-sam-smoke-"));
   const scanDirectory = join(temporaryRoot, "scan");
-  const supervisorDirectory = join(temporaryRoot, "supervisor");
   const layerDirectory = join(temporaryRoot, "layer");
   let result;
   try {
@@ -72,11 +71,6 @@ export async function runSmokeBuild() {
       "handler",
       browserExternals,
     );
-    const supervisor = await bundle(
-      "src/lambda/supervisor.ts",
-      supervisorDirectory,
-      "supervisor",
-    );
     const artifactModules = join(layerDirectory, "nodejs", "node_modules");
     const copied = new Set();
     for (const dependency of browserExternals) {
@@ -84,7 +78,6 @@ export async function runSmokeBuild() {
     }
 
     const scanBundle = join(scanDirectory, "handler.mjs");
-    const supervisorBundle = join(supervisorDirectory, "supervisor.mjs");
     const scanText = await readFile(scanBundle, "utf8");
     const runtimeProbe = JSON.parse(
       execFileSync(
@@ -128,9 +121,6 @@ export async function runSmokeBuild() {
     result = {
       scanBundle:
         existsSync(scanBundle) && Object.keys(scan.metafile.outputs).length > 0,
-      supervisorBundle:
-        existsSync(supervisorBundle) &&
-        Object.keys(supervisor.metafile.outputs).length > 0,
       chromiumExternal: scanText.includes("@sparticuz/chromium"),
       playwrightExternal: scanText.includes("playwright-core"),
       createRequireLoader: scanText.includes("createRequire(import.meta.url)"),

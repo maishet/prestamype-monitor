@@ -6,15 +6,21 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+# One deliberate scan, invoked directly. The scheduled rule is untouched and the
+# monitor's enabled flag is neither read nor changed here.
 $body = '{"kind":"scan-once","schemaVersion":1}'
 if ($ValidateOnly -or $WhatIfPreference) { Write-Output "Validación local correcta; AWS no fue invocado."; return }
-$queueUrl = & aws cloudformation describe-stacks --stack-name $StackName --region $Region --query "Stacks[0].Outputs[?OutputKey=='QueueUrl'].OutputValue | [0]" --output text
-if ($LASTEXITCODE -ne 0 -or $queueUrl -notmatch '^https://sqs\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?/\d{12}/[A-Za-z0-9_-]+$') { throw "No se pudo resolver QueueUrl de forma segura." }
-$tempPath = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
+$functionName = & aws cloudformation describe-stacks --stack-name $StackName --region $Region --query "Stacks[0].Outputs[?OutputKey=='FunctionName'].OutputValue | [0]" --output text
+if ($LASTEXITCODE -ne 0 -or $functionName -notmatch '^[A-Za-z0-9_-]{1,140}$') { throw "No se pudo resolver FunctionName de forma segura." }
+$payloadPath = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
+$outputPath = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 try {
-    $json = @{ QueueUrl = $queueUrl; MessageBody = $body } | ConvertTo-Json -Compress
-    [IO.File]::WriteAllText($tempPath, $json, (New-Object Text.UTF8Encoding($false)))
-    & aws sqs send-message --region $Region --cli-input-json ("file://" + $tempPath) --output json | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "No se pudo programar el escaneo unico." }
-} finally { if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force } }
-Write-Output "Se envió exactamente un escaneo; el monitor no fue activado."
+    [IO.File]::WriteAllText($payloadPath, $body, (New-Object Text.UTF8Encoding($false)))
+    & aws lambda invoke --region $Region --function-name $functionName --invocation-type Event --payload ("fileb://" + $payloadPath) --output json $outputPath | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "No se pudo invocar el escaneo unico." }
+} finally {
+    foreach ($path in @($payloadPath, $outputPath)) {
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+    }
+}
+Write-Output "Se invocó exactamente un escaneo; el monitor no fue activado."

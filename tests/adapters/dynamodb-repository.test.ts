@@ -5,7 +5,6 @@ import {
   QueryCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -182,35 +181,6 @@ describe("DynamoRepository", () => {
     await expect(repository.releaseLock("other")).resolves.toBeUndefined();
   });
 
-  it("claims and owner-conditionally releases a per-message scheduling slot", async () => {
-    const aws = client({}, {});
-    const repository = new DynamoRepository({
-      client: aws,
-      tableName,
-      clock: () => new Date("2026-08-30T12:00:00.000Z"),
-    });
-    await expect(
-      repository.claimScheduleSlot("message-1", 1_788_091_320),
-    ).resolves.toBe(true);
-    const digest = createHash("sha256").update("message-1").digest("hex");
-    const key = `SCHEDULE#MESSAGE#${digest}`;
-    expect(aws.send.mock.calls[0]![0].input).toMatchObject({
-      Item: {
-        PK: key,
-        SK: key,
-        owner: "message-1",
-        expiresAt: 1_788_091_320,
-      },
-      ConditionExpression: "attribute_not_exists(PK) OR expiresAt <= :now",
-    });
-    await repository.releaseScheduleSlot("message-1");
-    expect(aws.send.mock.calls[1]![0]).toBeInstanceOf(DeleteCommand);
-    expect(aws.send.mock.calls[1]![0].input).toMatchObject({
-      Key: { PK: key, SK: key },
-      ConditionExpression: "#owner = :owner",
-    });
-  });
-
   it.each(["top", "name", "metadata", "status", "request"] as const)(
     "wraps hostile Dynamo error getters on %s without leaking or masking",
     async (kind) => {
@@ -260,10 +230,15 @@ describe("DynamoRepository", () => {
       const repository = new DynamoRepository({ client: aws, tableName });
       const failures = await Promise.all([
         repository
-          .claimScheduleSlot("message-1", 2_000_000_000)
+          .acquireLock("owner-1", 2_000_000_000)
+          .catch((error: unknown) => error),
+        repository.releaseLock("owner-1").catch((error: unknown) => error),
+        repository.getBlacklist().catch((error: unknown) => error),
+        repository
+          .claimAlert("alert-1", "owner-1", 2_000_000_000)
           .catch((error: unknown) => error),
         repository
-          .releaseScheduleSlot("message-1")
+          .completeAlert("alert-1", "owner-1")
           .catch((error: unknown) => error),
       ]);
       for (const failure of failures) {

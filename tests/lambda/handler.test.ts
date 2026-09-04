@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { runMonitor as runApplicationMonitor } from "../../src/application/monitor.js";
-import { SqsSchedulerError } from "../../src/adapters/sqs-scheduler.js";
 import {
   createScanHandler,
   type ScanHandlerDependencies,
@@ -14,16 +13,13 @@ import {
 } from "../../src/browser/errors.js";
 
 const NOW = new Date("2026-08-26T12:00:00.000Z");
+// What the EventBridge rule delivers, trimmed to the fields the handler reads.
 const EVENT = {
-  Records: [
-    { messageId: "message-1", body: '{"kind":"scan","schemaVersion":1}' },
-  ],
+  source: "aws.events",
+  "detail-type": "Scheduled Event",
+  detail: {},
 };
-const ONE_SHOT_EVENT = {
-  Records: [
-    { messageId: "one-shot-1", body: '{"kind":"scan-once","schemaVersion":1}' },
-  ],
-};
+const ONE_SHOT_EVENT = { kind: "scan-once", schemaVersion: 1 };
 const CONFIG: ScanRuntimeConfig = {
   enabled: true,
   monitor: {
@@ -40,7 +36,6 @@ const CONFIG: ScanRuntimeConfig = {
 function fixture(overrides: Partial<ScanHandlerDependencies> = {}) {
   const calls: string[] = [];
   let config: ScanRuntimeConfig = CONFIG;
-  const scheduleClaims = new Set<string>();
   const store = {
     loadConfig: vi.fn(async () => {
       calls.push("config");
@@ -77,15 +72,6 @@ function fixture(overrides: Partial<ScanHandlerDependencies> = {}) {
       calls.push("session");
       return { schemaVersion: 1 };
     }),
-    claimScheduleSlot: vi.fn(async (owner: string, expiresAt: number) => {
-      void expiresAt;
-      if (scheduleClaims.has(owner)) return false;
-      scheduleClaims.add(owner);
-      return true;
-    }),
-    releaseScheduleSlot: vi.fn(async (owner: string) => {
-      scheduleClaims.delete(owner);
-    }),
   };
   const dependencies: ScanHandlerDependencies = {
     store,
@@ -98,10 +84,6 @@ function fixture(overrides: Partial<ScanHandlerDependencies> = {}) {
         projectedGbSeconds: 0,
       };
     },
-    scheduleNextScan: vi.fn(async () => {
-      calls.push("schedule");
-      return { delaySeconds: 75 };
-    }),
     loadSecrets: vi.fn(async () => {
       calls.push("secrets");
       return { sessionKey: new Uint8Array(32) };
@@ -166,47 +148,30 @@ describe("scan Lambda handler", () => {
     expect(close).toHaveBeenCalledOnce();
     expect(releaseLock).toHaveBeenCalledWith("message-1");
   });
-  it("schedules before decrypting, creating the browser, and running", async () => {
+  it("meters and checks cost before decrypting or opening a browser", async () => {
     const f = fixture();
     await f.handler(EVENT, {
       awsRequestId: "request-1",
       getRemainingTimeInMillis: () => 30_000,
     });
-    expect(f.calls).toEqual(
-      expect.arrayContaining([
-        "config",
-        "schedule",
-        "session",
-        "decrypt",
-        "browser",
-        "monitor",
-      ]),
-    );
-    expect(f.calls.indexOf("schedule")).toBeLessThan(
-      f.calls.indexOf("browser"),
-    );
     expect(
-      f.calls
-        .filter(
-          (call, index, all) =>
-            [
-              "config",
-              "usage",
-              "cost",
-              "schedule",
-              "session",
-              "secrets",
-              "decrypt",
-              "browser",
-              "monitor",
-            ].includes(call) && all.indexOf(call) === index,
-        )
-        .slice(0, 9),
+      f.calls.filter(
+        (call, index, all) =>
+          [
+            "config",
+            "usage",
+            "cost",
+            "session",
+            "secrets",
+            "decrypt",
+            "browser",
+            "monitor",
+          ].includes(call) && all.indexOf(call) === index,
+      ),
     ).toEqual([
       "config",
       "usage",
       "cost",
-      "schedule",
       "session",
       "secrets",
       "decrypt",
@@ -217,49 +182,45 @@ describe("scan Lambda handler", () => {
   it.each([
     { ...CONFIG, enabled: false },
     { ...CONFIG, paused_until: "manual" },
-  ])("exits without cost or scheduling", async (config) => {
+  ])("exits without metering when disabled or paused", async (config) => {
     const f = fixture();
     f.store.loadConfig.mockResolvedValue(config);
     await f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 });
-    expect(f.dependencies.scheduleNextScan).not.toHaveBeenCalled();
     expect(f.store.incrementMonthlyUsage).not.toHaveBeenCalled();
+    expect(f.dependencies.runMonitor).not.toHaveBeenCalled();
   });
-  it("runs the exact one-shot SQS contract while disabled and never chains", async () => {
+  it("runs a one-shot payload even while the monitor is disabled", async () => {
     const f = fixture();
     f.store.loadConfig.mockResolvedValue({ ...CONFIG, enabled: false });
     await f.handler(ONE_SHOT_EVENT, {
       getRemainingTimeInMillis: () => 30_000,
     });
     expect(f.dependencies.runMonitor).toHaveBeenCalledOnce();
-    expect(f.dependencies.scheduleNextScan).not.toHaveBeenCalled();
-    expect(f.store.claimScheduleSlot).not.toHaveBeenCalled();
   });
-  it("keeps one-shot subject to pause and rejects extra or malformed SQS bodies", async () => {
+  it("keeps one-shot subject to pause and rejects any other payload", async () => {
     const f = fixture();
     f.store.loadConfig.mockResolvedValue({ ...CONFIG, paused_until: "manual" });
     await f.handler(ONE_SHOT_EVENT, {
       getRemainingTimeInMillis: () => 30_000,
     });
     expect(f.dependencies.runMonitor).not.toHaveBeenCalled();
-    await expect(
-      f.handler(
-        {
-          Records: [
-            {
-              messageId: "one-shot-2",
-              body: '{"kind":"scan-once","schemaVersion":1,"extra":true}',
-            },
-          ],
-        },
-        { getRemainingTimeInMillis: () => 30_000 },
-      ),
-    ).rejects.toThrow("Invalid scan invocation");
-    await expect(
-      f.handler(
-        { Records: [{ messageId: "one-shot-3", body: "not-json" }] },
-        { getRemainingTimeInMillis: () => 30_000 },
-      ),
-    ).rejects.toThrow("Invalid scan invocation");
+    for (const hostile of [
+      { kind: "scan-once", schemaVersion: 1, extra: true },
+      { kind: "scan-once", schemaVersion: 2 },
+      { kind: "drop-table", schemaVersion: 1 },
+      { source: "aws.events", "detail-type": "Object Created" },
+      { source: "evil", "detail-type": "Scheduled Event" },
+      {
+        Records: [
+          { messageId: "m", body: '{"kind":"scan","schemaVersion":1}' },
+        ],
+      },
+    ])
+      await expect(
+        f.handler(hostile as never, {
+          getRemainingTimeInMillis: () => 30_000,
+        }),
+      ).rejects.toThrow("Invalid scan invocation");
   });
   it("rejects hostile events and exits before three seconds", async () => {
     const f = fixture();
@@ -267,7 +228,7 @@ describe("scan Lambda handler", () => {
       f.handler({ Records: [] }, { getRemainingTimeInMillis: () => 30_000 }),
     ).rejects.toThrow("Invalid scan invocation");
     await f.handler(EVENT, { getRemainingTimeInMillis: () => 2_999 });
-    expect(f.dependencies.scheduleNextScan).not.toHaveBeenCalled();
+    expect(f.store.loadConfig).not.toHaveBeenCalled();
   });
   it("does not construct a browser when a cost alert consumes the safe budget", async () => {
     let remaining = 30_000;
@@ -283,7 +244,6 @@ describe("scan Lambda handler", () => {
       }),
     });
     await f.handler(EVENT, { getRemainingTimeInMillis: () => remaining });
-    expect(f.dependencies.scheduleNextScan).toHaveBeenCalledOnce();
     expect(f.store.loadEncryptedSession).not.toHaveBeenCalled();
     expect(f.dependencies.createMonitorDependencies).not.toHaveBeenCalled();
     expect(f.dependencies.runMonitor).not.toHaveBeenCalled();
@@ -326,15 +286,6 @@ describe("scan Lambda handler", () => {
     expect(close).not.toHaveBeenCalled();
     expect(releaseLock).not.toHaveBeenCalled();
   });
-  it("deduplicates a previously completed message before scheduling", async () => {
-    const f = fixture();
-    f.store.loadConfig.mockResolvedValue({
-      ...CONFIG,
-      last_message_id: "message-1",
-    });
-    await f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 });
-    expect(f.dependencies.scheduleNextScan).not.toHaveBeenCalled();
-  });
   it("does not confirm a message when runtime work fails and permits retry", async () => {
     const runMonitor = vi
       .fn()
@@ -345,128 +296,13 @@ describe("scan Lambda handler", () => {
     await expect(
       f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 }),
     ).rejects.toThrow("Monitor invocation failed");
-    expect(f.config().last_message_id).toBeUndefined();
     await expect(
       f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 }),
     ).rejects.toThrow("Monitor invocation failed");
     await expect(
       f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 }),
     ).resolves.toBeUndefined();
-    expect(f.dependencies.scheduleNextScan).toHaveBeenCalledTimes(1);
     expect(runMonitor).toHaveBeenCalledTimes(3);
-    expect(f.config().last_message_id).toBe("message-1");
-  });
-  it("infers an accepted successor from future next_scan_at when marker persistence failed", async () => {
-    const f = fixture();
-    vi.mocked(f.dependencies.scheduleNextScan).mockImplementationOnce(
-      async () => {
-        await f.store.saveConfig({
-          ...f.config(),
-          next_scan_at: "2026-08-26T12:01:30.000Z",
-        });
-        return { delaySeconds: 90 };
-      },
-    );
-    const normalSave = f.store.saveConfig.getMockImplementation();
-    f.store.saveConfig
-      .mockImplementationOnce(normalSave as never)
-      .mockRejectedValueOnce(new Error("marker write failed"));
-    await expect(
-      f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 }),
-    ).rejects.toThrow("Monitor invocation failed");
-    expect(f.config().next_scan_at).toBe("2026-08-26T12:01:30.000Z");
-    await f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 });
-    expect(f.dependencies.scheduleNextScan).toHaveBeenCalledOnce();
-    expect(f.config().successor_scheduled_for_message_id).toBe("message-1");
-  });
-  it("keeps the pre-send lease when SQS accepted but next_scan persistence failed", async () => {
-    const runMonitor = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("work retry"))
-      .mockResolvedValueOnce({ acquired: true, evaluated: 0, alertsSent: 0 });
-    const f = fixture({ runMonitor });
-    vi.mocked(f.dependencies.scheduleNextScan).mockRejectedValueOnce(
-      new SqsSchedulerError(true),
-    );
-    await expect(
-      f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 }),
-    ).rejects.toThrow("Monitor invocation failed");
-    expect(f.store.releaseScheduleSlot).not.toHaveBeenCalled();
-    await expect(
-      f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 }),
-    ).rejects.toThrow("Monitor invocation failed");
-    await f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 });
-    expect(f.dependencies.scheduleNextScan).toHaveBeenCalledOnce();
-    expect(f.store.claimScheduleSlot).toHaveBeenCalledTimes(2);
-    expect(runMonitor).toHaveBeenCalledTimes(2);
-  });
-  it("releases only an unequivocal pre-accept failure so redelivery can retry", async () => {
-    const f = fixture();
-    vi.mocked(f.dependencies.scheduleNextScan)
-      .mockRejectedValueOnce(new SqsSchedulerError(false))
-      .mockResolvedValueOnce({ delaySeconds: 90 });
-    await expect(
-      f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 }),
-    ).rejects.toThrow("Monitor invocation failed");
-    await f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 });
-    expect(f.dependencies.scheduleNextScan).toHaveBeenCalledTimes(2);
-    expect(f.store.releaseScheduleSlot).toHaveBeenCalledTimes(1);
-  });
-  it("uses independent 15-day slots for concurrent duplicates and their successor", async () => {
-    const f = fixture();
-    await Promise.all([
-      f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 }),
-      f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 }),
-    ]);
-    expect(f.dependencies.scheduleNextScan).toHaveBeenCalledOnce();
-    expect(f.store.claimScheduleSlot).toHaveBeenCalledWith(
-      "message-1",
-      1_789_041_600,
-    );
-    const successor = {
-      Records: [
-        { messageId: "message-2", body: '{"kind":"scan","schemaVersion":1}' },
-      ],
-    };
-    await f.handler(successor, { getRemainingTimeInMillis: () => 30_000 });
-    expect(f.dependencies.scheduleNextScan).toHaveBeenCalledTimes(2);
-    expect(f.store.claimScheduleSlot).toHaveBeenLastCalledWith(
-      "message-2",
-      1_789_041_600,
-    );
-  });
-  it("retains per-message send idempotency at +120s and just under 14 days", async () => {
-    let nowMs = NOW.getTime();
-    const leases = new Map<string, number>();
-    const f = fixture({
-      clock: () => new Date(nowMs),
-      runMonitor: vi.fn(async () => {
-        throw new Error("retry work");
-      }),
-    });
-    f.store.claimScheduleSlot.mockImplementation(async (owner, expiresAt) => {
-      const current = leases.get(owner) ?? 0;
-      if (current > Math.floor(nowMs / 1_000)) return false;
-      leases.set(owner, expiresAt);
-      return true;
-    });
-    for (const advance of [0, 120_000, 14 * 24 * 3_600_000 - 1]) {
-      nowMs = NOW.getTime() + advance;
-      const {
-        successor_scheduled_for_message_id: _successor,
-        next_scan_at: _next,
-        last_message_id: _last,
-        ...rest
-      } = f.config();
-      void _successor;
-      void _next;
-      void _last;
-      await f.store.saveConfig(rest as ScanRuntimeConfig);
-      await expect(
-        f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 }),
-      ).rejects.toThrow("Monitor invocation failed");
-    }
-    expect(f.dependencies.scheduleNextScan).toHaveBeenCalledOnce();
   });
   it.each([
     [new SessionExpiredError(), "manual", 0],
@@ -485,7 +321,6 @@ describe("scan Lambda handler", () => {
     });
     expect(f.config().paused_until).toBe(pause);
     expect(f.config().rate_limit_count ?? 0).toBe(count);
-    expect(f.config().last_message_id).toBe("message-1");
     expect(
       (f.config().last_error as { message: string }).message,
     ).not.toContain("token=");
@@ -509,17 +344,14 @@ describe("scan Lambda handler", () => {
       await expect(
         f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 }),
       ).rejects.toThrow("Runtime alert delivery failed");
-      expect(f.dependencies.scheduleNextScan).not.toHaveBeenCalled();
       expect(f.config().pending_runtime_alert).toBeDefined();
       await f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 });
       expect(f.config().pending_runtime_alert).toBeUndefined();
       if (action === "PAUSE") {
         expect(f.config().paused_until).toBe("manual");
-        expect(f.config().last_message_id).toBe("message-1");
-        expect(f.dependencies.scheduleNextScan).not.toHaveBeenCalled();
+        expect(f.dependencies.runMonitor).not.toHaveBeenCalled();
       } else {
         expect(f.config().cost_warning_month).toBe("2026-08");
-        expect(f.dependencies.scheduleNextScan).toHaveBeenCalledOnce();
       }
     },
   );
@@ -604,10 +436,8 @@ describe("scan Lambda handler", () => {
     });
     expect(f.config().last_error).not.toHaveProperty("requestId");
     expect(f.config().pending_runtime_alert).toBeDefined();
-    expect(f.config().last_message_id).toBeUndefined();
+    // The next run drains the outbox before doing anything else.
     await f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 });
     expect(f.config().pending_runtime_alert).toBeUndefined();
-    expect(f.config().last_message_id).toBe("message-1");
-    expect(f.dependencies.scheduleNextScan).toHaveBeenCalledOnce();
   });
 });

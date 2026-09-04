@@ -22,18 +22,15 @@ if (service === "cloudformation") {
   save();
   const outputs = state.stackOutputs ?? [
     { OutputKey: "TableName", OutputValue: "MonitorTable" },
-    {
-      OutputKey: "QueueUrl",
-      OutputValue: "https://sqs.sa-east-1.amazonaws.com/123456789012/scan",
-    },
+    { OutputKey: "FunctionName", OutputValue: "prestamype-monitor-scan" },
   ];
   if (args.join(" ").includes("TableName"))
     process.stdout.write(
       `${outputs.find((entry) => entry.OutputKey === "TableName")?.OutputValue ?? "None"}\n`,
     );
-  else if (args.join(" ").includes("QueueUrl"))
+  else if (args.join(" ").includes("FunctionName"))
     process.stdout.write(
-      "https://sqs.sa-east-1.amazonaws.com/123456789012/scan\n",
+      `${outputs.find((entry) => entry.OutputKey === "FunctionName")?.OutputValue ?? "None"}\n`,
     );
   else process.stdout.write(JSON.stringify(outputs));
 } else if (service === "dynamodb" && operation === "get-item") {
@@ -67,65 +64,43 @@ if (service === "cloudformation") {
     }
     delete state.config.paused_until;
     delete state.config.pause_reason;
-  } else if (
-    expression.includes("activation_owner = :owner") &&
-    expression.includes("SET enabled = :enabled")
-  ) {
+  } else if (expression === "SET enabled = :enabled") {
     if (
       !state.config ||
       state.config.enabled?.BOOL !== false ||
       !state.config.monitor ||
       !state.config.costLimits ||
-      state.config.activation_owner
+      state.config.paused_until
     ) {
       save();
       process.stderr.write("ConditionalCheckFailedException");
       process.exit(255);
     }
     state.config.enabled = { BOOL: true };
-    state.config.activation_owner = input.ExpressionAttributeValues[":owner"];
   } else if (expression.includes("monitor = :monitor")) {
     state.config ??= { PK: { S: "CONFIG" }, SK: { S: "MONITOR" } };
     state.config.enabled = { BOOL: false };
     state.config.monitor = input.ExpressionAttributeValues[":monitor"];
     state.config.costLimits = input.ExpressionAttributeValues[":cost"];
     delete state.config.activation_owner;
-  } else if (expression.includes("SET next_scan_at = :next")) {
-    if (
-      state.failActivationPersistence ||
-      state.config?.activation_owner?.S !==
-        input.ExpressionAttributeValues[":owner"]?.S
-    ) {
-      save();
-      process.stderr.write("ConditionalCheckFailedException");
-      process.exit(255);
-    }
-    state.config.next_scan_at = input.ExpressionAttributeValues[":next"];
-    delete state.config.activation_owner;
   } else if (expression.includes("SET enabled = :disabled")) {
-    if (
-      input.ConditionExpression &&
-      state.config?.activation_owner?.S !==
-        input.ExpressionAttributeValues[":owner"]?.S
-    ) {
-      save();
-      process.stderr.write("ConditionalCheckFailedException");
-      process.exit(255);
-    }
     state.config.enabled = { BOOL: false };
-    delete state.config.activation_owner;
-  } else if (expression === "REMOVE activation_owner")
-    delete state.config.activation_owner;
+  }
   save();
   process.stdout.write("{}");
-} else if (service === "sqs" && operation === "send-message") {
+} else if (service === "lambda" && operation === "invoke") {
   if (state.failSend) {
     save();
     process.exit(9);
   }
-  state.messages.push(input);
+  const payloadArgument = args[args.indexOf("--payload") + 1] ?? "";
+  state.messages.push({
+    MessageBody: payloadArgument.startsWith("fileb://")
+      ? readFileSync(payloadArgument.slice("fileb://".length), "utf8")
+      : payloadArgument,
+  });
   save();
-  process.stdout.write('{"MessageId":"fake"}');
+  process.stdout.write('{"StatusCode":202}');
 } else {
   save();
   process.exit(3);

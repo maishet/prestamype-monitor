@@ -14,7 +14,6 @@ describe("local Lambda build smoke", () => {
     );
     expect(JSON.parse(output)).toEqual({
       scanBundle: true,
-      supervisorBundle: true,
       chromiumExternal: true,
       playwrightExternal: true,
       createRequireLoader: true,

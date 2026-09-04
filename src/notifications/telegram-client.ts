@@ -31,6 +31,11 @@ const MAX_RETRY_MS = 5_000;
 const TOKEN = /^\d{6,12}:[A-Za-z0-9_-]{16,128}$/;
 const CHAT_ID = /^-?\d{1,20}(?:\s*,\s*-?\d{1,20})*$/;
 
+/** Enough of a chat id to tell destinations apart in a log, not enough to reuse. */
+function maskChatId(chatId: string): string {
+  return `…${chatId.slice(-4)}`;
+}
+
 function fail(): never {
   throw new TelegramDeliveryError();
 }
@@ -172,8 +177,29 @@ export class TelegramClient implements Notifier {
       message.length > MAX_MESSAGE_LENGTH
     )
       fail();
-    for (const chatId of this.#chatIds)
-      await this.sendToChat(message, chatId, options);
+
+    // Every destination is attempted. A group whose id went stale — which
+    // happens on its own when Telegram upgrades a group to a supergroup — used
+    // to abort the loop and silently cost the remaining chats their alert.
+    const failed: string[] = [];
+    let delivered = 0;
+    for (const chatId of this.#chatIds) {
+      if (options.signal?.aborted === true) break;
+      try {
+        await this.sendToChat(message, chatId, options);
+        delivered += 1;
+      } catch {
+        failed.push(chatId);
+      }
+    }
+    if (failed.length > 0) {
+      console.warn(
+        "Telegram delivery failed for some chats",
+        JSON.stringify({ delivered, failed: failed.map(maskChatId) }),
+      );
+    }
+    // Only a total failure is a failure: the alert did reach someone otherwise.
+    if (delivered === 0) fail();
   }
 
   private async sendToChat(

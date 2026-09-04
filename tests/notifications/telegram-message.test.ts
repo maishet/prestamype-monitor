@@ -28,7 +28,7 @@ const opportunity: Opportunity = {
   auctionCode: "M5dGmP0G",
   commercialName: "CLIENTE",
   investmentType: "Factoring",
-  url: "https://www.prestamype.com/app/inversionista/oportunidades/opp-42",
+  url: "https://www.prestamype.com/app/inversionista/oportunidades",
   supplier: { legalName: "Proveedor Andino S.A.C.", taxId: "20111111111" },
   debtor: { legalName: "Pagador Nacional S.A.", taxId: "20222222222" },
   risk: "A",
@@ -60,250 +60,182 @@ const evaluation: Evaluation = {
 };
 
 describe("formatOpportunityAlert", () => {
-  it("formats a high-priority recommendation with the required context in Lima time", () => {
-    const message = formatOpportunityAlert(
-      opportunity,
-      evaluation,
-      portfolio,
-      new Date("2026-08-27T15:30:00.000Z"),
+  const format = (
+    over: Partial<Opportunity> = {},
+    overEvaluation: Partial<Evaluation> = {},
+    overPortfolio: Partial<PortfolioSnapshot> = {},
+  ): string =>
+    formatOpportunityAlert(
+      { ...opportunity, ...over },
+      { ...evaluation, ...overEvaluation },
+      { ...portfolio, ...overPortfolio },
+      new Date("2026-08-27T17:00:00.000Z"),
     );
 
-    expect(message).toContain("🔴 OPORTUNIDAD ALTA");
-    expect(message).toContain("Decisión: <b>INVERTIR</b>");
-    expect(message).toContain("Empresa: Proveedor Andino S.A.C.");
-    expect(message).toContain("Pagador: Pagador Nacional S.A.");
-    expect(message).toContain("Riesgo: A");
-    expect(message).toContain("Retorno anual: 20.00%");
-    expect(message).toContain("Score: 91.4/100");
-    expect(message).toContain("Restante: S/3,750.00");
-    expect(message).toContain("Buen historial del pagador");
-    expect(message).toContain("Concentración resultante elevada");
-    expect(message).toContain("27/08/2026, 10:30");
-    expect(message).toContain(
-      '<a href="https://www.prestamype.com/app/inversionista/oportunidades/opp-42">Abrir oportunidad</a>',
+  it("leads with the decision, the client and the terms", () => {
+    const lines = format().split("\n");
+    expect(lines[0]).toBe("<b>🔴 INVERTIR · CLIENTE</b>");
+    expect(lines[1]).toBe(
+      "Riesgo A · Factoring · 20.00% anual (1.53% mensual)",
     );
-    expect(message).toContain("Concentración resultante:");
-    expect(message).toContain("Monto posible: S/2,500.00");
-    expect(message).not.toMatch(
-      /ejecutar la inversión|invertir automáticamente/i,
-    );
+    expect(lines[2]).toBe("Restante S/3,750.00 de S/5,000.00 (25% financiado)");
   });
 
-  it.each([
-    ["INVEST", "🔴 OPORTUNIDAD ALTA", "INVERTIR"],
-    ["REVIEW", "🟡 OPORTUNIDAD PARA REVISAR", "REVISAR"],
-    ["DO_NOT_INVEST", "⛔ NO INVERTIR", "NO INVERTIR"],
-  ] as const)("uses a clear title for %s", (decision, title, label) => {
-    const message = formatOpportunityAlert(
-      opportunity,
-      { ...evaluation, decision },
-      portfolio,
-      new Date("2026-08-27T15:30:00.000Z"),
-    );
-
-    expect(message).toContain(title);
-    expect(message).toContain(`Decisión: <b>${label}</b>`);
+  it("stays short enough to read on a phone", () => {
+    const message = format();
+    expect(message.split("\n").length).toBeLessThanOrEqual(10);
+    expect(message.length).toBeLessThan(600);
   });
 
-  it("reports unavailable and zero balances without recommending execution", () => {
-    const zero = formatOpportunityAlert(
-      opportunity,
-      evaluation,
-      { ...portfolio, availableBalanceCents: 0 },
-      new Date("2026-08-27T15:30:00.000Z"),
-    );
-    const unavailable = formatOpportunityAlert(
-      opportunity,
-      evaluation,
-      { ...portfolio, availableBalanceCents: null },
-      new Date("2026-08-27T15:30:00.000Z"),
-    );
-
-    expect(zero).toContain("Saldo disponible: S/0.00");
-    expect(zero).toContain("Sin liquidez disponible; no ejecutar inversión");
-    expect(unavailable).toContain("Saldo disponible: no disponible");
-    expect(unavailable).not.toContain("Sin liquidez disponible");
+  it("leaves out what the reader cannot act on", () => {
+    const message = format({}, {}, { availableBalanceCents: 0 });
+    // Deliberately absent: the balance, the auction code and the link.
+    expect(message).not.toContain("saldo");
+    expect(message).not.toContain("código");
+    expect(message).not.toContain("<a href");
   });
 
-  it("uses the same possible amount for Telegram concentration as scoring", () => {
-    const candidate = { ...opportunity, remainingAmountCents: 1_000_000 };
-    const base = {
-      ...portfolio,
-      activeTotalCents: 100_000,
-      exposureByParty: { "PAGADOR NACIONAL S A": 10_000 },
-    };
-    const zero = formatOpportunityAlert(
-      candidate,
-      evaluation,
-      { ...base, availableBalanceCents: 0 },
-      new Date("2026-08-27T15:30:00.000Z"),
-    );
-    const hundred = formatOpportunityAlert(
-      candidate,
-      evaluation,
-      { ...base, availableBalanceCents: 10_000 },
-      new Date("2026-08-27T15:30:00.000Z"),
-    );
-    expect(zero).toContain("Monto posible: S/0.00");
-    expect(zero).toContain("Concentración resultante: 10.0%");
-    expect(hundred).toContain("Monto posible: S/100.00");
-    expect(hundred).toContain("Concentración resultante: 18.2%");
-  });
-
-  it("escapes HTML text and safe link attributes, and rejects non-HTTPS URLs", () => {
-    const hostile = {
-      ...opportunity,
-      supplier: { legalName: 'Proveedor <script>& "Uno"', taxId: null },
-      debtor: { legalName: "Pagador > Proveedor & Co.", taxId: null },
-      url: "https://www.prestamype.com/app/inversionista/oportunidades/opp-safe",
-    };
-    const safe = formatOpportunityAlert(
-      hostile,
-      {
-        ...evaluation,
-        reasons: ["Rentable <hoy> & mañana"],
-        warnings: ['Revisar "riesgo" & plazo'],
-      },
-      portfolio,
-      new Date("2026-08-27T15:30:00.000Z"),
-    );
-    const unsafe = formatOpportunityAlert(
-      { ...hostile, url: 'javascript:alert("token")' },
-      evaluation,
-      portfolio,
-      new Date("2026-08-27T15:30:00.000Z"),
-    );
-
-    expect(safe).toContain(
-      "Empresa: Proveedor &lt;script&gt;&amp; &quot;Uno&quot;",
-    );
-    expect(safe).toContain("Rentable &lt;hoy&gt; &amp; mañana");
-    expect(safe).toContain(
-      'href="https://www.prestamype.com/app/inversionista/oportunidades/opp-safe"',
-    );
-    expect(safe).not.toContain("<script>");
-    expect(unsafe).not.toContain("href=");
-    expect(unsafe).toContain("Enlace: no disponible (URL inválida)");
-    expect(unsafe).not.toContain("javascript:");
-  });
-
-  it("stays below 4000 characters without cutting tags or entities and keeps essentials", () => {
-    const longText = "alerta <crítica> & segura ".repeat(600);
-    const message = formatOpportunityAlert(
-      {
-        ...opportunity,
-        supplier: { ...opportunity.supplier, legalName: longText },
-      },
-      {
-        ...evaluation,
-        reasons: [
-          `REASON_ONE ${longText}`,
-          `REASON_TWO ${longText}`,
-          `REASON_THREE ${longText}`,
-        ],
-        warnings: [`WARN_REQUIRED ${longText}`],
-        components: Object.fromEntries(
-          Array.from({ length: 80 }, (_, index) => [`detalle-${index}`, 1]),
-        ),
-      },
-      portfolio,
-      new Date("2026-08-27T15:30:00.000Z"),
-    );
-
-    expect(message.length).toBeLessThan(4000);
-    expect(message).toContain("🔴 OPORTUNIDAD ALTA");
-    expect(message).toContain("Decisión: <b>INVERTIR</b>");
-    expect(message).toContain("Empresa:");
-    expect(message).toContain("Score: 91.4/100");
-    expect(message).toContain("⚠️ Advertencias:");
-    expect(message).toContain("WARN_REQUIRED");
-    expect(message).toContain("Razones:");
-    expect(message).toContain("REASON_ONE");
-    expect(message).toContain("REASON_TWO");
-    expect(message).toContain("REASON_THREE");
-    expect(message).toContain("Abrir oportunidad");
-    expect(message).not.toMatch(/<[^>]*$/);
-    expect(message).not.toMatch(/&(?:#\d*|#x[\da-f]*|\w*)$/i);
-  });
-
-  it("bounds escaped output without throwing and degrades an oversized link safely", () => {
-    const ampersands = "&".repeat(950);
-    const oversizedUrl = `https://www.prestamype.com/app/inversionista/oportunidades/opp-42?a=${ampersands}`;
-
-    expect(() =>
+  it("says how urgent the close is rather than only when it is", () => {
+    const now = new Date("2026-09-03T12:00:00.000Z");
+    const at = (closesAt: string) =>
       formatOpportunityAlert(
-        {
-          ...opportunity,
-          url: oversizedUrl,
-          supplier: { ...opportunity.supplier, legalName: ampersands },
-          debtor: { ...opportunity.debtor, legalName: ampersands },
-        },
-        {
-          ...evaluation,
-          reasons: [ampersands, ampersands, ampersands],
-          warnings: [ampersands, ampersands],
-        },
+        { ...opportunity, closesAt },
+        evaluation,
         portfolio,
-        new Date("2026-08-27T15:30:00.000Z"),
-      ),
-    ).not.toThrow();
+        now,
+      );
+    expect(at("2026-09-03")).toContain("Cierra hoy");
+    expect(at("2026-09-04")).toContain("Cierra mañana");
+    expect(at("2026-09-10")).toContain("Cierra en 7 días");
+  });
 
+  it("states the term, which is what an annual rate must be judged against", () => {
     const message = formatOpportunityAlert(
-      { ...opportunity, url: oversizedUrl },
+      { ...opportunity, closesAt: "2026-09-03", dueAt: "2026-11-01" },
       evaluation,
       portfolio,
-      new Date("2026-08-27T15:30:00.000Z"),
+      new Date("2026-09-03T12:00:00.000Z"),
     );
-    expect(message.length).toBeLessThan(4000);
-    expect(message).not.toContain("href=");
-    expect(message).toContain("Enlace: no disponible (URL inválida)");
-    expect(message).not.toMatch(/<[^>]*$/);
-    expect(message).not.toMatch(/&(?:#\d*|#x[\da-f]*|\w*)$/i);
+    expect(message).toContain("pago 01 nov 2026 (59 días)");
   });
 
-  it("keeps bounded representations of the first and last warning", () => {
-    const warnings = Array.from(
-      { length: 50 },
-      (_, index) =>
-        `${index === 0 ? "WARN_FIRST" : index === 49 ? "WARN_LAST" : `WARN_${index}`} ${"<&>".repeat(100)}`,
-    );
-    const message = formatOpportunityAlert(
-      opportunity,
-      { ...evaluation, warnings },
-      portfolio,
-      new Date("2026-08-27T15:30:00.000Z"),
-    );
-
-    expect(message.length).toBeLessThan(4000);
-    expect(message).toContain("WARN_FIRST");
-    expect(message).toContain("WARN_LAST");
-    expect(message).toMatch(/advertencias omitidas/i);
-  });
-
-  it("rejects HTTPS links outside the exact canonical Prestamype host", () => {
-    const message = formatOpportunityAlert(
-      { ...opportunity, url: "https://evil.example/oportunidad/opp-42" },
-      evaluation,
-      portfolio,
-      new Date("2026-08-27T15:30:00.000Z"),
-    );
-
-    expect(message).not.toContain("href=");
-    expect(message).not.toContain("evil.example");
-    expect(message).toContain("Enlace: no disponible (URL inválida)");
-  });
-
-  it("rejects arbitrary Prestamype subdomains", () => {
-    const message = formatOpportunityAlert(
-      {
-        ...opportunity,
-        url: "https://evil.prestamype.com/app/inversionista/oportunidades/opp-42",
+  it("adds the debtor's scale and punctuality when published", () => {
+    const message = format({
+      debtorHistory: {
+        ...history,
+        averageDelayDays: 10,
+        historicalAmountCents: 950_000_000,
       },
+    });
+    expect(message).toContain("retraso medio 10 d");
+    expect(message).toContain("S/9.5M histórico");
+  });
+
+  it("omits an implausible average delay instead of printing it", () => {
+    // One debtor reported 1020 days; showing that as fact would be wrong.
+    const message = format({
+      debtorHistory: { ...history, averageDelayDays: 1020 },
+      supplierHistory: null,
+    });
+    expect(message).not.toContain("1020");
+    expect(message).not.toContain("retraso medio");
+  });
+
+  it("renders calendar dates on the day the site shows, not the day before", () => {
+    // A date with no time of day used to be read as midnight UTC and printed
+    // in Lima (UTC-5), moving every date back one day.
+    const message = formatOpportunityAlert(
+      { ...opportunity, closesAt: "2026-11-01", dueAt: "2026-11-01" },
       evaluation,
       portfolio,
-      new Date("2026-08-27T15:30:00.000Z"),
+      new Date("2026-09-03T12:00:00.000Z"),
     );
-    expect(message).not.toContain("href=");
+    expect(message).toContain("pago 01 nov 2026");
+    expect(message).not.toContain("31 oct");
+  });
+
+  it("names a protected auction instead of inventing a letter grade", () => {
+    expect(format({ risk: "PROTEGIDA" })).toContain("Protegida 🛡");
+  });
+
+  it("omits the monthly return when the panel does not publish one", () => {
+    const message = format({ monthlyReturnPct: null });
+    expect(message).toContain("20.00% anual");
+    expect(message).not.toContain("mensual");
+  });
+
+  it("summarises each history in one line and drops empty decimals", () => {
+    expect(format()).toContain(
+      "Deudor 12 subastas · 11 a tiempo · 1 con retraso · mora 0% · retraso medio 2 d · S/25k histórico",
+    );
+  });
+
+  it("omits a history that the tabs never delivered", () => {
+    const message = format({ debtorHistory: null, supplierHistory: null });
+    expect(message).not.toContain("Deudor ");
+    expect(message).not.toContain("Proveedor ");
+  });
+
+  it("surfaces evaluation warnings", () => {
+    expect(format()).toContain("⚠️ Concentración resultante elevada");
+  });
+
+  it("uses a distinct heading per decision", () => {
+    expect(format({}, { decision: "REVIEW" })).toContain("🟡 REVISAR");
+    expect(format({}, { decision: "DO_NOT_INVEST" })).toContain(
+      "⛔ NO INVERTIR",
+    );
+    expect(format({}, { decision: "IGNORE" })).toContain("ℹ️ REGISTRADA");
+  });
+
+  it("escapes HTML in every value that comes from the page", () => {
+    const message = format({
+      commercialName: "Pagador > Proveedor & Co. <script>",
+      investmentType: "Factoring" as Opportunity["investmentType"],
+    });
+    expect(message).toContain("&lt;script&gt;");
+    expect(message).toContain("&amp;");
+    expect(message).not.toMatch(/<script>/u);
+  });
+
+  it("redacts a tax id that leaked into a company name", () => {
+    expect(format({ commercialName: "ACME 20123456789" })).not.toContain(
+      "20123456789",
+    );
+  });
+
+  it("never renders a URL, however hostile the stored one is", () => {
+    for (const url of [
+      "javascript:alert(1)",
+      "https://evil.example/app/inversionista/oportunidades",
+      "https://www.prestamype.com/app/inversionista/oportunidades",
+    ]) {
+      const message = format({ url });
+      expect(message).not.toContain("<a href");
+      expect(message).not.toContain("evil.example");
+      expect(message).not.toContain("javascript:");
+    }
+  });
+
+  it("stays within Telegram's limit when every field is oversized", () => {
+    const huge = "M".repeat(5_000);
+    const message = format(
+      { commercialName: huge },
+      { warnings: Array.from({ length: 40 }, (_, i) => `${huge}${i}`) },
+    );
+    expect(message.length).toBeLessThan(4_000);
+    // Never cut through a tag or an entity.
+    expect(message.match(/</gu)?.length).toBe(message.match(/>/gu)?.length);
+    expect(message).not.toMatch(/&[a-z]*$/u);
+  });
+
+  it("keeps the heading even when everything else must be dropped", () => {
+    const message = format(
+      {},
+      { warnings: Array.from({ length: 200 }, () => "x".repeat(500)) },
+    );
+    expect(message).toContain("INVERTIR");
+    expect(message.length).toBeLessThan(4_000);
   });
 });
 

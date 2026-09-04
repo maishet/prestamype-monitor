@@ -25,34 +25,33 @@ function statements(logicalId: string): JsonObject[] {
 }
 
 describe("SAM infrastructure", () => {
-  it("configures bounded Node 22 scan and supervisor functions", () => {
+  it("configures one bounded Node 22 scan function", () => {
     expect(template.Transform).toBe("AWS::Serverless-2016-10-31");
-    for (const logicalId of ["ScanFunction", "SupervisorFunction"]) {
-      const properties = resource(
-        "AWS::Serverless::Function",
-        logicalId,
-      ).Properties;
-      expect(properties.Runtime).toBe("nodejs22.x");
-      expect(properties.Architectures).toEqual(["x86_64"]);
-      const bounds =
-        logicalId === "ScanFunction"
-          ? { memory: 2048, timeout: 120 }
-          : { memory: 1024, timeout: 30 };
-      expect(properties.MemorySize).toBe(bounds.memory);
-      expect(properties.Timeout).toBe(bounds.timeout);
-      expect(properties.ReservedConcurrentExecutions).toEqual({
-        "Fn::If": ["UseReservedConcurrency", 1, { Ref: "AWS::NoValue" }],
-      });
-      expect(properties.Role).toEqual({
-        "Fn::GetAtt": [`${logicalId}Role`, "Arn"],
-      });
-      expect(properties.VpcConfig).toBeUndefined();
-      expect(properties.Environment.Variables).toMatchObject({
-        TABLE_NAME: { Ref: "MonitorTable" },
-        QUEUE_URL: { Ref: "ScanQueue" },
-      });
-      expect(properties.Events.Api).toBeUndefined();
-    }
+    const properties = resource(
+      "AWS::Serverless::Function",
+      "ScanFunction",
+    ).Properties;
+    expect(properties.Runtime).toBe("nodejs22.x");
+    expect(properties.Architectures).toEqual(["x86_64"]);
+    // The scan drives a headless Chromium: memory buys CPU, and the wall clock
+    // has to cover a cold start plus a detail panel per candidate.
+    expect(properties.MemorySize).toBe(2048);
+    expect(properties.Timeout).toBe(120);
+    expect(properties.ReservedConcurrentExecutions).toEqual({
+      "Fn::If": ["UseReservedConcurrency", 1, { Ref: "AWS::NoValue" }],
+    });
+    expect(properties.Role).toEqual({
+      "Fn::GetAtt": ["ScanFunctionRole", "Arn"],
+    });
+    expect(properties.VpcConfig).toBeUndefined();
+    expect(properties.Environment.Variables).toMatchObject({
+      TABLE_NAME: { Ref: "MonitorTable" },
+    });
+    // No queue to talk to any more.
+    expect(properties.Environment.Variables.QUEUE_URL).toBeUndefined();
+    expect(properties.Events.Api).toBeUndefined();
+    expect(properties.Handler).toBe("handler.handler");
+    expect(properties.Layers).toEqual([{ Ref: "BrowserDependenciesLayer" }]);
 
     expect(template.Parameters.EnableReservedConcurrency).toMatchObject({
       Default: "false",
@@ -61,45 +60,34 @@ describe("SAM infrastructure", () => {
     expect(template.Conditions.UseReservedConcurrency).toEqual({
       "Fn::Equals": [{ Ref: "EnableReservedConcurrency" }, "true"],
     });
+  });
 
-    expect(resources.ScanFunction.Properties.Handler).toBe("handler.handler");
-    expect(resources.ScanFunction.Properties.Layers).toEqual([
-      { Ref: "BrowserDependenciesLayer" },
-    ]);
-    expect(resources.SupervisorFunction.Properties.Handler).toBe(
-      "supervisor.supervisorHandler",
-    );
-    expect(resources.ScanFunction.Properties.Events.ScanQueue).toMatchObject({
-      Type: "SQS",
-      Properties: {
-        BatchSize: 1,
-        Queue: { "Fn::GetAtt": ["ScanQueue", "Arn"] },
-      },
-    });
-    expect(
-      resources.SupervisorFunction.Properties.Events.Supervisor,
-    ).toMatchObject({
+  it("drives the cadence from a schedule and never retries a failed scan", () => {
+    const properties = resource(
+      "AWS::Serverless::Function",
+      "ScanFunction",
+    ).Properties;
+    expect(properties.Events.Schedule).toMatchObject({
       Type: "Schedule",
-      Properties: { Schedule: "rate(10 minutes)" },
+      Properties: { Schedule: "rate(5 minutes)", Enabled: true },
+    });
+    // A retried scan would double the work; the next tick is five minutes away.
+    expect(properties.EventInvokeConfig).toMatchObject({
+      MaximumRetryAttempts: 0,
     });
   });
 
-  it("uses encrypted standard SQS with a DLQ and safe visibility", () => {
-    const queue = resource("AWS::SQS::Queue", "ScanQueue").Properties;
-    const deadLetter = resource(
-      "AWS::SQS::Queue",
-      "DeadLetterQueue",
-    ).Properties;
-    expect(queue.FifoQueue).not.toBe(true);
-    expect(queue.VisibilityTimeout).toBeGreaterThanOrEqual(
-      resource("AWS::Serverless::Function", "ScanFunction").Properties.Timeout,
-    );
-    expect(queue.SqsManagedSseEnabled).toBe(true);
-    expect(deadLetter.SqsManagedSseEnabled).toBe(true);
-    expect(queue.RedrivePolicy).toEqual({
-      deadLetterTargetArn: { "Fn::GetAtt": ["DeadLetterQueue", "Arn"] },
-      maxReceiveCount: 5,
-    });
+  it("keeps no queue, no dead letter queue and no supervisor", () => {
+    for (const type of ["AWS::SQS::Queue"])
+      expect(
+        Object.values(resources).filter(
+          (entry) => (entry as { Type: string }).Type === type,
+        ),
+      ).toEqual([]);
+    expect(resources.SupervisorFunction).toBeUndefined();
+    expect(resources.SupervisorFunctionRole).toBeUndefined();
+    expect(resources.SupervisorLogGroup).toBeUndefined();
+    expect(JSON.stringify(template)).not.toContain("sqs:");
   });
 
   it("defines a minimal provisioned table, TTL, and opportunity GSI", () => {
@@ -132,7 +120,7 @@ describe("SAM infrastructure", () => {
   });
 
   it("retains both function log groups for seven days", () => {
-    for (const logicalId of ["ScanLogGroup", "SupervisorLogGroup"]) {
+    for (const logicalId of ["ScanLogGroup"]) {
       expect(
         resource("AWS::Logs::LogGroup", logicalId).Properties.RetentionInDays,
       ).toBe(7);
@@ -153,14 +141,7 @@ describe("SAM infrastructure", () => {
       TELEGRAM_CHAT_ID_PARAMETER: { Ref: "TelegramChatIdParameterPath" },
       SESSION_KEY_PARAMETER: { Ref: "SessionKeyParameterPath" },
     });
-    expect(
-      resources.SupervisorFunction.Properties.Environment.Variables,
-    ).toEqual({
-      TABLE_NAME: { Ref: "MonitorTable" },
-      QUEUE_URL: { Ref: "ScanQueue" },
-    });
-
-    for (const logicalId of ["ScanFunction", "SupervisorFunction"]) {
+    for (const logicalId of ["ScanFunction"]) {
       for (const statement of statements(logicalId)) {
         const iamResources = Array.isArray(statement.Resource)
           ? statement.Resource
@@ -246,10 +227,7 @@ describe("SAM infrastructure", () => {
     );
     expect(layerMakefile).toContain("npm ci --omit=dev");
 
-    const entrypoints = [
-      ["ScanFunction", "src/lambda/handler.ts"],
-      ["SupervisorFunction", "src/lambda/supervisor.ts"],
-    ] as const;
+    const entrypoints = [["ScanFunction", "src/lambda/handler.ts"]] as const;
     for (const [logicalId, entrypoint] of entrypoints) {
       const metadata = resources[logicalId].Metadata;
       expect(metadata.BuildMethod).toBe("esbuild");
@@ -305,12 +283,11 @@ describe("SAM infrastructure", () => {
 
   it("exposes only operational identifiers and contains no prohibited services", () => {
     expect(Object.keys(template.Outputs).sort()).toEqual(
-      ["FunctionName", "QueueUrl", "Region", "TableName"].sort(),
+      ["FunctionName", "Region", "TableName"].sort(),
     );
     expect(template.Outputs).toEqual({
       FunctionName: { Value: { Ref: "ScanFunction" } },
       TableName: { Value: { Ref: "MonitorTable" } },
-      QueueUrl: { Value: { Ref: "ScanQueue" } },
       Region: { Value: { Ref: "AWS::Region" } },
     });
     expect(text).not.toMatch(/AWS::EC2::(VPC|NatGateway)/u);

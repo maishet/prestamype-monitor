@@ -42,30 +42,6 @@
     }
   },
   "Resources": {
-    "DeadLetterQueue": {
-      "Type": "AWS::SQS::Queue",
-      "Properties": {
-        "SqsManagedSseEnabled": true,
-        "MessageRetentionPeriod": 1209600
-      }
-    },
-    "ScanQueue": {
-      "Type": "AWS::SQS::Queue",
-      "Properties": {
-        "SqsManagedSseEnabled": true,
-        "VisibilityTimeout": 180,
-        "MessageRetentionPeriod": 86400,
-        "RedrivePolicy": {
-          "deadLetterTargetArn": {
-            "Fn::GetAtt": [
-              "DeadLetterQueue",
-              "Arn"
-            ]
-          },
-          "maxReceiveCount": 5
-        }
-      }
-    },
     "MonitorTable": {
       "Type": "AWS::DynamoDB::Table",
       "Properties": {
@@ -182,22 +158,6 @@
                 {
                   "Effect": "Allow",
                   "Action": [
-                    "sqs:ChangeMessageVisibility",
-                    "sqs:DeleteMessage",
-                    "sqs:GetQueueAttributes",
-                    "sqs:ReceiveMessage",
-                    "sqs:SendMessage"
-                  ],
-                  "Resource": {
-                    "Fn::GetAtt": [
-                      "ScanQueue",
-                      "Arn"
-                    ]
-                  }
-                },
-                {
-                  "Effect": "Allow",
-                  "Action": [
                     "ssm:GetParameters"
                   ],
                   "Resource": [
@@ -229,72 +189,6 @@
                   ],
                   "Resource": {
                     "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-scan:*"
-                  }
-                }
-              ]
-            }
-          }
-        ]
-      }
-    },
-    "SupervisorFunctionRole": {
-      "Type": "AWS::IAM::Role",
-      "Properties": {
-        "AssumeRolePolicyDocument": {
-          "Version": "2012-10-17",
-          "Statement": [
-            {
-              "Effect": "Allow",
-              "Principal": {
-                "Service": [
-                  "lambda.amazonaws.com"
-                ]
-              },
-              "Action": [
-                "sts:AssumeRole"
-              ]
-            }
-          ]
-        },
-        "Policies": [
-          {
-            "PolicyName": "SupervisorData",
-            "PolicyDocument": {
-              "Version": "2012-10-17",
-              "Statement": [
-                {
-                  "Effect": "Allow",
-                  "Action": [
-                    "dynamodb:GetItem",
-                    "dynamodb:UpdateItem"
-                  ],
-                  "Resource": {
-                    "Fn::GetAtt": [
-                      "MonitorTable",
-                      "Arn"
-                    ]
-                  }
-                },
-                {
-                  "Effect": "Allow",
-                  "Action": [
-                    "sqs:SendMessage"
-                  ],
-                  "Resource": {
-                    "Fn::GetAtt": [
-                      "ScanQueue",
-                      "Arn"
-                    ]
-                  }
-                },
-                {
-                  "Effect": "Allow",
-                  "Action": [
-                    "logs:CreateLogStream",
-                    "logs:PutLogEvents"
-                  ],
-                  "Resource": {
-                    "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-supervisor:*"
                   }
                 }
               ]
@@ -342,9 +236,6 @@
             "TABLE_NAME": {
               "Ref": "MonitorTable"
             },
-            "QUEUE_URL": {
-              "Ref": "ScanQueue"
-            },
             "TELEGRAM_TOKEN_PARAMETER": {
               "Ref": "TelegramTokenParameterPath"
             },
@@ -357,22 +248,21 @@
           }
         },
         "Events": {
-          "ScanQueue": {
-            "Type": "SQS",
+          "Schedule": {
+            "Type": "Schedule",
             "Properties": {
-              "Queue": {
-                "Fn::GetAtt": [
-                  "ScanQueue",
-                  "Arn"
-                ]
+              "Schedule": "rate(5 minutes)",
+              "Name": {
+                "Fn::Sub": "${AWS::StackName}-scan-schedule"
               },
-              "BatchSize": 1,
-              "ScalingConfig": {
-                "MaximumConcurrency": 2
-              },
+              "Description": "Runs one read-only Prestamype scan.",
               "Enabled": true
             }
           }
+        },
+        "EventInvokeConfig": {
+          "MaximumRetryAttempts": 0,
+          "MaximumEventAgeInSeconds": 300
         }
       },
       "Metadata": {
@@ -417,89 +307,11 @@
         "BuildMethod": "makefile"
       }
     },
-    "SupervisorFunction": {
-      "Type": "AWS::Serverless::Function",
-      "Properties": {
-        "FunctionName": {
-          "Fn::Sub": "${AWS::StackName}-supervisor"
-        },
-        "CodeUri": ".",
-        "Handler": "supervisor.supervisorHandler",
-        "Runtime": "nodejs22.x",
-        "Architectures": [
-          "x86_64"
-        ],
-        "MemorySize": 1024,
-        "Timeout": 30,
-        "ReservedConcurrentExecutions": {
-          "Fn::If": [
-            "UseReservedConcurrency",
-            1,
-            {
-              "Ref": "AWS::NoValue"
-            }
-          ]
-        },
-        "Role": {
-          "Fn::GetAtt": [
-            "SupervisorFunctionRole",
-            "Arn"
-          ]
-        },
-        "Environment": {
-          "Variables": {
-            "TABLE_NAME": {
-              "Ref": "MonitorTable"
-            },
-            "QUEUE_URL": {
-              "Ref": "ScanQueue"
-            }
-          }
-        },
-        "Events": {
-          "Supervisor": {
-            "Type": "Schedule",
-            "Properties": {
-              "Schedule": "rate(10 minutes)",
-              "Enabled": true
-            }
-          }
-        }
-      },
-      "Metadata": {
-        "BuildMethod": "esbuild",
-        "BuildProperties": {
-          "Target": "es2022",
-          "Format": "esm",
-          "Minify": true,
-          "Sourcemap": false,
-          "EntryPoints": [
-            "src/lambda/supervisor.ts"
-          ],
-          "External": [],
-          "OutExtension": [
-            ".js=.mjs"
-          ],
-          "Banner": [
-            "js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);"
-          ]
-        }
-      }
-    },
     "ScanLogGroup": {
       "Type": "AWS::Logs::LogGroup",
       "Properties": {
         "LogGroupName": {
           "Fn::Sub": "/aws/lambda/${AWS::StackName}-scan"
-        },
-        "RetentionInDays": 7
-      }
-    },
-    "SupervisorLogGroup": {
-      "Type": "AWS::Logs::LogGroup",
-      "Properties": {
-        "LogGroupName": {
-          "Fn::Sub": "/aws/lambda/${AWS::StackName}-supervisor"
         },
         "RetentionInDays": 7
       }
@@ -514,11 +326,6 @@
     "TableName": {
       "Value": {
         "Ref": "MonitorTable"
-      }
-    },
-    "QueueUrl": {
-      "Value": {
-        "Ref": "ScanQueue"
       }
     },
     "Region": {

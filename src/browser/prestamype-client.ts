@@ -75,6 +75,8 @@ const LETTER_RISKS: readonly RiskGrade[] = ["A+", "A", "B", "C", "D", "E"];
 const ACTIVE_PORTFOLIO_STATES = /por cobrar|en proceso/iu;
 const DEFAULT_DETAIL_REFRESH_MS = 15 * 60 * 1_000;
 const MAX_PAGES = 5;
+/** Per-step budget when shutting the browser down. */
+const CLEANUP_STEP_MS = 3_000;
 
 export interface LocatorLike {
   click(): Promise<void>;
@@ -89,6 +91,7 @@ export interface LocatorLike {
 
 export interface PageLike {
   goto(url: string): Promise<{ status(): number } | null>;
+  close?(): Promise<void>;
   url(): string;
   content(): Promise<string>;
   locator(selector: string): LocatorLike;
@@ -184,11 +187,17 @@ export function opportunityRowKey(row: OpportunityRow): string {
 }
 
 /**
- * What is visible about an auction, so funding progress reopens the panel.
+ * What is visible about an auction, so material progress reopens the panel.
  *
  * The row and the stored opportunity must hash identically or every scan would
- * reopen every panel, so this uses only fields both carry, with the funded
- * share rounded to the two decimals the site itself renders.
+ * reopen every panel, so this uses only fields both carry.
+ *
+ * The funded share is rounded to whole percent — what the table itself prints.
+ * At two decimals it moved on essentially every scan of an active auction, so
+ * nothing was ever skipped and each scan reopened every eligible panel. The
+ * cost of the coarser bucket is bounded: the score does not depend on funding
+ * at all, only the projected amount does, and `detailRefreshIntervalMs` forces
+ * a reopen on its own schedule regardless.
  */
 function visibleFingerprint(visible: {
   id: string;
@@ -198,7 +207,7 @@ function visibleFingerprint(visible: {
 }): string {
   return fingerprint({
     ...visible,
-    fundedPct: Math.round(visible.fundedPct * 100) / 100,
+    fundedPct: Math.round(visible.fundedPct),
   });
 }
 
@@ -692,44 +701,55 @@ export class PrestamypeClient implements OpportunitySource {
 
   private async closeResources(): Promise<void> {
     if (this.resourcesClosePromise !== null) return this.resourcesClosePromise;
+    const page = this.page;
     const context = this.context;
     const browser = this.browser;
     this.page = null;
     this.context = null;
     this.browser = null;
     this.resourcesClosePromise = (async () => {
-      const cleanupDeadline = this.now() + 12_000;
-      const results = await Promise.allSettled([
-        context === null
-          ? Promise.resolve()
-          : this.withDeadline(context.close(), cleanupDeadline),
-        browser === null
-          ? Promise.resolve()
-          : this.withDeadline(browser.close(), cleanupDeadline),
-      ]);
-      const failure = results.find(
-        (result): result is PromiseRejectedResult =>
-          result.status === "rejected",
-      );
-      if (failure !== undefined) {
-        const message =
-          failure.reason instanceof Error
-            ? failure.reason.message
-            : String(failure.reason);
-        // Chromium sometimes takes longer than the cleanup budget to shut down
-        // on Lambda. The scan has already produced and persisted its result by
-        // then, so failing here only makes SQS redeliver work that succeeded;
-        // the container reclaims the process either way.
-        if (failure.reason instanceof ScanDeadlineError) {
-          console.warn(
-            "Browser cleanup exceeded its budget; leaving it to the runtime",
-          );
-        } else if (
-          !/context|target.*closed|failed to find context/iu.test(message)
-        ) {
-          throw failure.reason;
+      // One at a time, in order. Closing the context and the browser
+      // concurrently deadlocked under @sparticuz/chromium on Lambda and cost
+      // about twelve seconds of billed time on every scan; a short budget per
+      // step keeps that off the invoice. Anything still open is left to the
+      // deferred cleanup, which the next invocation resumes.
+      const started = this.now();
+      const steps: readonly [string, (() => Promise<void>) | undefined][] = [
+        ["page", page?.close === undefined ? undefined : () => page.close!()],
+        ["context", context === null ? undefined : () => context.close()],
+        ["browser", browser === null ? undefined : () => browser.close()],
+      ];
+      const unexpected: unknown[] = [];
+      let abandoned: string | null = null;
+      for (const [label, close] of steps) {
+        if (close === undefined) continue;
+        try {
+          await this.withDeadline(close(), this.now() + CLEANUP_STEP_MS);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          if (error instanceof ScanDeadlineError) {
+            // A step that overruns leaves the rest to the runtime: pressing on
+            // would only add more billed waiting to a scan that already ended.
+            abandoned = label;
+            break;
+          }
+          if (!/context|target.*closed|failed to find context/iu.test(message))
+            unexpected.push(error);
         }
       }
+      if (abandoned !== null) {
+        console.warn(
+          "Browser cleanup exceeded its budget; leaving it to the runtime",
+          JSON.stringify({ step: abandoned, elapsedMs: this.now() - started }),
+        );
+      } else {
+        console.info(
+          "Browser closed",
+          JSON.stringify({ elapsedMs: this.now() - started }),
+        );
+      }
+      if (unexpected.length > 0) throw unexpected[0];
     })();
     return this.resourcesClosePromise;
   }

@@ -202,4 +202,57 @@ describe("TelegramClient", () => {
     await expect(pending).rejects.toThrow(TelegramDeliveryError);
     expect(fetch).toHaveBeenCalledOnce();
   });
+
+  it("keeps delivering to the other chats when one destination is stale", async () => {
+    const seen: string[] = [];
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const chatId = JSON.parse(String(init?.body)).chat_id as string;
+      seen.push(chatId);
+      // A group that Telegram upgraded to a supergroup answers 400 forever.
+      return chatId === "-5247697722"
+        ? new Response(JSON.stringify({ ok: false }), { status: 400 })
+        : new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const client = new TelegramClient({
+      token,
+      chatId: "-5247697722,1524876607,-4203788857",
+      fetch: fetchMock as unknown as typeof fetch,
+      sleep: async () => undefined,
+    });
+
+    await expect(client.send("hola")).resolves.toBeUndefined();
+    expect(new Set(seen)).toEqual(
+      new Set(["-5247697722", "1524876607", "-4203788857"]),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      "Telegram delivery failed for some chats",
+      expect.stringContaining('"delivered":2'),
+    );
+    // The log identifies the broken destination without printing it in full.
+    expect(warn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining("7722"),
+    );
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining("-5247697722"),
+    );
+    warn.mockRestore();
+  });
+
+  it("fails only when no destination accepted the message", async () => {
+    const client = new TelegramClient({
+      token,
+      chatId: "-5247697722,-4203788857",
+      fetch: (async () =>
+        new Response(JSON.stringify({ ok: false }), {
+          status: 400,
+        })) as unknown as typeof fetch,
+      sleep: async () => undefined,
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await expect(client.send("hola")).rejects.toThrow(TelegramDeliveryError);
+    warn.mockRestore();
+  });
 });
