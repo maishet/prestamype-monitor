@@ -1,4 +1,11 @@
-import { readdirSync, rmSync, statSync, statfsSync } from "node:fs";
+import {
+  chmodSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  statfsSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -31,6 +38,11 @@ const DISPOSABLE = [
 ];
 
 const TEMPORARY = "/tmp";
+
+/** Exported because deleting the wrong name here costs the sandbox its browser. */
+export function isDisposableTemporary(name: string): boolean {
+  return DISPOSABLE.some((pattern) => pattern.test(name));
+}
 
 export function isSpentContainer(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -109,7 +121,7 @@ export function sweepBrowserTemporaries(): Record<string, number> {
   }
   let swept = 0;
   for (const name of names) {
-    if (!DISPOSABLE.some((pattern) => pattern.test(name))) continue;
+    if (!isDisposableTemporary(name)) continue;
     try {
       rmSync(join(TEMPORARY, name), { recursive: true, force: true });
       swept += 1;
@@ -133,4 +145,42 @@ export function sweepBrowserTemporaries(): Record<string, number> {
 export function exitForFreshContainer(): boolean {
   if (process.env.AWS_LAMBDA_FUNCTION_NAME === undefined) return false;
   process.exit(1);
+}
+
+/**
+ * Wraps the browser binary in a shell that forbids core dumps.
+ *
+ * Chromium crashes as it shuts down and the kernel writes a 1.2 GB core file
+ * into `/tmp`, which holds 512 MB. One crash filled the disk and every scan
+ * after it failed to launch a browser at all.
+ *
+ * No Chromium flag prevents this. The dump belongs to the kernel, governed by
+ * RLIMIT_CORE, and a process inherits that limit from whatever spawned it, so
+ * the limit has to be lowered between Node and the browser. `exec` replaces the
+ * shell rather than forking, keeping the pid and the inherited descriptors that
+ * Playwright speaks to the browser over: the wrapper is invisible to it.
+ *
+ * Outside Lambda the real path is returned untouched, so a developer keeps
+ * whatever core behaviour their machine is configured for.
+ */
+export function withoutCoreDumps(executablePath: string): string {
+  if (process.env.AWS_LAMBDA_FUNCTION_NAME === undefined) return executablePath;
+  const wrapper = join(TEMPORARY, "chromium-no-core");
+  try {
+    writeFileSync(
+      wrapper,
+      [
+        "#!/bin/sh",
+        "ulimit -c 0",
+        // Quoted so a path with a space survives, and exec'd so no shell lingers.
+        `exec ${JSON.stringify(executablePath)} "$@"`,
+        "",
+      ].join("\n"),
+    );
+    chmodSync(wrapper, 0o755);
+  } catch {
+    // A core dump is survivable; no browser at all is not.
+    return executablePath;
+  }
+  return wrapper;
 }

@@ -256,6 +256,10 @@ export function formatOpportunityAlert(
   const lines: MessageLine[] = [];
   const push = (html: string, priority: MessageLine["priority"] = "normal") =>
     lines.push({ html, priority });
+  // A leading blank line groups a block visually without risking an orphaned
+  // separator: it travels with its line, so it only survives truncation
+  // together with the content it introduces.
+  const withGap = (html: string) => `\n${html}`;
 
   push(
     `<b>${decisionPresentation(evaluation.decision)} · ${safeText(
@@ -263,18 +267,15 @@ export function formatOpportunityAlert(
     )}</b>`,
     "essential",
   );
+  push(
+    `${formatRisk(opportunity.risk)} · ${safeText(opportunity.investmentType)}`,
+    "essential",
+  );
 
   const monthly =
     opportunity.monthlyReturnPct === null
       ? ""
       : ` (${formatPercentage(opportunity.monthlyReturnPct)} mensual)`;
-  push(
-    `${formatRisk(opportunity.risk)} · ${safeText(opportunity.investmentType)} · ${formatPercentage(
-      opportunity.annualReturnPct,
-    )} anual${monthly}`,
-    "essential",
-  );
-
   const fundedPct =
     opportunity.totalAmountCents > 0
       ? Math.round(
@@ -282,9 +283,15 @@ export function formatOpportunityAlert(
         )
       : 0;
   push(
-    `Restante ${formatMoney(opportunity.remainingAmountCents)} de ${formatMoney(
-      opportunity.totalAmountCents,
-    )} (${fundedPct}% financiado)`,
+    withGap(
+      `💰 Restante ${formatMoney(opportunity.remainingAmountCents)} de ${formatMoney(
+        opportunity.totalAmountCents,
+      )} (${fundedPct}% financiado)`,
+    ),
+    "essential",
+  );
+  push(
+    `📈 ${formatPercentage(opportunity.annualReturnPct)} anual${monthly}`,
     "essential",
   );
 
@@ -299,20 +306,30 @@ export function formatOpportunityAlert(
       ? null
       : `pago ${due}${term === null || term < 0 ? "" : ` (${term} días)`}`,
   ].filter((part) => part !== null);
-  if (timing.length > 0) push(timing.join(" · "), "essential");
+  if (timing.length > 0) push(`⏱ ${timing.join(" · ")}`, "essential");
 
   const debtorHistory = formatCompactHistory(opportunity.debtorHistory);
-  if (debtorHistory !== null) push(`Deudor ${debtorHistory}`);
   const supplierHistory = formatCompactHistory(opportunity.supplierHistory);
-  if (supplierHistory !== null) push(`Proveedor ${supplierHistory}`, "detail");
+  if (debtorHistory !== null) push(withGap(`📊 Deudor: ${debtorHistory}`));
+  if (supplierHistory !== null)
+    push(
+      debtorHistory === null
+        ? withGap(`📊 Proveedor: ${supplierHistory}`)
+        : `📊 Proveedor: ${supplierHistory}`,
+      "detail",
+    );
 
-  for (const warning of evaluation.warnings.slice(0, MAX_WARNINGS))
-    push(`⚠️ ${safeText(warning)}`, "essential");
+  evaluation.warnings.slice(0, MAX_WARNINGS).forEach((warning, index) => {
+    const html = `⚠️ ${safeText(warning)}`;
+    push(index === 0 ? withGap(html) : html, "essential");
+  });
 
   push(
-    `Score ${
-      Number.isFinite(evaluation.score) ? evaluation.score.toFixed(1) : "?"
-    }/100`,
+    withGap(
+      `⭐ Score ${
+        Number.isFinite(evaluation.score) ? evaluation.score.toFixed(1) : "?"
+      }/100`,
+    ),
     "essential",
   );
 

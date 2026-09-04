@@ -14,6 +14,7 @@ import type {
   RiskGrade,
 } from "../domain/types.js";
 import { normalizeLegalName } from "../domain/normalization.js";
+import { withoutCoreDumps } from "../runtime/container.js";
 import {
   PageStructureError,
   RateLimitError,
@@ -1092,7 +1093,9 @@ const productionLauncher: BrowserLauncher = {
     };
     const browser = await playwrightChromium.launch({
       args: chromiumBinary.default.args,
-      executablePath: await chromiumBinary.default.executablePath(),
+      executablePath: withoutCoreDumps(
+        await chromiumBinary.default.executablePath(),
+      ),
       headless: true,
     });
     return browser as unknown as BrowserLike;

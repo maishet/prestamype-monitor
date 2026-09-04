@@ -4,7 +4,9 @@ import {
   containerResources,
   exitForFreshContainer,
   isSpentContainer,
+  isDisposableTemporary,
   sweepBrowserTemporaries,
+  withoutCoreDumps,
 } from "../../src/runtime/container.js";
 
 describe("isSpentContainer", () => {
@@ -57,5 +59,36 @@ describe("sweepBrowserTemporaries", () => {
     // The sweep runs before every scan, so it must never be the thing that
     // fails one.
     expect(sweepBrowserTemporaries()).toEqual({ swept: expect.any(Number) });
+  });
+});
+
+describe("withoutCoreDumps", () => {
+  it("hands back the real binary outside Lambda", () => {
+    // A developer machine keeps whatever core behaviour it is configured for.
+    expect(process.env.AWS_LAMBDA_FUNCTION_NAME).toBeUndefined();
+    expect(withoutCoreDumps("/tmp/chromium")).toBe("/tmp/chromium");
+  });
+});
+
+describe("isDisposableTemporary", () => {
+  // Names taken from a real sandbox: the first two are what filled the disk,
+  // the rest are what the browser needs to exist at all.
+  it.each([
+    "core.chromium.55",
+    "playwright_chromiumdev_profile-aB3",
+    "Crashpad",
+  ])("sweeps %s", (name) => {
+    expect(isDisposableTemporary(name)).toBe(true);
+  });
+
+  it.each([
+    "chromium",
+    "chromium-no-core",
+    "al2023",
+    "libGLESv2.so",
+    "libvk_swiftshader.so",
+    "libvulkan.so.1",
+  ])("keeps %s", (name) => {
+    expect(isDisposableTemporary(name)).toBe(false);
   });
 });

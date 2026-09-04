@@ -75,16 +75,26 @@ describe("formatOpportunityAlert", () => {
   it("leads with the decision, the client and the terms", () => {
     const lines = format().split("\n");
     expect(lines[0]).toBe("<b>🔴 INVERTIR · CLIENTE</b>");
-    expect(lines[1]).toBe(
-      "Riesgo A · Factoring · 20.00% anual (1.53% mensual)",
+    expect(lines[1]).toBe("Riesgo A · Factoring");
+    expect(lines[3]).toBe(
+      "💰 Restante S/3,750.00 de S/5,000.00 (25% financiado)",
     );
-    expect(lines[2]).toBe("Restante S/3,750.00 de S/5,000.00 (25% financiado)");
+    expect(lines[4]).toBe("📈 20.00% anual (1.53% mensual)");
+  });
+
+  it("groups related fields into visually separated blocks", () => {
+    const lines = format().split("\n");
+    // A blank line introduces each block: terms, history, warnings, score.
+    expect(lines[2]).toBe("");
+    expect(lines[6]).toBe("");
+    expect(lines[9]).toBe("");
+    expect(lines[11]).toBe("");
   });
 
   it("stays short enough to read on a phone", () => {
     const message = format();
-    expect(message.split("\n").length).toBeLessThanOrEqual(10);
-    expect(message.length).toBeLessThan(600);
+    expect(message.split("\n").length).toBeLessThanOrEqual(15);
+    expect(message.length).toBeLessThan(700);
   });
 
   it("leaves out what the reader cannot act on", () => {
@@ -166,7 +176,7 @@ describe("formatOpportunityAlert", () => {
 
   it("summarises each history in one line and drops empty decimals", () => {
     expect(format()).toContain(
-      "Deudor 12 subastas · 11 a tiempo · 1 con retraso · mora 0% · retraso medio 2 d · S/25k histórico",
+      "📊 Deudor: 12 subastas · 11 a tiempo · 1 con retraso · mora 0% · retraso medio 2 d · S/25k histórico",
     );
   });
 
