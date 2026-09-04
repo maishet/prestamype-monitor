@@ -604,7 +604,7 @@ describe("runMonitor", () => {
       vi
         .mocked(context.repository.claimAlert)
         .mock.calls.map((call) => call[2]),
-    ).toEqual([1_787_832_090]);
+    ).toEqual([1_787_832_090, 1_787_832_150]);
     expect(
       vi
         .mocked(context.dependencies.formatAlert)
@@ -640,7 +640,7 @@ describe("runMonitor", () => {
       vi
         .mocked(context.repository.claimAlert)
         .mock.calls.map((call) => call[2]),
-    ).toEqual([1_787_832_090, 1_787_832_150]);
+    ).toEqual([1_787_832_090]);
     expect(context.dependencies.formatAlert).toHaveBeenCalledWith(
       opportunity,
       expect.any(Object),
