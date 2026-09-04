@@ -69,12 +69,12 @@ describe("SAM infrastructure", () => {
     ).Properties;
     expect(properties.Events.Schedule).toMatchObject({
       Type: "Schedule",
-      // 14:00-23:55 UTC is 09:00-18:55 in Lima, which observes no DST. Outside
-      // those hours Prestamype accepts no auctions, so a scan would only burn
-      // free-tier GB-seconds against a table that cannot have changed.
-      Properties: { Schedule: "cron(0/5 14-23 ? * * *)", Enabled: true },
+      // 14:00-23:57 UTC is 09:00-18:57 in Lima, which observes no DST. Prestamype
+      // trades on weekday business hours only; outside them a scan would burn
+      // free-tier GB-seconds against a table nobody is moving.
+      Properties: { Schedule: "cron(0/3 14-23 ? * MON-FRI *)", Enabled: true },
     });
-    // A retried scan would double the work; the next tick is five minutes away.
+    // A retried scan would double the work; the next tick is three minutes away.
     expect(properties.EventInvokeConfig).toMatchObject({
       MaximumRetryAttempts: 0,
     });

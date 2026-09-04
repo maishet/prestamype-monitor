@@ -43,59 +43,18 @@ export interface MonitorRunResult {
   readonly alertsSent: number;
 }
 
-function canonicalNumber(value: number | null): string | null {
-  if (value === null) return null;
-  return Number.isFinite(value) ? value.toString() : "invalid";
-}
-
-function canonicalHistory(
-  history: Opportunity["debtorHistory"],
-): object | null {
-  if (history === null) return null;
-  return Object.fromEntries(
-    Object.entries(history).map(([key, value]) => [
-      key,
-      typeof value === "number" ? canonicalNumber(value) : value,
-    ]),
-  );
-}
-
-export function materialAlertKeys(
-  opportunity: Opportunity,
-  evaluation: Evaluation,
-): readonly string[] {
-  const material = [
-    opportunity.id,
-    opportunity.risk,
-    canonicalNumber(opportunity.annualReturnPct),
-    canonicalNumber(opportunity.monthlyReturnPct),
-    opportunity.totalAmountCents,
-    opportunity.fundedAmountCents,
-    opportunity.remainingAmountCents,
-    opportunity.closesAt,
-    opportunity.dueAt,
-    opportunity.collectionProblem,
-    canonicalHistory(opportunity.debtorHistory),
-    canonicalHistory(opportunity.supplierHistory),
-    evaluation.decision,
-    canonicalNumber(evaluation.score),
-    Object.fromEntries(
-      Object.entries(evaluation.components)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, value]) => [key, canonicalNumber(value)]),
-    ),
-  ];
-  if (evaluation.decision === "DO_NOT_INVEST") {
-    const conflicts = evaluation.warnings
-      .map((warning) =>
-        warning.trim().replaceAll(/\s+/gu, " ").toLocaleLowerCase("es-PE"),
-      )
-      .sort();
-    return [...new Set(conflicts)].map((conflict) =>
-      JSON.stringify([...material, conflict]),
-    );
-  }
-  return [JSON.stringify(material)];
+/**
+ * What makes an alert a different alert: nothing but the auction itself.
+ *
+ * Every number on a live auction moves while it is open — each investor who
+ * puts money in changes the funded and remaining amounts — so keying the alert
+ * on the auction state resent the same card every time the detail cache
+ * expired, differing only in the cents already taken. One auction now earns
+ * exactly one message, for good: a changed verdict, a new conflict or a
+ * worsened payment history will not reopen one that already went out.
+ */
+export function alertIdentityKeys(opportunity: Opportunity): readonly string[] {
+  return [JSON.stringify([opportunity.id])];
 }
 
 function safeCollectionText(value: string): string {
@@ -214,7 +173,7 @@ export async function runMonitor(
       let detectedAt: Date | undefined;
       const claimedKeys: string[] = [];
       try {
-        for (const alertKey of materialAlertKeys(opportunity, evaluation)) {
+        for (const alertKey of alertIdentityKeys(opportunity)) {
           const claimAt = dependencies.clock?.() ?? new Date();
           detectedAt ??= claimAt;
           const claimed = await dependencies.repository.claimAlert(

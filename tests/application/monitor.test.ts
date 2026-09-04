@@ -7,7 +7,7 @@ import type {
   PortfolioSnapshot,
 } from "../../src/domain/types.js";
 import {
-  materialAlertKeys,
+  alertIdentityKeys,
   runMonitor,
 } from "../../src/application/monitor.js";
 import { PageStructureError } from "../../src/browser/errors.js";
@@ -140,37 +140,29 @@ function setup(
 }
 
 describe("runMonitor", () => {
-  it("changes the alert key for hidden detail and evaluation changes", () => {
-    const evaluation: Evaluation = {
-      decision: "INVEST",
-      score: 90,
-      components: { risk: 10 },
-      reasons: [],
-      warnings: [],
-    };
-    const base = materialAlertKeys(opportunity, evaluation)[0];
-    for (const changed of [
-      { ...opportunity, closesAt: "2026-08-29T00:00:00.000Z" },
-      { ...opportunity, collectionProblem: true },
+  it("keeps one key for an auction no matter what changes about it", () => {
+    const base = alertIdentityKeys(opportunity)[0];
+    // An open auction moves on its own: every investor changes the funded and
+    // remaining amounts, the detail cache expires every fifteen minutes, and a
+    // conflict can surface late. None of that earns a second message.
+    for (const moved of [
       {
         ...opportunity,
-        debtorHistory: {
-          totalAuctions: 1,
-          paidOnTime: 1,
-          paidLate: 0,
-          currentOnTime: 0,
-          overdue: 0,
-          averageDelayDays: 0,
-          delinquencyPct: 0,
-          historicalAmountCents: 100,
-        },
+        fundedAmountCents: opportunity.fundedAmountCents + 10_364,
       },
+      {
+        ...opportunity,
+        remainingAmountCents: opportunity.remainingAmountCents - 10_364,
+      },
+      { ...opportunity, collectionProblem: true },
+      { ...opportunity, closesAt: "2026-08-29T00:00:00.000Z" },
     ]) {
-      expect(materialAlertKeys(changed, evaluation)[0]).not.toBe(base);
+      expect(alertIdentityKeys(moved)[0]).toBe(base);
     }
-    expect(
-      materialAlertKeys(opportunity, { ...evaluation, score: 91 })[0],
-    ).not.toBe(base);
+    // Only a different auction is a different alert.
+    expect(alertIdentityKeys({ ...opportunity, id: "opp-2" })[0]).not.toBe(
+      base,
+    );
   });
   it("orchestrates a claimed alert in strict order", async () => {
     const context = setup();
@@ -230,7 +222,7 @@ describe("runMonitor", () => {
     expect(context.events).toContain("save");
   });
 
-  it("uses a new material key when a recommendation material changes", async () => {
+  it("does not alert again when the auction has only filled further", async () => {
     const first = setup();
     await runMonitor(first.dependencies, {
       owner: "run",
@@ -238,21 +230,22 @@ describe("runMonitor", () => {
       alertLeaseSeconds: 30,
     });
     const second = setup();
-    const changed = { ...opportunity, remainingAmountCents: 80_000 };
+    // The same card arrived twice fifteen minutes apart, differing only in the
+    // hundred soles somebody had invested in between.
+    const filled = { ...opportunity, remainingAmountCents: 80_000 };
     vi.mocked(second.source.listEligibleOpportunities).mockResolvedValue([
-      changed,
+      filled,
     ]);
     await runMonitor(second.dependencies, {
       owner: "run",
       lockTtlSeconds: 60,
       alertLeaseSeconds: 30,
     });
-    expect(vi.mocked(first.repository.claimAlert).mock.calls[0]?.[0]).not.toBe(
+    expect(vi.mocked(first.repository.claimAlert).mock.calls[0]?.[0]).toBe(
       vi.mocked(second.repository.claimAlert).mock.calls[0]?.[0],
     );
   });
-
-  it("alerts only when an individual normalized DO_NOT_INVEST conflict is new", async () => {
+  it("alerts once per opportunity however its conflicts change", async () => {
     const denied: Evaluation = {
       decision: "DO_NOT_INVEST",
       score: 0,
@@ -277,33 +270,28 @@ describe("runMonitor", () => {
       lockTtlSeconds: 60,
       alertLeaseSeconds: 30,
     });
-    expect(context.repository.claimAlert).toHaveBeenCalledTimes(2);
+    // Two conflicts on one auction, one claim, one message.
+    expect(context.repository.claimAlert).toHaveBeenCalledTimes(1);
     expect(context.notifier.send).toHaveBeenCalledOnce();
 
-    vi.mocked(context.dependencies.evaluate).mockReturnValue({
-      ...denied,
-      warnings: ["blacklist match"],
-    });
-    await runMonitor(context.dependencies, {
-      owner: "run",
-      lockTtlSeconds: 60,
-      alertLeaseSeconds: 30,
-    });
+    for (const warnings of [
+      ["blacklist match"],
+      ["blacklist match", "Nuevo conflicto"],
+    ]) {
+      vi.mocked(context.dependencies.evaluate).mockReturnValue({
+        ...denied,
+        warnings,
+      });
+      await runMonitor(context.dependencies, {
+        owner: "run",
+        lockTtlSeconds: 60,
+        alertLeaseSeconds: 30,
+      });
+    }
+    // Neither a reworded conflict nor a brand new one reopens it.
     expect(context.notifier.send).toHaveBeenCalledOnce();
-
-    vi.mocked(context.dependencies.evaluate).mockReturnValue({
-      ...denied,
-      warnings: ["blacklist match", "Nuevo conflicto"],
-    });
-    await runMonitor(context.dependencies, {
-      owner: "run",
-      lockTtlSeconds: 60,
-      alertLeaseSeconds: 30,
-    });
-    expect(context.notifier.send).toHaveBeenCalledTimes(2);
   });
-
-  it("releases every newly claimed conflict when formatting fails", async () => {
+  it("releases the newly claimed key when formatting fails", async () => {
     const context = setup({
       evaluation: {
         decision: "DO_NOT_INVEST",
@@ -323,7 +311,7 @@ describe("runMonitor", () => {
         alertLeaseSeconds: 30,
       }),
     ).rejects.toThrow("format failed");
-    expect(context.repository.releaseAlertClaim).toHaveBeenCalledTimes(2);
+    expect(context.repository.releaseAlertClaim).toHaveBeenCalledTimes(1);
     expect(context.notifier.send).not.toHaveBeenCalled();
   });
 
@@ -384,7 +372,7 @@ describe("runMonitor", () => {
       }),
     ).rejects.toThrow("complete failed");
     expect(context.notifier.send).toHaveBeenCalledOnce();
-    expect(context.repository.completeAlert).toHaveBeenCalledTimes(2);
+    expect(context.repository.completeAlert).toHaveBeenCalledTimes(1);
     expect(context.repository.releaseAlertClaim).not.toHaveBeenCalled();
   });
 
@@ -616,7 +604,7 @@ describe("runMonitor", () => {
       vi
         .mocked(context.repository.claimAlert)
         .mock.calls.map((call) => call[2]),
-    ).toEqual([1_787_832_090, 1_787_832_150]);
+    ).toEqual([1_787_832_090]);
     expect(
       vi
         .mocked(context.dependencies.formatAlert)
@@ -627,7 +615,7 @@ describe("runMonitor", () => {
     ]);
   });
 
-  it("reads a fresh lease clock for every conflict claim", async () => {
+  it("leases the claim from the clock read at claim time", async () => {
     const context = setup({
       evaluation: {
         decision: "DO_NOT_INVEST",
