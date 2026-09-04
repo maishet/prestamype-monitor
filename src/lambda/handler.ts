@@ -29,6 +29,7 @@ import {
   containerResources,
   exitForFreshContainer,
   isSpentContainer,
+  sweepBrowserTemporaries,
 } from "../runtime/container.js";
 
 export interface ScanRuntimeConfig {
@@ -294,6 +295,9 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
     const started = Date.now();
     let metered = false;
     let spentContainer = false;
+    // Before anything else: a sandbox whose /tmp is full cannot launch a
+    // browser, and it stays full across a process restart.
+    console.info("Swept", JSON.stringify(sweepBrowserTemporaries()));
     try {
       let config = await dependencies.store.loadConfig();
       if (config?.pending_runtime_alert !== undefined) {

@@ -4,6 +4,7 @@ import {
   containerResources,
   exitForFreshContainer,
   isSpentContainer,
+  sweepBrowserTemporaries,
 } from "../../src/runtime/container.js";
 
 describe("isSpentContainer", () => {
@@ -48,5 +49,13 @@ describe("exitForFreshContainer", () => {
     // Guarded because the unguarded call would end the test run here.
     expect(process.env.AWS_LAMBDA_FUNCTION_NAME).toBeUndefined();
     expect(exitForFreshContainer()).toBe(false);
+  });
+});
+
+describe("sweepBrowserTemporaries", () => {
+  it("reports a count without throwing where there is no /tmp", () => {
+    // The sweep runs before every scan, so it must never be the thing that
+    // fails one.
+    expect(sweepBrowserTemporaries()).toEqual({ swept: expect.any(Number) });
   });
 });
