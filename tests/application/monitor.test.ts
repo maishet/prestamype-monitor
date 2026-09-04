@@ -164,6 +164,39 @@ describe("runMonitor", () => {
       base,
     );
   });
+  it("records that an opportunity has alerted so its panel stays shut", async () => {
+    const context = setup();
+    await runMonitor(context.dependencies, {
+      owner: "run",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+    // Without this flag the scanner reopens the panel every refresh interval
+    // to re-read an auction that can never alert again.
+    expect(context.repository.saveOpportunity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ alerted: true }),
+    );
+  });
+
+  it("records an alert it did not send because the key was already taken", async () => {
+    const context = setup();
+    vi.mocked(context.repository.claimAlert).mockResolvedValue(false);
+    await runMonitor(context.dependencies, {
+      owner: "run",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+    // A taken key means the message went out on an earlier scan, which is
+    // just as good a reason to stop opening the panel.
+    expect(context.notifier.send).not.toHaveBeenCalled();
+    expect(context.repository.saveOpportunity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ alerted: true }),
+    );
+  });
   it("orchestrates a claimed alert in strict order", async () => {
     const context = setup();
     const result = await runMonitor(context.dependencies, {

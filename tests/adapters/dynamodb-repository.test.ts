@@ -342,6 +342,9 @@ describe("DynamoRepository", () => {
       "opp-1": {
         visibleFingerprint: "fp",
         detailCheckedAt: "2026-08-30T00:00:00.000Z",
+        // Written before the field existed, so it reads as never alerted and
+        // simply earns one more detail read.
+        alerted: false,
       },
     });
     const firstQuery = aws.send.mock.calls[1]![0];

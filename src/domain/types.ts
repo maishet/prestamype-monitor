@@ -37,6 +37,14 @@ export interface CollectionConflict {
 export interface OpportunityFingerprintRecord {
   visibleFingerprint: string;
   detailCheckedAt: string;
+  /**
+   * Whether this auction already has an alert on record.
+   *
+   * One auction earns exactly one message, so re-reading the detail panel of one
+   * that already sent it cannot change any outcome. It is the reason the panel
+   * opened on 49 of 60 scans while the table said nothing had changed.
+   */
+  alerted?: boolean;
 }
 
 export type OpportunityPersistenceMetadata = OpportunityFingerprintRecord;

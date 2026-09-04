@@ -72,9 +72,9 @@ describe("SAM infrastructure", () => {
       // 14:00-23:57 UTC is 09:00-18:57 in Lima, which observes no DST. Prestamype
       // trades on weekday business hours only; outside them a scan would burn
       // free-tier GB-seconds against a table nobody is moving.
-      Properties: { Schedule: "cron(0/3 14-23 ? * MON-FRI *)", Enabled: true },
+      Properties: { Schedule: "cron(0/2 14-23 ? * MON-FRI *)", Enabled: true },
     });
-    // A retried scan would double the work; the next tick is three minutes away.
+    // A retried scan would double the work; the next tick is two minutes away.
     expect(properties.EventInvokeConfig).toMatchObject({
       MaximumRetryAttempts: 0,
     });

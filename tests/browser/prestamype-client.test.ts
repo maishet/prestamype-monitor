@@ -349,7 +349,7 @@ describe("PrestamypeClient scan", () => {
     expect(fake.clicks.filter((s) => s.includes("row_table"))).toEqual([]);
   });
 
-  it("reopens a row once the detail refresh interval has passed", async () => {
+  it("does not reopen an unchanged row however stale the detail is", async () => {
     const rows = parseOpportunityRows(TABLE);
     const known = Object.fromEntries(
       rows.map((row) => [
@@ -358,6 +358,65 @@ describe("PrestamypeClient scan", () => {
           visibleFingerprint: opportunityRowFingerprint(row),
           detailCheckedAt: new Date(Date.now() - 3_600_000).toISOString(),
         },
+      ]),
+    );
+    const client = createClient(fake.page);
+    client.beginScan();
+    const opportunities = await client.listEligibleOpportunities(config, known);
+    await client.close();
+    // Age alone used to reopen the panel. Nothing the panel holds can move
+    // without the table moving too, so the clock was buying nothing.
+    expect(opportunities).toEqual([]);
+    expect(fake.clicks.filter((s) => s.includes("row_table"))).toEqual([]);
+  });
+
+  it("never reopens a row that already sent its one alert", async () => {
+    const rows = parseOpportunityRows(TABLE);
+    const known = Object.fromEntries(
+      rows.map((row) => [
+        opportunityRowKey(row),
+        {
+          visibleFingerprint: opportunityRowFingerprint(row),
+          // Long past the refresh interval, which used to be enough on its own
+          // to reopen every panel: at a three-minute cadence that reopened one
+          // in five scans for auctions whose message had already gone out.
+          detailCheckedAt: new Date(Date.now() - 3_600_000).toISOString(),
+          alerted: true,
+        },
+      ]),
+    );
+    const client = createClient(fake.page);
+    client.beginScan();
+    const opportunities = await client.listEligibleOpportunities(config, known);
+    await client.close();
+    expect(opportunities).toEqual([]);
+    expect(fake.clicks.filter((s) => s.includes("row_table"))).toEqual([]);
+  });
+
+  it("leaves an alerted row shut even when its funding moves", async () => {
+    const rows = parseOpportunityRows(TABLE);
+    const known = Object.fromEntries(
+      rows.map((row) => [
+        opportunityRowKey(row),
+        // A stale hash means the table moved, which normally reopens the panel.
+        // It cannot help here: the one message this auction gets has been sent,
+        // so re-reading it only delays the scan.
+        { visibleFingerprint: "stale", detailCheckedAt: "", alerted: true },
+      ]),
+    );
+    const client = createClient(fake.page);
+    client.beginScan();
+    const opportunities = await client.listEligibleOpportunities(config, known);
+    await client.close();
+    expect(opportunities).toEqual([]);
+  });
+
+  it("reopens a row that moved and has never alerted", async () => {
+    const rows = parseOpportunityRows(TABLE);
+    const known = Object.fromEntries(
+      rows.map((row) => [
+        opportunityRowKey(row),
+        { visibleFingerprint: "stale", detailCheckedAt: "", alerted: false },
       ]),
     );
     const client = createClient(fake.page);

@@ -75,7 +75,6 @@ const PROHIBITED_ACTION =
 
 const LETTER_RISKS: readonly RiskGrade[] = ["A+", "A", "B", "C", "D", "E"];
 const ACTIVE_PORTFOLIO_STATES = /por cobrar|en proceso/iu;
-const DEFAULT_DETAIL_REFRESH_MS = 15 * 60 * 1_000;
 const MAX_PAGES = 5;
 /** How long the browser gets to shut itself down before it is killed. */
 const CLEANUP_BUDGET_MS = 3_000;
@@ -249,8 +248,7 @@ export function opportunityRowKey(row: OpportunityRow): string {
  * At two decimals it moved on essentially every scan of an active auction, so
  * nothing was ever skipped and each scan reopened every eligible panel. The
  * cost of the coarser bucket is bounded: the score does not depend on funding
- * at all, only the projected amount does, and `detailRefreshIntervalMs` forces
- * a reopen on its own schedule regardless.
+ * at all, only the projected amount does.
  */
 function visibleFingerprint(visible: {
   id: string;
@@ -470,7 +468,7 @@ export class PrestamypeClient implements OpportunitySource {
           continue;
 
         const id = opportunityRowKey(row);
-        if (this.isUnchanged(row, id, knownFingerprints, config)) {
+        if (this.isUnchanged(row, id, knownFingerprints)) {
           skippedUnchanged += 1;
           continue;
         }
@@ -497,14 +495,23 @@ export class PrestamypeClient implements OpportunitySource {
     row: OpportunityRow,
     id: string,
     knownFingerprints: Readonly<Record<string, OpportunityFingerprintRecord>>,
-    config: MonitorConfig,
   ): boolean {
     const known = knownFingerprints[id];
-    if (known?.visibleFingerprint !== opportunityRowFingerprint(row))
-      return false;
-    const checkedAt = Date.parse(known.detailCheckedAt);
-    const refresh = config.detailRefreshIntervalMs ?? DEFAULT_DETAIL_REFRESH_MS;
-    return Number.isFinite(checkedAt) && this.now() - checkedAt < refresh;
+    if (known === undefined) return false;
+    // An auction that already sent its one message has nothing left to tell us,
+    // however much its funding moves afterwards: a second message is impossible
+    // by construction, so its panel never needs opening again.
+    if (known.alerted === true) return true;
+    // Otherwise the table settles it. It carries the risk, the return, the
+    // amount and the funded share, so whatever could change a verdict shows up
+    // here, and a row that hashes the same is the row already held.
+    //
+    // A periodic refresh used to reopen the panel regardless, which at a
+    // three-minute cadence re-read every eligible auction every five scans. It
+    // accounted for nearly all of the 109 panels opened across 60 scans, at
+    // about three seconds each, and could only ever re-confirm a verdict that
+    // was already delivered or already below the threshold.
+    return known.visibleFingerprint === opportunityRowFingerprint(row);
   }
 
   private async openAndParseDetail(
@@ -630,7 +637,10 @@ export class PrestamypeClient implements OpportunitySource {
   }
 
   /** False when the budget ran out with the table still unrendered. */
-  private async waitForRows(page: PageLike, deadline: number): Promise<boolean> {
+  private async waitForRows(
+    page: PageLike,
+    deadline: number,
+  ): Promise<boolean> {
     return (
       (await this.waitForContent(
         page,

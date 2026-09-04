@@ -464,7 +464,8 @@ export class DynamoRepository implements MonitorRepository, SessionStore {
             IndexName: this.#opportunityIndexName,
             KeyConditionExpression: "GSI1PK = :opportunity",
             ExpressionAttributeValues: { ":opportunity": "OPPORTUNITY" },
-            ProjectionExpression: "id, visibleFingerprint, detailCheckedAt",
+            ProjectionExpression:
+              "id, visibleFingerprint, detailCheckedAt, alerted",
             ...(exclusiveStartKey === undefined
               ? {}
               : { ExclusiveStartKey: exclusiveStartKey }),
@@ -479,6 +480,9 @@ export class DynamoRepository implements MonitorRepository, SessionStore {
             fingerprints[item.id] = {
               visibleFingerprint: item.visibleFingerprint,
               detailCheckedAt: item.detailCheckedAt,
+              // Absent on every record written before this field existed, which
+              // reads as "not alerted" and simply costs one more detail read.
+              alerted: item.alerted === true,
             };
           }
         }
@@ -512,6 +516,7 @@ export class DynamoRepository implements MonitorRepository, SessionStore {
         evaluation,
         visibleFingerprint: metadata.visibleFingerprint,
         detailCheckedAt: metadata.detailCheckedAt,
+        alerted: metadata.alerted === true,
       };
       assertDynamoSerializable(item);
       assertFinalItemKeys(item);

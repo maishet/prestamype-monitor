@@ -160,10 +160,14 @@ export async function runMonitor(
     for (const { opportunity, evaluation } of records) {
       evaluated += 1;
       const detailCheckedAt = now.toISOString();
-      const save = () =>
+      // Sticky: an auction that has ever alerted has alerted for good, and a
+      // later scan finding it below the threshold does not undo that.
+      const alreadyAlerted = fingerprints[opportunity.id]?.alerted === true;
+      const save = (alerted = alreadyAlerted) =>
         dependencies.repository.saveOpportunity(opportunity, evaluation, {
           visibleFingerprint: opportunityFingerprint(opportunity),
           detailCheckedAt,
+          alerted,
         });
       if (evaluation.decision === "IGNORE") {
         await save();
@@ -184,7 +188,9 @@ export async function runMonitor(
           if (claimed) claimedKeys.push(alertKey);
         }
         if (claimedKeys.length === 0) {
-          await save();
+          // Every key was already taken, so the message went out on an earlier
+          // scan: record that, and the panel need never open for it again.
+          await save(true);
           continue;
         }
         const message = (dependencies.formatAlert ?? formatOpportunityAlert)(
@@ -234,7 +240,7 @@ export async function runMonitor(
           { cause: completionErrors[0] },
         );
       }
-      await save();
+      await save(true);
     }
     result = { acquired: true, evaluated, alertsSent };
     console.info("Monitor scan completed", JSON.stringify(result));
