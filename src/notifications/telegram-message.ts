@@ -9,6 +9,7 @@ import { redactSensitiveText } from "../security/redaction.js";
 const TELEGRAM_MESSAGE_LIMIT = 4_000;
 const MAX_TEXT_FIELD_RENDERED_LENGTH = 400;
 const MAX_WARNINGS = 12;
+const FUNDING_PROGRESS_SEGMENTS = 10;
 
 type TechnicalAlertType =
   | "SESSION_EXPIRED"
@@ -188,32 +189,61 @@ function formatRisk(risk: Opportunity["risk"]): string {
   return risk === "PROTEGIDA" ? "Protegida 🛡" : `Riesgo ${risk}`;
 }
 
-/** "51 subastas · 43 a tiempo · mora 0.46% · S/11.1M histórico" */
-function formatCompactHistory(history: PaymentHistory | null): string | null {
-  if (history === null) return null;
-  const parts = [
-    `${history.totalAuctions} subastas`,
-    `${history.paidOnTime} a tiempo`,
-  ];
-  if (history.paidLate > 0) parts.push(`${history.paidLate} con retraso`);
-  if (history.overdue > 0) parts.push(`${history.overdue} vencidas`);
-  if (history.delinquencyPct !== null)
-    parts.push(`mora ${formatCompactPercentage(history.delinquencyPct)}`);
-  // A large historical volume says the payer is established; a long average
-  // delay says the opposite. Both are omitted when the tab does not publish
-  // them, which is always the case for the supplier.
+function formatFundingProgress(fundedPct: number): string {
+  const boundedPct = Math.min(100, Math.max(0, fundedPct));
+  const filled = Math.round((boundedPct / 100) * FUNDING_PROGRESS_SEGMENTS);
+  return `<pre>${"█".repeat(filled)}${"░".repeat(
+    FUNDING_PROGRESS_SEGMENTS - filled,
+  )} ${boundedPct}%</pre>`;
+}
+
+function formatHistoryDelay(history: PaymentHistory): string {
   if (
-    history.averageDelayDays !== null &&
-    history.averageDelayDays > 0 &&
-    history.averageDelayDays <= 365
+    history.averageDelayDays === null ||
+    history.averageDelayDays <= 0 ||
+    history.averageDelayDays > 365
   )
-    parts.push(`retraso medio ${Math.round(history.averageDelayDays)} d`);
-  if (
-    history.historicalAmountCents !== null &&
-    history.historicalAmountCents > 0
-  )
-    parts.push(`${formatMagnitude(history.historicalAmountCents)} histórico`);
-  return parts.join(" · ");
+    return "-";
+  return `${Math.round(history.averageDelayDays)}d`;
+}
+
+function formatHistoryAmount(history: PaymentHistory): string {
+  return history.historicalAmountCents === null ||
+    history.historicalAmountCents <= 0
+    ? "-"
+    : formatMagnitude(history.historicalAmountCents);
+}
+
+function formatHistoryTable(
+  debtorHistory: PaymentHistory | null,
+  supplierHistory: PaymentHistory | null,
+): string | null {
+  const rows = [
+    debtorHistory === null ? null : ["Deudor", debtorHistory] as const,
+    supplierHistory === null ? null : ["Proveedor", supplierHistory] as const,
+  ].filter((row) => row !== null);
+  if (rows.length === 0) return null;
+
+  const body = rows.map(([label, history]) =>
+    [
+      label.padEnd(9),
+      String(history.totalAuctions).padStart(3),
+      String(history.paidOnTime).padStart(3),
+      String(history.paidLate).padStart(5),
+      String(history.overdue).padStart(4),
+      (history.delinquencyPct === null
+        ? "-"
+        : formatCompactPercentage(history.delinquencyPct)
+      ).padStart(4),
+      formatHistoryDelay(history).padStart(3),
+      formatHistoryAmount(history).padStart(6),
+    ].join(" "),
+  );
+
+  return [
+    "Tipo       Sub  OK Tarde Venc Mora Ret   Hist",
+    ...body,
+  ].join("\n");
 }
 
 function renderWithinTelegramLimit(lines: readonly MessageLine[]): string {
@@ -283,11 +313,14 @@ export function formatOpportunityAlert(
         )
       : 0;
   push(
-    withGap(
-      `💰 Restante ${formatMoney(opportunity.remainingAmountCents)} de ${formatMoney(
-        opportunity.totalAmountCents,
-      )} (${fundedPct}% financiado)`,
-    ),
+    withGap(`💰 <b>Financiamiento</b>`),
+    "essential",
+  );
+  push(formatFundingProgress(fundedPct), "essential");
+  push(
+    `Restante ${formatMoney(opportunity.remainingAmountCents)} de ${formatMoney(
+      opportunity.totalAmountCents,
+    )}`,
     "essential",
   );
   push(
@@ -308,16 +341,12 @@ export function formatOpportunityAlert(
   ].filter((part) => part !== null);
   if (timing.length > 0) push(`⏱ ${timing.join(" · ")}`, "essential");
 
-  const debtorHistory = formatCompactHistory(opportunity.debtorHistory);
-  const supplierHistory = formatCompactHistory(opportunity.supplierHistory);
-  if (debtorHistory !== null) push(withGap(`📊 Deudor: ${debtorHistory}`));
-  if (supplierHistory !== null)
-    push(
-      debtorHistory === null
-        ? withGap(`📊 Proveedor: ${supplierHistory}`)
-        : `📊 Proveedor: ${supplierHistory}`,
-      "detail",
-    );
+  const historyTable = formatHistoryTable(
+    opportunity.debtorHistory,
+    opportunity.supplierHistory,
+  );
+  if (historyTable !== null)
+    push(withGap(`📊 <b>Historial</b>\n<pre>${historyTable}</pre>`));
 
   evaluation.warnings.slice(0, MAX_WARNINGS).forEach((warning, index) => {
     const html = `⚠️ ${safeText(warning)}`;

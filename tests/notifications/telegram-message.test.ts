@@ -76,25 +76,35 @@ describe("formatOpportunityAlert", () => {
     const lines = format().split("\n");
     expect(lines[0]).toBe("<b>🔴 INVERTIR · CLIENTE</b>");
     expect(lines[1]).toBe("Riesgo A · Factoring");
-    expect(lines[3]).toBe(
-      "💰 Restante S/3,750.00 de S/5,000.00 (25% financiado)",
-    );
-    expect(lines[4]).toBe("📈 20.00% anual (1.53% mensual)");
+    expect(lines[3]).toBe("💰 <b>Financiamiento</b>");
+    expect(lines[4]).toBe("<pre>███░░░░░░░ 25%</pre>");
+    expect(lines[5]).toBe("Restante S/3,750.00 de S/5,000.00");
+    expect(lines[6]).toBe("📈 20.00% anual (1.53% mensual)");
+  });
+
+  it("renders the funded amount as a progress line", () => {
+    expect(format()).toContain("<pre>███░░░░░░░ 25%</pre>");
+
+    const full = format({
+      fundedAmountCents: 500_000,
+      remainingAmountCents: 0,
+    });
+    expect(full).toContain("<pre>██████████ 100%</pre>");
   });
 
   it("groups related fields into visually separated blocks", () => {
     const lines = format().split("\n");
     // A blank line introduces each block: terms, history, warnings, score.
     expect(lines[2]).toBe("");
-    expect(lines[6]).toBe("");
-    expect(lines[9]).toBe("");
-    expect(lines[11]).toBe("");
+    expect(lines[8]).toBe("");
+    expect(lines[13]).toBe("");
+    expect(lines[15]).toBe("");
   });
 
   it("stays short enough to read on a phone", () => {
     const message = format();
-    expect(message.split("\n").length).toBeLessThanOrEqual(15);
-    expect(message.length).toBeLessThan(700);
+    expect(message.split("\n").length).toBeLessThanOrEqual(20);
+    expect(message.length).toBeLessThan(850);
   });
 
   it("leaves out what the reader cannot act on", () => {
@@ -137,8 +147,8 @@ describe("formatOpportunityAlert", () => {
         historicalAmountCents: 950_000_000,
       },
     });
-    expect(message).toContain("retraso medio 10 d");
-    expect(message).toContain("S/9.5M histórico");
+    expect(message).toContain("10d");
+    expect(message).toContain("S/9.5M");
   });
 
   it("omits an implausible average delay instead of printing it", () => {
@@ -174,10 +184,14 @@ describe("formatOpportunityAlert", () => {
     expect(message).not.toContain("mensual");
   });
 
-  it("summarises each history in one line and drops empty decimals", () => {
-    expect(format()).toContain(
-      "📊 Deudor: 12 subastas · 11 a tiempo · 1 con retraso · mora 0% · retraso medio 2 d · S/25k histórico",
-    );
+  it("renders debtor and supplier history as a compact table", () => {
+    const message = format();
+    expect(message).toContain("📊 <b>Historial</b>");
+    expect(message).toContain("<pre>");
+    expect(message).toContain("Tipo       Sub  OK Tarde Venc Mora Ret   Hist");
+    expect(message).toContain("Deudor     12  11     1    0   0%  2d  S/25k");
+    expect(message).toContain("Proveedor  12  11     1    0   0%  2d  S/25k");
+    expect(message).toContain("</pre>");
   });
 
   it("omits a history that the tabs never delivered", () => {
