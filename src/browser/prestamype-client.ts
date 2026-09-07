@@ -440,7 +440,7 @@ export class PrestamypeClient implements OpportunitySource {
     await this.step("wait-sorted-rows", () => this.waitForRows(page, deadline));
 
     const floor = walkFloor(config);
-    const currencies = config.allowedCurrencies ?? [config.currency];
+    const currencies = config.allowedCurrencies;
     const results: Opportunity[] = [];
     let scanned = 0;
     let skippedUnchanged = 0;

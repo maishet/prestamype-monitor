@@ -18,7 +18,7 @@ function Is-CompletePausedConfig([object]$Item) {
         if ($Item.PK.S -cne "CONFIG" -or $Item.SK.S -cne "MONITOR") { return $false }
         $monitor = $Item.monitor.M
         $cost = $Item.costLimits.M
-        foreach ($name in @("allowedRisks", "minimumAnnualReturnPct", "currency", "minimumInvestmentCents", "highPriorityScore", "reviewScore", "detailRefreshIntervalMs")) {
+        foreach ($name in @("allowedRisks", "minimumAnnualReturnPct", "allowedCurrencies", "minimumInvestmentCents", "highPriorityScore", "reviewScore", "detailRefreshIntervalMs")) {
             if (-not (Has-Property $monitor $name)) { return $false }
         }
         foreach ($name in @("configuredMemoryGb", "monthlyGbSecondsLimit")) {
@@ -39,7 +39,7 @@ function Is-CompletePausedConfig([object]$Item) {
         $refresh = [long]$monitor.detailRefreshIntervalMs.N
         $memory = [double]$cost.configuredMemoryGb.N
         $monthly = [double]$cost.monthlyGbSecondsLimit.N
-        if ($monitor.currency.S -notin @("PEN", "USD") -or $annual -lt 0 -or $minimum -le 0 -or $review -lt 0 -or $high -gt 100 -or $high -lt $review -or $refresh -le 0 -or $memory -le 0 -or $monthly -le 0) { return $false }
+        if (@($monitor.allowedCurrencies.L).Count -eq 0 -or @($monitor.allowedCurrencies.L | Where-Object { $_.S -notin @("PEN", "USD") }).Count -gt 0 -or $annual -lt 0 -or $minimum -le 0 -or $review -lt 0 -or $high -gt 100 -or $high -lt $review -or $refresh -le 0 -or $memory -le 0 -or $monthly -le 0) { return $false }
         if (Has-Property $Item "activation_owner") { return $false }
         return $true
     } catch { return $false }

@@ -25,7 +25,7 @@ function Has-Property([object]$Value, [string]$Name) {
 $tableName = & aws cloudformation describe-stacks --stack-name $StackName --region $Region --query "Stacks[0].Outputs[?OutputKey=='TableName'].OutputValue | [0]" --output text
 if ($LASTEXITCODE -ne 0 -or $tableName -notmatch '^[A-Za-z0-9_.-]{3,255}$') { throw "No se pudo resolver TableName de forma segura." }
 $configKey = @{ PK = @{ S = "CONFIG" }; SK = @{ S = "MONITOR" } }
-$monitor = @{ M = @{ allowedRisks = @{ L = @(@{ S = "A+" }, @{ S = "A" }, @{ S = "B" }, @{ S = "C" }) }; minimumAnnualReturnPct = @{ N = "15" }; currency = @{ S = "PEN" }; minimumInvestmentCents = @{ N = "10000" }; highPriorityScore = @{ N = "80" }; reviewScore = @{ N = "70" }; detailRefreshIntervalMs = @{ N = "900000" } } }
+$monitor = @{ M = @{ allowedRisks = @{ L = @(@{ S = "A+" }, @{ S = "A" }, @{ S = "B" }, @{ S = "C" }) }; minimumAnnualReturnPct = @{ N = "15" }; allowedCurrencies = @{ L = @(@{ S = "PEN" }) }; minimumInvestmentCents = @{ N = "10000" }; highPriorityScore = @{ N = "80" }; reviewScore = @{ N = "70" }; detailRefreshIntervalMs = @{ N = "900000" } } }
 $costLimits = @{ M = @{ configuredMemoryGb = @{ N = "1" }; monthlyGbSecondsLimit = @{ N = "400000" } } }
 $configTemp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 try {
@@ -40,12 +40,12 @@ try {
     }
     if ($valid) {
         $m = $item.monitor.M; $c = $item.costLimits.M
-        $valid = (Has-Property $m "allowedRisks") -and (Has-Property $m "minimumAnnualReturnPct") -and (Has-Property $m "currency") -and (Has-Property $m "minimumInvestmentCents") -and (Has-Property $m "highPriorityScore") -and (Has-Property $m "reviewScore") -and (Has-Property $m "detailRefreshIntervalMs") -and (Has-Property $c "configuredMemoryGb") -and (Has-Property $c "monthlyGbSecondsLimit")
+        $valid = (Has-Property $m "allowedRisks") -and (Has-Property $m "minimumAnnualReturnPct") -and (Has-Property $m "allowedCurrencies") -and (Has-Property $m "minimumInvestmentCents") -and (Has-Property $m "highPriorityScore") -and (Has-Property $m "reviewScore") -and (Has-Property $m "detailRefreshIntervalMs") -and (Has-Property $c "configuredMemoryGb") -and (Has-Property $c "monthlyGbSecondsLimit")
     }
     if ($valid) {
         try {
             $risks = @($m.allowedRisks.L | ForEach-Object { $_.S })
-            $valid = $risks.Count -gt 0 -and @($risks | Where-Object { $_ -notin @("A+", "A", "B", "C", "D", "E") }).Count -eq 0 -and $m.currency.S -in @("PEN", "USD") -and [double]$m.minimumAnnualReturnPct.N -ge 0 -and [long]$m.minimumInvestmentCents.N -gt 0 -and [double]$m.highPriorityScore.N -ge [double]$m.reviewScore.N -and [double]$m.detailRefreshIntervalMs.N -gt 0 -and [double]$c.configuredMemoryGb.N -gt 0 -and [double]$c.monthlyGbSecondsLimit.N -gt 0
+            $valid = $risks.Count -gt 0 -and @($risks | Where-Object { $_ -notin @("A+", "A", "B", "C", "D", "E") }).Count -eq 0 -and @($m.allowedCurrencies.L).Count -gt 0 -and @($m.allowedCurrencies.L | Where-Object { $_.S -notin @("PEN", "USD") }).Count -eq 0 -and [double]$m.minimumAnnualReturnPct.N -ge 0 -and [long]$m.minimumInvestmentCents.N -gt 0 -and [double]$m.highPriorityScore.N -ge [double]$m.reviewScore.N -and [double]$m.detailRefreshIntervalMs.N -gt 0 -and [double]$c.configuredMemoryGb.N -gt 0 -and [double]$c.monthlyGbSecondsLimit.N -gt 0
         } catch { $valid = $false }
     }
     if ($valid) {

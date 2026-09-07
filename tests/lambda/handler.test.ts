@@ -25,7 +25,7 @@ const CONFIG: ScanRuntimeConfig = {
   monitor: {
     allowedRisks: ["A+", "A", "B"],
     minimumAnnualReturnPct: 12,
-    currency: "PEN",
+    allowedCurrencies: ["PEN"],
     minimumInvestmentCents: 10_000,
     highPriorityScore: 80,
     reviewScore: 60,

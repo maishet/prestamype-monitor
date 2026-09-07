@@ -27,7 +27,7 @@ if ($null -ne $monitor) {
     if ($monitor.PSObject.Properties.Name -contains "allowedCurrencies") {
         Write-Output "Monedas permitidas: $((@($monitor.allowedCurrencies.L | ForEach-Object { $_.S })) -join ',')"
     } else {
-        Write-Output "Moneda (compatibilidad): $($monitor.currency.S)"
+        Write-Output "Falta configurar allowedCurrencies"
     }
     $minimumSoles = ([decimal]$monitor.minimumInvestmentCents.N / 100).ToString("N2", [Globalization.CultureInfo]::GetCultureInfo("es-PE"))
     Write-Output "Inversión mínima (S/): S/ $minimumSoles"

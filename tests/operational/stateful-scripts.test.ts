@@ -21,7 +21,7 @@ const fullConfig = {
     M: {
       allowedRisks: { L: [{ S: "A+" }] },
       minimumAnnualReturnPct: { N: "15" },
-      currency: { S: "PEN" },
+      allowedCurrencies: { L: [{ S: "PEN" }] },
       minimumInvestmentCents: { N: "10000" },
       highPriorityScore: { N: "80" },
       reviewScore: { N: "70" },
@@ -684,7 +684,9 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
           minimumAnnualReturnPct: Number(
             state.config.monitor.M.minimumAnnualReturnPct.N,
           ),
-          currency: state.config.monitor.M.currency.S,
+          allowedCurrencies: state.config.monitor.M.allowedCurrencies.L.map(
+            (entry: { S: "PEN" | "USD" }) => entry.S,
+          ),
           minimumInvestmentCents: Number(
             state.config.monitor.M.minimumInvestmentCents.N,
           ),

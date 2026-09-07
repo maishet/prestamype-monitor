@@ -71,11 +71,30 @@ describe("DEFAULT_CONFIG", () => {
   it("accepts A+ through C and requires 15 percent annual return", () => {
     expect(DEFAULT_CONFIG.allowedRisks).toEqual(["A+", "A", "B", "C"]);
     expect(DEFAULT_CONFIG.minimumAnnualReturnPct).toBe(15);
-    expect(DEFAULT_CONFIG.currency).toBe("PEN");
+    expect(DEFAULT_CONFIG.allowedCurrencies).toEqual(["PEN"]);
   });
 });
 
 describe("evaluateOpportunity", () => {
+  it("rejects PEN when only USD is allowed", () => {
+    const result = evaluate(opportunity, {
+      config: { ...DEFAULT_CONFIG, allowedCurrencies: ["USD"] },
+    });
+    expect(result.decision).toBe("IGNORE");
+    expect(result.reasons).toContain("Currency PEN is not allowed");
+  });
+
+  it("scores USD when allowedCurrencies permits it regardless of legacy currency", () => {
+    const result = evaluate(
+      { ...opportunity, currency: "USD" },
+      {
+        config: { ...DEFAULT_CONFIG, allowedCurrencies: ["PEN", "USD"] },
+      },
+    );
+    expect(result.decision).toBe("INVEST");
+    expect(result.score).toBeGreaterThan(0);
+  });
+
   it("ignores 14.99 percent and allows the exact 15 percent return boundary", () => {
     expect(evaluate({ ...opportunity, annualReturnPct: 14.99 }).decision).toBe(
       "IGNORE",

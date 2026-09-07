@@ -34,7 +34,6 @@ const PORTFOLIO = fixture("mis-inversiones.html");
 const config: MonitorConfig = {
   allowedRisks: ["A+", "A", "B", "C", "PROTEGIDA"],
   minimumAnnualReturnPct: 12,
-  currency: "PEN",
   allowedCurrencies: ["PEN", "USD"],
   minimumInvestmentCents: 10_000,
   highPriorityScore: 80,

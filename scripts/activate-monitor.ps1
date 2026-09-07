@@ -20,7 +20,7 @@ function Is-CompleteEnabledConfig([object]$Response) {
         $item = $Response.Item
         if ($item.PK.S -cne "CONFIG" -or $item.SK.S -cne "MONITOR" -or $item.enabled.BOOL -ne $true) { return $false }
         $monitor = $item.monitor.M
-        foreach ($name in @("allowedRisks", "minimumAnnualReturnPct", "currency", "minimumInvestmentCents", "highPriorityScore", "reviewScore", "detailRefreshIntervalMs")) {
+        foreach ($name in @("allowedRisks", "minimumAnnualReturnPct", "allowedCurrencies", "minimumInvestmentCents", "highPriorityScore", "reviewScore", "detailRefreshIntervalMs")) {
             if (-not (Has-Property $monitor $name)) { return $false }
         }
         $risks = @($monitor.allowedRisks.L | ForEach-Object { $_.S })
@@ -40,7 +40,7 @@ if ($tableName -notmatch '^[A-Za-z0-9_.-]{3,255}$') { throw "Outputs del stack i
 
 $tempPath = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 try {
-    $required = "attribute_exists(PK) AND attribute_exists(monitor) AND attribute_exists(monitor.allowedRisks) AND attribute_exists(monitor.minimumAnnualReturnPct) AND attribute_exists(monitor.currency) AND attribute_exists(monitor.minimumInvestmentCents) AND attribute_exists(monitor.highPriorityScore) AND attribute_exists(monitor.reviewScore) AND attribute_exists(monitor.detailRefreshIntervalMs) AND attribute_exists(costLimits) AND attribute_exists(costLimits.configuredMemoryGb) AND attribute_exists(costLimits.monthlyGbSecondsLimit) AND attribute_not_exists(paused_until) AND enabled = :disabled"
+    $required = "attribute_exists(PK) AND attribute_exists(monitor) AND attribute_exists(monitor.allowedRisks) AND attribute_exists(monitor.minimumAnnualReturnPct) AND attribute_exists(monitor.allowedCurrencies) AND attribute_exists(monitor.minimumInvestmentCents) AND attribute_exists(monitor.highPriorityScore) AND attribute_exists(monitor.reviewScore) AND attribute_exists(monitor.detailRefreshIntervalMs) AND attribute_exists(costLimits) AND attribute_exists(costLimits.configuredMemoryGb) AND attribute_exists(costLimits.monthlyGbSecondsLimit) AND attribute_not_exists(paused_until) AND enabled = :disabled"
     $request = @{ TableName = $tableName; Key = @{ PK = @{ S = "CONFIG" }; SK = @{ S = "MONITOR" } }; UpdateExpression = "SET enabled = :enabled"; ConditionExpression = $required; ExpressionAttributeValues = @{ ":enabled" = @{ BOOL = $true }; ":disabled" = @{ BOOL = $false } } }
     [IO.File]::WriteAllText($tempPath, ($request | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding($false)))
     $oldPreference = $ErrorActionPreference
