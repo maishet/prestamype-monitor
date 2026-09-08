@@ -582,8 +582,8 @@ export class PrestamypeClient implements OpportunitySource {
     deadline: number,
   ): Promise<void> {
     this.ensureDeadline(deadline);
-    if (purpose !== "campaign.close" && this.page !== null) {
-      await this.dismissCampaign(this.page, deadline);
+    if (purpose !== "overlay.close" && this.page !== null) {
+      await this.dismissOverlay(this.page, deadline);
     }
     // Visibility first: it is a non-waiting check, while textContent auto-waits
     // for the full locator timeout on an element that may not exist at all.
@@ -594,30 +594,51 @@ export class PrestamypeClient implements OpportunitySource {
     await this.withDeadline(locator.click(), deadline);
   }
 
-  private async dismissCampaign(
+  private async dismissOverlay(
     page: PageLike,
     deadline: number,
   ): Promise<void> {
-    const selector = ".slider-modal--first-investment";
-    // Only the observed promotional modal, never arbitrary dialogs or their CTAs.
-    const modal = page.locator(selector);
+    const selector =
+      ':nth-match(:is(.generic-modal-overlay, [role="dialog"][aria-modal="true"], dialog[open]):visible, 1)';
+    const modal = page.locator(selector).first?.() ?? page.locator(selector);
     if (!(await this.withDeadline(modal.isVisible(), deadline))) return;
-    await this.safeClick(
-      page.locator(`${selector} button.actions-button:has(i.icon-close)`),
-      "campaign.close",
-      deadline,
-    );
+    const text = (
+      (await this.withDeadline(modal.textContent(), deadline)) ?? ""
+    )
+      .normalize("NFD")
+      .replace(/\p{M}/gu, "");
+    // A campaign may mention investing; only authentication/consent screens
+    // require manual intervention. Never click their confirm/accept controls.
+    if (
+      /captcha|verifica.{0,30}(identidad|humano)|codigo de verificacion/iu.test(
+        text,
+      )
+    )
+      throw new SessionChallengeError();
+    if (/sesion.{0,20}(expir|caduc)|inicia.{0,10}sesion/iu.test(text))
+      throw new SessionExpiredError();
+    if (
+      /acept[ae][rs]?.{0,50}(terminos|condiciones|contrato)|firma.{0,25}contrato/iu.test(
+        text,
+      )
+    )
+      throw new PageStructureError(
+        "UNSUPPORTED_VALUE",
+        "overlay.manual-consent",
+      );
+    const closeSelector = `${selector} :is(button, [role="button"]):visible:is(:has(i.icon-close), [aria-label="Cerrar" i], [aria-label="Close" i], :text-is("Cerrar"), :text-is("Ahora no"), :text-is("Close"), :text-is("\u00d7"), :text-is("X"))`;
+    const close =
+      page.locator(closeSelector).first?.() ?? page.locator(closeSelector);
+    if (!(await this.withDeadline(close.isVisible(), deadline)))
+      throw new PageStructureError("MISSING_FIELD", "overlay.safe-close");
+    await this.safeClick(close, "overlay.close", deadline);
     const limit = Math.min(deadline, this.now() + 3_000);
     while (await this.withDeadline(modal.isVisible(), limit)) {
-      if (this.now() + 100 >= limit) {
-        throw new PageStructureError("MISSING_FIELD", "campaign.close");
-      }
+      if (this.now() + 100 >= limit)
+        throw new PageStructureError("MISSING_FIELD", "overlay.did-not-close");
       await this.withDeadline(this.sleep(100), limit);
     }
-    console.info(
-      "Promotional modal closed",
-      JSON.stringify({ campaign: "first-investment" }),
-    );
+    console.info("Dismissible overlay closed");
   }
 
   /**
