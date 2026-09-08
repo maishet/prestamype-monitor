@@ -582,6 +582,9 @@ export class PrestamypeClient implements OpportunitySource {
     deadline: number,
   ): Promise<void> {
     this.ensureDeadline(deadline);
+    if (purpose !== "campaign.close" && this.page !== null) {
+      await this.dismissCampaign(this.page, deadline);
+    }
     // Visibility first: it is a non-waiting check, while textContent auto-waits
     // for the full locator timeout on an element that may not exist at all.
     if (!(await this.withDeadline(locator.isVisible(), deadline)))
@@ -589,6 +592,32 @@ export class PrestamypeClient implements OpportunitySource {
     const label = await this.withDeadline(locator.textContent(), deadline);
     assertAllowedInteraction({ kind: "click", name: label ?? "" });
     await this.withDeadline(locator.click(), deadline);
+  }
+
+  private async dismissCampaign(
+    page: PageLike,
+    deadline: number,
+  ): Promise<void> {
+    const selector = ".slider-modal--first-investment";
+    // Only the observed promotional modal, never arbitrary dialogs or their CTAs.
+    const modal = page.locator(selector);
+    if (!(await this.withDeadline(modal.isVisible(), deadline))) return;
+    await this.safeClick(
+      page.locator(`${selector} button.actions-button:has(i.icon-close)`),
+      "campaign.close",
+      deadline,
+    );
+    const limit = Math.min(deadline, this.now() + 3_000);
+    while (await this.withDeadline(modal.isVisible(), limit)) {
+      if (this.now() + 100 >= limit) {
+        throw new PageStructureError("MISSING_FIELD", "campaign.close");
+      }
+      await this.withDeadline(this.sleep(100), limit);
+    }
+    console.info(
+      "Promotional modal closed",
+      JSON.stringify({ campaign: "first-investment" }),
+    );
   }
 
   /**

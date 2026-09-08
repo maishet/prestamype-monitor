@@ -71,6 +71,7 @@ function createFakePage(options: FakePageOptions = {}) {
         else if (selector.includes("icon-close")) setHtml(table);
       },
       async isVisible() {
+        if (selector.includes("slider-modal--first-investment")) return false;
         if (selector.includes("captcha")) return false;
         if (selector.includes("next-button")) return false;
         if (selector.includes("panel-main")) return current === PANEL;
@@ -252,6 +253,49 @@ describe("row identity", () => {
 });
 
 describe("PrestamypeClient scan", () => {
+  it("closes the first-investment campaign before interacting with the table", async () => {
+    let open = true;
+    const fake = createFakePage();
+    const content = fake.page.content;
+    fake.page.content = async () =>
+      (await content()) +
+      (open
+        ? '<div class="slider-modal--first-investment"><button class="actions-button"><i class="icon-close"></i></button><button>¡Participa ahora!</button></div>'
+        : "");
+    const original = fake.page.locator;
+    const actions: string[] = [];
+    fake.page.locator = (selector) => {
+      const locator = original(selector);
+      if (selector.includes("slider-modal--first-investment")) {
+        return {
+          ...locator,
+          isVisible: async () => open,
+          click: async () => {
+            actions.push(selector);
+            open = false;
+          },
+        };
+      }
+      return {
+        ...locator,
+        click: async () => {
+          if (open) throw new Error("Campaign intercepts pointer events");
+          await locator.click();
+        },
+      };
+    };
+    const client = createClient(fake.page);
+    try {
+      await client.listEligibleOpportunities(config, {});
+      expect(open).toBe(false);
+      expect(actions).toEqual([
+        ".slider-modal--first-investment button.actions-button:has(i.icon-close)",
+      ]);
+    } finally {
+      await client.close();
+    }
+  });
+
   let fake: ReturnType<typeof createFakePage>;
 
   beforeEach(() => {
