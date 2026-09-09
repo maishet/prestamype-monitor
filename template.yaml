@@ -29,6 +29,22 @@
         "true"
       ],
       "Description": "Set to true only after the account has Lambda concurrency quota above the default minimum"
+    },
+    "TelegramOwnerId": {
+      "Type": "String",
+      "Default": "1524876607",
+      "AllowedPattern": "^[1-9][0-9]{4,19}$",
+      "Description": "Telegram user id authorized for private administrative commands"
+    },
+    "WebhookSecretParameterPath": {
+      "Type": "String",
+      "Default": "/prestamype/prod/webhook-secret",
+      "AllowedPattern": "^/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+$"
+    },
+    "TelegramBotUsername": {
+      "Type": "String",
+      "Default": "cve_subastas_noti_bot",
+      "AllowedPattern": "^[A-Za-z0-9_]{5,32}$"
     }
   },
   "Conditions": {
@@ -244,6 +260,9 @@
             },
             "SESSION_KEY_PARAMETER": {
               "Ref": "SessionKeyParameterPath"
+            },
+            "TELEGRAM_OWNER_ID": {
+              "Ref": "TelegramOwnerId"
             }
           }
         },
@@ -315,6 +334,203 @@
         },
         "RetentionInDays": 7
       }
+    },
+    "CommandsRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "CommandsOnly",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:GetItem"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "MonitorTable",
+                      "Arn"
+                    ]
+                  },
+                  "Condition": {
+                    "ForAllValues:StringLike": {
+                      "dynamodb:LeadingKeys": [
+                        "CONFIG",
+                        "USAGE#*",
+                        "OPPORTUNITY#*"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:Query"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "${MonitorTable.Arn}/index/EntityTypeIndex"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:PutItem",
+                    "dynamodb:UpdateItem"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "MonitorTable",
+                      "Arn"
+                    ]
+                  },
+                  "Condition": {
+                    "ForAllValues:StringLike": {
+                      "dynamodb:LeadingKeys": [
+                        "CONFIG",
+                        "CMD#*",
+                        "USAGE#*"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ssm:GetParameters"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${WebhookSecretParameterPath}"
+                    },
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${TelegramChatIdParameterPath}"
+                    }
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "kms:Decrypt"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/c7669c81-cf9d-4eca-8335-82efbd04282b"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "lambda:InvokeFunction"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "ScanFunction",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-commands:*"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "CommandsFunction": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${AWS::StackName}-commands"
+        },
+        "CodeUri": ".",
+        "Handler": "commands.handler",
+        "Runtime": "nodejs22.x",
+        "Architectures": [
+          "x86_64"
+        ],
+        "MemorySize": 128,
+        "Timeout": 10,
+        "Role": {
+          "Fn::GetAtt": [
+            "CommandsRole",
+            "Arn"
+          ]
+        },
+        "FunctionUrlConfig": {
+          "AuthType": "NONE"
+        },
+        "Environment": {
+          "Variables": {
+            "TABLE_NAME": {
+              "Ref": "MonitorTable"
+            },
+            "TELEGRAM_OWNER_ID": {
+              "Ref": "TelegramOwnerId"
+            },
+            "TELEGRAM_CHAT_ID_PARAMETER": {
+              "Ref": "TelegramChatIdParameterPath"
+            },
+            "WEBHOOK_SECRET_PARAMETER": {
+              "Ref": "WebhookSecretParameterPath"
+            },
+            "SCAN_FUNCTION_NAME": {
+              "Ref": "ScanFunction"
+            },
+            "TELEGRAM_BOT_USERNAME": {
+              "Ref": "TelegramBotUsername"
+            }
+          }
+        }
+      },
+      "Metadata": {
+        "BuildMethod": "esbuild",
+        "BuildProperties": {
+          "Target": "es2022",
+          "Format": "esm",
+          "Minify": true,
+          "EntryPoints": [
+            "src/lambda/commands.ts"
+          ],
+          "OutExtension": [
+            ".js=.mjs"
+          ],
+          "Banner": [
+            "js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);"
+          ]
+        }
+      }
+    },
+    "CommandsLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}-commands"
+        },
+        "RetentionInDays": 7
+      }
     }
   },
   "Outputs": {
@@ -331,6 +547,14 @@
     "Region": {
       "Value": {
         "Ref": "AWS::Region"
+      }
+    },
+    "CommandsUrl": {
+      "Value": {
+        "Fn::GetAtt": [
+          "CommandsFunctionUrl",
+          "FunctionUrl"
+        ]
       }
     }
   }

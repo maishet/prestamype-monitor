@@ -5,6 +5,7 @@ export interface MonthlyCostUsage {
   readonly invocations: number;
   readonly scans: number;
   readonly averageDurationSeconds: number;
+  readonly commandGbSeconds?: number;
 }
 
 export interface MonthlyCostLimits {
@@ -48,6 +49,7 @@ function assertInputs(
     !Number.isSafeInteger(usage.scans) ||
     usage.scans < 0 ||
     !finiteNonnegative(usage.averageDurationSeconds) ||
+    !finiteNonnegative(usage.commandGbSeconds ?? 0) ||
     !Number.isFinite(limits.configuredMemoryGb) ||
     limits.configuredMemoryGb <= 0 ||
     !Number.isFinite(limits.monthlyGbSecondsLimit) ||
@@ -64,8 +66,9 @@ export function assessMonthlyUsage(
     assertInputs(usage, limits);
     const projectedGbSeconds =
       usage.invocations *
-      limits.configuredMemoryGb *
-      usage.averageDurationSeconds;
+        limits.configuredMemoryGb *
+        usage.averageDurationSeconds +
+      (usage.commandGbSeconds ?? 0);
     if (!Number.isFinite(projectedGbSeconds)) throw new CostGuardInputError();
     const utilizationRatio = projectedGbSeconds / limits.monthlyGbSecondsLimit;
 

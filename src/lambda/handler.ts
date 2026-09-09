@@ -57,7 +57,12 @@ export interface ScanRuntimeStore {
   incrementMonthlyUsage(
     month: string,
     increment: { invocations?: number; durationMs?: number; scans?: number },
-  ): Promise<{ invocations: number; durationMs: number; scans: number }>;
+  ): Promise<{
+    invocations: number;
+    durationMs: number;
+    scans: number;
+    commandGbSeconds?: number;
+  }>;
   loadEncryptedSession(options?: {
     signal: AbortSignal;
   }): Promise<unknown | null>;
@@ -324,6 +329,7 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
               ? 0
               : usage.durationMs / usage.invocations / 1_000,
           scans: usage.scans,
+          commandGbSeconds: usage.commandGbSeconds ?? 0,
         },
         config.costLimits,
       );
@@ -533,7 +539,14 @@ function createProductionHandler(): ReturnType<typeof createScanHandler> {
         config,
       };
     },
-    runMonitor: runApplicationMonitor,
+    runMonitor: async (dependencies, input) => {
+      const result = await runApplicationMonitor(dependencies, input);
+      if (result.acquired)
+        await repository.recordScanResult(
+          `${result.evaluated} evaluadas; ${result.alertsSent} alertas enviadas`,
+        );
+      return result;
+    },
     notifyDiagnostic: async (message, options) => {
       options?.signal.throwIfAborted();
       const secrets = await loadRuntimeSecrets(
@@ -553,9 +566,53 @@ function createProductionHandler(): ReturnType<typeof createScanHandler> {
 
 export async function handler(
   // Either the EventBridge rule or a deliberate one-off payload.
-  event: ScheduledEvent | { kind: string; schemaVersion: number },
+  event:
+    | ScheduledEvent
+    | { kind: string; schemaVersion: number; replyChatId?: string },
   context: Context,
 ): Promise<void> {
   productionHandler ??= createProductionHandler();
-  await productionHandler(event, context);
+  if (!("kind" in event) || event.kind !== "telegram-scan") {
+    await productionHandler(event, context);
+    return;
+  }
+  const owner = process.env.TELEGRAM_OWNER_ID;
+  if (
+    !owner ||
+    event.replyChatId !== owner ||
+    event.schemaVersion !== 1 ||
+    Object.keys(event).length !== 3
+  )
+    return;
+  let message =
+    "Escaneo procesado. Consulta /estado para ver el último resultado; las oportunidades nuevas se notifican en los chats habituales.";
+  const requestedAt = Date.now();
+  try {
+    await productionHandler({ kind: "scan", schemaVersion: 1 }, context);
+    const repository = new DynamoRepository({
+      client: DynamoDBDocumentClient.from(new DynamoDBClient({})),
+      tableName: requiredEnvironment("TABLE_NAME"),
+    });
+    const latest = await repository.loadConfig<ScanRuntimeConfig>();
+    message =
+      typeof latest?.last_scan_at === "string" &&
+      Date.parse(latest.last_scan_at) >= requestedAt
+        ? `Escaneo terminado: ${String(latest.last_scan_summary)}. Las alertas nuevas se enviaron a los chats habituales.`
+        : "Solicitud procesada sin un escaneo nuevo: puede haber otro en curso, una pausa o el monitor desactivado. Consulta /estado.";
+  } catch (error) {
+    message =
+      "El escaneo no pudo completarse. Consulta /estado para revisar el estado del monitor.";
+    throw error;
+  } finally {
+    try {
+      const secrets = await loadRuntimeSecrets();
+      await new TelegramClient({
+        token: secrets.telegramToken,
+        chatId: owner,
+        timeoutMs: 2000,
+      }).send(message, { signal: AbortSignal.timeout(2500) });
+    } catch {
+      console.warn("Command completion notification unavailable");
+    }
+  }
 }

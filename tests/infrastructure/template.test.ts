@@ -25,6 +25,19 @@ function statements(logicalId: string): JsonObject[] {
 }
 
 describe("SAM infrastructure", () => {
+  it("keeps commands lightweight and isolates them from session secrets", () => {
+    const fn = resources.CommandsFunction.Properties;
+    expect(fn.MemorySize).toBe(128);
+    expect(fn.Timeout).toBe(10);
+    expect(fn.Layers).toBeUndefined();
+    expect(fn.Environment.Variables.SESSION_KEY_PARAMETER).toBeUndefined();
+    const policy = JSON.stringify(resources.CommandsRole);
+    expect(policy).not.toContain("SessionKeyParameterPath");
+    expect(policy).not.toContain("TelegramTokenParameterPath");
+    expect(policy).not.toContain('"SESSION"');
+    expect(policy).toContain("dynamodb:LeadingKeys");
+    expect(policy).toContain("lambda:InvokeFunction");
+  });
   it("configures one bounded Node 22 scan function", () => {
     expect(template.Transform).toBe("AWS::Serverless-2016-10-31");
     const properties = resource(
@@ -136,6 +149,9 @@ describe("SAM infrastructure", () => {
       TelegramChatIdParameterPath: expect.objectContaining({ Type: "String" }),
       SessionKeyParameterPath: expect.objectContaining({ Type: "String" }),
       EnableReservedConcurrency: expect.objectContaining({ Type: "String" }),
+      TelegramOwnerId: expect.objectContaining({ Type: "String" }),
+      TelegramBotUsername: expect.objectContaining({ Type: "String" }),
+      WebhookSecretParameterPath: expect.objectContaining({ Type: "String" }),
     });
     expect(
       resources.ScanFunction.Properties.Environment.Variables,
@@ -286,9 +302,12 @@ describe("SAM infrastructure", () => {
 
   it("exposes only operational identifiers and contains no prohibited services", () => {
     expect(Object.keys(template.Outputs).sort()).toEqual(
-      ["FunctionName", "Region", "TableName"].sort(),
+      ["CommandsUrl", "FunctionName", "Region", "TableName"].sort(),
     );
     expect(template.Outputs).toEqual({
+      CommandsUrl: {
+        Value: { "Fn::GetAtt": ["CommandsFunctionUrl", "FunctionUrl"] },
+      },
       FunctionName: { Value: { Ref: "ScanFunction" } },
       TableName: { Value: { Ref: "MonitorTable" } },
       Region: { Value: { Ref: "AWS::Region" } },

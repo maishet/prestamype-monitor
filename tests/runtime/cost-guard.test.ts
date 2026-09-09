@@ -11,6 +11,19 @@ const limits = {
 } as const;
 
 describe("monthly cost guard", () => {
+  it("includes the commands reservation in the shared pause threshold", () => {
+    expect(
+      assessMonthlyUsage(
+        {
+          invocations: 87000,
+          scans: 1,
+          averageDurationSeconds: 1,
+          commandGbSeconds: 500,
+        },
+        limits,
+      ).action,
+    ).toBe("PAUSE");
+  });
   it.each([
     [69_999, 1, "CONTINUE"],
     [70_000, 1, "WARN"],

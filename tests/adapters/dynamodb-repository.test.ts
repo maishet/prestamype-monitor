@@ -456,7 +456,14 @@ describe("DynamoRepository", () => {
     const aws = client(
       { Item: { PK: "CONFIG", SK: "MONITOR", enabled: true } },
       {},
-      { Attributes: { invocations: 2, durationMs: 1500, scans: 1 } },
+      {
+        Attributes: {
+          invocations: 2,
+          durationMs: 1500,
+          scans: 1,
+          commandGbSeconds: 2.5,
+        },
+      },
     );
     const repository = new DynamoRepository({ client: aws, tableName });
     await expect(
@@ -469,6 +476,7 @@ describe("DynamoRepository", () => {
       scans: 1,
     });
     expect(usage).toEqual({
+      commandGbSeconds: 2.5,
       month: "2026-08",
       invocations: 2,
       durationMs: 1500,

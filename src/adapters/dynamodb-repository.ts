@@ -40,6 +40,7 @@ export interface MonthlyUsageIncrement {
 }
 
 export interface MonthlyUsage {
+  readonly commandGbSeconds?: number;
   readonly month: string;
   readonly invocations: number;
   readonly durationMs: number;
@@ -725,6 +726,10 @@ export class DynamoRepository implements MonitorRepository, SessionStore {
       const attributes = record(result?.Attributes) ?? {};
       return {
         month,
+        commandGbSeconds:
+          typeof attributes.commandGbSeconds === "number"
+            ? attributes.commandGbSeconds
+            : 0,
         invocations:
           typeof attributes.invocations === "number"
             ? attributes.invocations
@@ -752,6 +757,8 @@ export class DynamoRepository implements MonitorRepository, SessionStore {
         ) ?? {};
       return {
         month,
+        commandGbSeconds:
+          typeof item.commandGbSeconds === "number" ? item.commandGbSeconds : 0,
         invocations:
           typeof item.invocations === "number" ? item.invocations : 0,
         durationMs: typeof item.durationMs === "number" ? item.durationMs : 0,
@@ -760,5 +767,21 @@ export class DynamoRepository implements MonitorRepository, SessionStore {
     } catch (error) {
       return wrap(error);
     }
+  }
+
+  async recordScanResult(summary: string): Promise<void> {
+    await this.#send(
+      new UpdateCommand({
+        TableName: this.#tableName,
+        Key: { PK: "CONFIG", SK: "MONITOR" },
+        UpdateExpression:
+          "SET last_scan_at = :at, last_scan_summary = :summary",
+        ConditionExpression: "attribute_exists(PK)",
+        ExpressionAttributeValues: {
+          ":at": this.#clock().toISOString(),
+          ":summary": summary,
+        },
+      }),
+    );
   }
 }
