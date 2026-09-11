@@ -664,8 +664,15 @@ export class PrestamypeClient implements OpportunitySource {
           try {
             await this.withDeadline(close.click({ force: true }), deadline);
           } catch {
-            // Leave the normal disappearance check below to report a precise
-            // PageStructureError if neither dismissal path worked.
+            // Some markup has no button wrapper around the icon. Force the
+            // icon itself as the final semantic close attempt; unlike a normal
+            // click this bypasses the overlay hit-test interception.
+            try {
+              await this.withDeadline(icon.click({ force: true }), deadline);
+            } catch {
+              // Leave the normal disappearance check below to report a precise
+              // PageStructureError if neither dismissal path worked.
+            }
           }
         }
       } else {
