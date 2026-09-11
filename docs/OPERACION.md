@@ -77,3 +77,9 @@ Errores `PageStructureError` indican que cambió el DOM o faltan datos en la pá
 3. Desplegar a `sa-east-1`.
 4. Ejecutar `invoke-once`.
 5. Revisar logs buscando `Monitor scan completed` y confirmar Telegram.
+
+### Modales consecutivos y superpuestos
+
+El cierre selecciona la última capa visible y fija su identidad DOM antes de actuar. La espera comprueba ese mismo elemento: un selector dinámico de «primer modal visible» puede saltar al segundo y producir un falso `overlay.did-not-close`. Las pantallas de autenticación y consentimiento siguen requiriendo intervención.
+
+Regresión local con Chromium: `npm exec vitest -- run tests/browser/modal-regression.test.ts`. Cubre dos campañas superpuestas y dos consecutivas. Tras desplegar, comprobar varios ciclos automáticos completos; una invocación `START` aislada no acredita un escaneo. Si hay pausa manual, los ciclos pueden terminar sin abrir el navegador.

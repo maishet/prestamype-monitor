@@ -94,6 +94,7 @@ export interface LocatorLike {
   first?(): LocatorLike;
   locator?(selector: string): LocatorLike;
   dispatchEvent?(type: string): Promise<void>;
+  evaluate?<T>(fn: (element: { setAttribute(name: string, value: string): void }, arg: string) => T, arg: string): Promise<T>;
 }
 
 export interface PageLike {
@@ -322,6 +323,7 @@ export class PrestamypeClient implements OpportunitySource {
   private scanDeadline: number | null = null;
   private observedBalanceCents: number | null = null;
   private readonly requestCounts = new Map<string, number>();
+  private overlaySequence = 0;
 
   constructor(private readonly options: PrestamypeClientOptions) {
     this.launcher = options.launcher ?? productionLauncher;
@@ -602,11 +604,26 @@ export class PrestamypeClient implements OpportunitySource {
     page: PageLike,
     deadline: number,
   ): Promise<void> {
-    const selector =
-      ':nth-match(:is(.generic-modal-overlay, [role="dialog"][aria-modal="true"], dialog[open]):visible, 1)';
+    const visibleSelector =
+      ':is(.generic-modal-overlay, [role="dialog"][aria-modal="true"], dialog[open]):visible';
     for (let dismissed = 0; dismissed < 4; dismissed += 1) {
-      const modal = page.locator(selector).first?.() ?? page.locator(selector);
+      let selector = visibleSelector;
+      let modal = page.locator(selector).first?.() ?? page.locator(selector);
       if (!(await this.withDeadline(modal.isVisible(), deadline))) return;
+      const candidates = page.locator(visibleSelector);
+      if (candidates.count !== undefined && candidates.nth !== undefined) {
+        const count = await this.withDeadline(candidates.count(), deadline);
+        if (count === 0) return;
+        modal = candidates.nth(count - 1);
+      }
+      if (modal.evaluate !== undefined) {
+        const identity = String(++this.overlaySequence);
+        await this.withDeadline(modal.evaluate((element, value) => {
+          element.setAttribute("data-monitor-overlay", value);
+        }, identity), deadline);
+        selector = `[data-monitor-overlay="${identity}"]`;
+        modal = page.locator(selector).first?.() ?? page.locator(selector);
+      }
       const text = (
         (await this.withDeadline(modal.textContent(), deadline)) ?? ""
       )
@@ -688,7 +705,9 @@ export class PrestamypeClient implements OpportunitySource {
       }
       console.info("Dismissible overlay closed");
     }
-    throw new PageStructureError("MISSING_FIELD", "overlay.too-many");
+    const remaining = page.locator(visibleSelector);
+    if (await this.withDeadline((remaining.first?.() ?? remaining).isVisible(), deadline))
+      throw new PageStructureError("MISSING_FIELD", "overlay.too-many");
   }
 
   /**
