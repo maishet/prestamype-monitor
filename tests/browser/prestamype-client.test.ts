@@ -270,7 +270,10 @@ describe("PrestamypeClient scan", () => {
       if (!selector.includes("generic-modal-overlay"))
         return original(selector);
       return {
-        isVisible: async () => (selector.includes("button") ? hasClose : true),
+        isVisible: async () =>
+          selector.includes("icon-close") || selector.includes("button")
+            ? hasClose
+            : true,
         textContent: async () => message,
         click,
       };
@@ -327,7 +330,9 @@ describe("PrestamypeClient scan", () => {
         await client.listEligibleOpportunities(config, {});
         expect(open).toBe(false);
         expect(actions).toHaveLength(1);
-        expect(actions[0]).toContain("icon-close");
+        // The production path first clicks the campaign backdrop; this also
+        // covers the real page variant where the nested icon is intercepted.
+        expect(actions[0]).toContain("generic-modal-overlay");
       } finally {
         await client.close();
       }

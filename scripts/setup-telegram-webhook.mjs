@@ -117,6 +117,14 @@ try {
           command: "reanudar",
           description: "Activar sin eliminar pausas de seguridad",
         },
+        {
+          command: "recuperar",
+          description: "Quitar pausa recuperable y escanear",
+        },
+        {
+          command: "sesionestado",
+          description: "Comprobar estado de la sesión Prestamype",
+        },
       ],
       scope: { type: "chat", chat_id: owner },
     });

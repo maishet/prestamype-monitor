@@ -44,6 +44,23 @@ npm run telegram:list-chats
 
 El bot debe tener permiso para enviar mensajes en el grupo. Se admiten destino privado y grupo.
 
+Los comandos administrativos solo aceptan mensajes de `TELEGRAM_OWNER_ID` enviados desde su chat privado:
+
+```text
+/estado       Estado y último error registrado
+/sesionestado  Comprueba si existe sesión cifrada y si requiere recaptura
+/escanear     Solicita un escaneo manual (con límites de seguridad)
+/pausar       Desactiva el monitor
+/reanudar     Activa el monitor si no hay una pausa de seguridad
+/recuperar    Retira pausas recuperables y solicita un escaneo
+```
+
+`/recuperar` sirve después de una pausa por `SessionExpiredError`,
+`SessionChallengeError` o `PageStructureError`. No puede renovar una sesión
+expirada ni completar MFA: en ese caso se debe ejecutar `npm run auth:capture`,
+volver a iniciar sesión y después usar `/recuperar`. Las pausas de coste o
+límite de solicitudes permanecen bloqueadas y requieren revisión explícita.
+
 ## Diagnóstico AWS
 
 ```powershell

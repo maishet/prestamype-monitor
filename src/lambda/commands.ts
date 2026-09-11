@@ -23,7 +23,15 @@ const PUBLIC = new Set([
   "detalle",
   "criterios",
 ]);
-const PRIVATE = new Set(["estado", "escanear", "pausar", "reanudar"]);
+const PRIVATE = new Set([
+  "estado",
+  "escanear",
+  "pausar",
+  "reanudar",
+  "recuperar",
+  "sesionestado",
+  "sesion-estado",
+]);
 const MONTHLY_COMMAND_LIMIT = 2_000;
 // 128 MiB for the full 10-second timeout, reserved before executing each command.
 const COMMAND_GB_SECONDS = 1.25;
@@ -97,7 +105,7 @@ export function createCommandHandler(deps: CommandDependencies) {
       chat === deps.ownerId &&
       message.chat.type === "private";
     if (!admin && !(await deps.chats()).includes(chat)) return response();
-    const match = /^\/([a-z]+)(?:@([a-zA-Z0-9_]+))?(?:\s+(.*))?$/.exec(
+    const match = /^\/([a-z-]+)(?:@([a-zA-Z0-9_]+))?(?:\s+(.*))?$/.exec(
       message.text.trim(),
     );
     if (!match) return response();
@@ -261,7 +269,7 @@ async function execute(
     return (
       "Consultas de datos guardados:\n/oportunidades\n/detalle ID\n/criterios\n/ayuda" +
       (admin
-        ? "\n\nAdministración privada:\n/estado\n/escanear\n/pausar\n/reanudar\n\nLímites: 1 comando cada 3 s; 2.000/mes entre todos. Escaneos manuales: 1 cada 10 min, máximo 5/día."
+        ? "\n\nAdministración privada:\n/estado\n/sesionestado\n/escanear\n/pausar\n/reanudar\n/recuperar\n\nLímites: 1 comando cada 3 s; 2.000/mes entre todos. Escaneos manuales: 1 cada 10 min, máximo 5/día."
         : "")
     );
   if (command === "detalle") {
@@ -333,6 +341,19 @@ async function execute(
       (usage?.commandGbSeconds ?? 0);
     return `Monitor: ${cfg.enabled ? "activo" : "desactivado"}\nPausa: ${cfg.paused_until ?? "ninguna"}\nÚltimo escaneo: ${cfg.last_scan_at ?? "aún sin registro"}\nResultado: ${cfg.last_scan_summary ?? "sin registro"}\nConsumo registrado + reserva comandos: ${gb.toFixed(0)} GB-s / ${cfg.costLimits.monthlyGbSecondsLimit}\nNo incluye otros proyectos ni solicitudes rechazadas.\nÚltimo error: ${cfg.last_error?.name ?? cfg.last_error?.kind ?? "ninguno registrado"}`;
   }
+  if (command === "sesion-estado" || command === "sesionestado") {
+    const session = await get({ PK: "SESSION", SK: "PRESTAMYPE" });
+    const pause = cfg.pause_reason ?? "ninguna";
+    const lastError = cfg.last_error?.name ?? cfg.last_error?.kind ?? "ninguno";
+    const sessionState = session ? "disponible (cifrada)" : "ausente";
+    const attention =
+      pause === "SessionExpiredError" || pause === "SessionChallengeError"
+        ? "Acción: ejecuta npm run auth:capture en un equipo con navegador y luego /recuperar."
+        : pause === "PageStructureError"
+          ? "Acción: revisa el error de estructura; después usa /recuperar si ya fue corregido."
+          : "No se detecta una pausa por sesión.";
+    return `Sesión Prestamype: ${sessionState}\nPausa relacionada: ${pause}\nÚltimo error: ${lastError}\n${attention}`;
+  }
   if (command === "pausar") {
     await db.send(
       new UpdateCommand({
@@ -359,6 +380,42 @@ async function execute(
       }),
     );
     return "Monitor activado. Se ejecutará según el horario configurado.";
+  }
+  if (command === "recuperar") {
+    const recoverable = new Set([
+      "SessionExpiredError",
+      "SessionChallengeError",
+      "PageStructureError",
+    ]);
+    if (
+      cfg.paused_until &&
+      cfg.pause_reason &&
+      !recoverable.has(String(cfg.pause_reason))
+    )
+      return `No se retiro la pausa ${cfg.pause_reason}. Resuelve primero la causa y usa /reanudar.`;
+    await db.send(
+      new UpdateCommand({
+        TableName: required("TABLE_NAME"),
+        Key: configKey,
+        UpdateExpression: "SET enabled = :yes REMOVE paused_until, pause_reason",
+        ConditionExpression: "attribute_exists(PK)",
+        ExpressionAttributeValues: { ":yes": true },
+      }),
+    );
+    await lambda.send(
+      new InvokeCommand({
+        FunctionName: required("SCAN_FUNCTION_NAME"),
+        InvocationType: "Event",
+        Payload: Buffer.from(
+          JSON.stringify({
+            kind: "telegram-scan",
+            schemaVersion: 1,
+            replyChatId: required("TELEGRAM_OWNER_ID"),
+          }),
+        ),
+      }),
+    );
+    return "Pausa recuperable retirada y escaneo solicitado. Si la sesión sigue expirada, recaptúrala manualmente; Telegram te avisará y volverá a pausar el monitor.";
   }
   if (command === "escanear") {
     if (!cfg.enabled || cfg.paused_until)

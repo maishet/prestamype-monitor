@@ -49,7 +49,7 @@ describe("Telegram commands authorization", () => {
     await call("/oportunidades");
     expect(deps.execute).toHaveBeenCalledWith("oportunidades", "", false);
   });
-  it.each(["estado", "escanear", "pausar", "reanudar"])(
+  it.each(["estado", "escanear", "pausar", "reanudar", "recuperar", "sesionestado"])(
     "denies private command %s to group members",
     async (command) => {
       const { deps, call } = setup();
@@ -66,6 +66,16 @@ describe("Telegram commands authorization", () => {
     const { deps, call } = setup();
     await call("/escanear", 1524876607, 1524876607, "private");
     expect(deps.execute).toHaveBeenCalledWith("escanear", "", true);
+  });
+  it("allows the owner recovery command only in their private chat", async () => {
+    const { deps, call } = setup();
+    await call("/recuperar", 1524876607, 1524876607, "private");
+    expect(deps.execute).toHaveBeenCalledWith("recuperar", "", true);
+  });
+  it("allows the owner session status command only in their private chat", async () => {
+    const { deps, call } = setup();
+    await call("/sesionestado", 1524876607, 1524876607, "private");
+    expect(deps.execute).toHaveBeenCalledWith("sesionestado", "", true);
   });
   it("rejects unknown chats and anonymous senders", async () => {
     const { deps, call } = setup();

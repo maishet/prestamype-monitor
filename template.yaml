@@ -371,6 +371,7 @@
                     "ForAllValues:StringLike": {
                       "dynamodb:LeadingKeys": [
                         "CONFIG",
+                        "SESSION",
                         "USAGE#*",
                         "OPPORTUNITY#*"
                       ]
