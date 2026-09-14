@@ -88,6 +88,11 @@ El contenedor exterior `.generic-modal-overlay` tiene prioridad sobre cualquier
 `role="dialog"` anidado: el exterior es el que recibe el clic de fondo. La
 regresión también cubre un diálogo interior inerte.
 
+Si una campaña ya clasificada como descartable ignora el clic de fondo, el
+evento directo, el botón y el icono, el monitor retira únicamente ese nodo DOM
+fijado y registra `Dismissible overlay removed after inert handlers`. Esta
+salida nunca se aplica a CAPTCHA, inicio de sesión ni consentimiento manual.
+
 Después de los modales, el selector seguro «Ordenar por» y su opción usan clic
 forzado porque Vue puede mantener el control visible pero inestable mientras
 termina de desmontar la campaña. Esto no se aplica a filas ni a controles de

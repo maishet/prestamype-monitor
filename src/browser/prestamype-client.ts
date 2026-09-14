@@ -100,7 +100,16 @@ export interface LocatorLike {
   first?(): LocatorLike;
   locator?(selector: string): LocatorLike;
   dispatchEvent?(type: string): Promise<void>;
-  evaluate?<T>(fn: (element: { setAttribute(name: string, value: string): void }, arg: string) => T, arg: string): Promise<T>;
+  evaluate?<T>(
+    fn: (
+      element: {
+        setAttribute(name: string, value: string): void;
+        remove(): void;
+      },
+      arg: string,
+    ) => T,
+    arg: string,
+  ): Promise<T>;
 }
 
 export interface PageLike {
@@ -735,6 +744,21 @@ export class PrestamypeClient implements OpportunitySource {
         if (!(await this.withDeadline(close.isVisible(), deadline)))
           throw new PageStructureError("MISSING_FIELD", "overlay.safe-close");
         await this.safeClick(close, "overlay.close", deadline);
+      }
+      if (
+        await this.withDeadline(modal.isVisible(), deadline)
+      ) {
+        if (modal.evaluate === undefined)
+          throw new PageStructureError("MISSING_FIELD", "overlay.did-not-close");
+        // Campaign handlers are remote application code and have repeatedly
+        // acknowledged clicks without changing their state. At this point the
+        // text above has already excluded authentication and manual consent;
+        // remove only the pinned campaign node so it cannot block safe reads.
+        await this.withDeadline(
+          modal.evaluate((element) => element.remove(), ""),
+          deadline,
+        );
+        console.warn("Dismissible overlay removed after inert handlers");
       }
       const limit = Math.min(deadline, this.now() + 3_000);
       while (await this.withDeadline(modal.isVisible(), limit)) {

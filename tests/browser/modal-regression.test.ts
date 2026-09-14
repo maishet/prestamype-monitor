@@ -45,3 +45,17 @@ it("clicks the campaign backdrop instead of a nested inert dialog", async () => 
     expect(await page.locator(".generic-modal-overlay").count()).toBe(0);
   } finally { await browser.close(); }
 }, 20000);
+
+it("removes a verified campaign whose application handlers ignore every click", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<div class="generic-modal-overlay" style="position:fixed;inset:0">
+      <section><h2>Conoce una nueva oportunidad</h2><button><i class="icon-close">X</i></button></section>
+    </div>`);
+    const client = new PrestamypeClient({ storageState: {} });
+    const dismiss = client as unknown as { dismissOverlay(page: PageLike, deadline: number): Promise<void> };
+    await dismiss.dismissOverlay(page as unknown as PageLike, Date.now() + 15000);
+    expect(await page.locator(".generic-modal-overlay").count()).toBe(0);
+  } finally { await browser.close(); }
+}, 20000);
