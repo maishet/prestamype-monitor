@@ -110,6 +110,10 @@ try {
     await telegram("setMyCommands", {
       commands: [
         ...commands,
+        {
+          command: "analizar",
+          description: "Explicar por código por qué alertó o no",
+        },
         { command: "estado", description: "Estado privado del monitor" },
         { command: "escanear", description: "Solicitar un escaneo limitado" },
         { command: "pausar", description: "Desactivar el monitor" },

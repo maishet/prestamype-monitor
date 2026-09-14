@@ -47,6 +47,7 @@ El bot debe tener permiso para enviar mensajes en el grupo. Se admiten destino p
 Los comandos administrativos solo aceptan mensajes de `TELEGRAM_OWNER_ID` enviados desde su chat privado:
 
 ```text
+/analizar CODIGO  Explica por qué una subasta alertó o no (código de Prestamype)
 /estado       Estado y último error registrado
 /sesionestado  Comprueba si existe sesión cifrada y si requiere recaptura
 /escanear     Solicita un escaneo manual (con límites de seguridad)

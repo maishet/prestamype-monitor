@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createCommandHandler,
+  formatOpportunityAnalysis,
   isOpportunityOpenInLima,
   type CommandDependencies,
 } from "../../src/lambda/commands.js";
@@ -50,7 +51,7 @@ describe("Telegram commands authorization", () => {
     await call("/oportunidades");
     expect(deps.execute).toHaveBeenCalledWith("oportunidades", "", false);
   });
-  it.each(["estado", "escanear", "pausar", "reanudar", "recuperar", "sesionestado"])(
+  it.each(["analizar", "estado", "escanear", "pausar", "reanudar", "recuperar", "sesionestado"])(
     "denies private command %s to group members",
     async (command) => {
       const { deps, call } = setup();
@@ -67,6 +68,11 @@ describe("Telegram commands authorization", () => {
     const { deps, call } = setup();
     await call("/escanear", 1524876607, 1524876607, "private");
     expect(deps.execute).toHaveBeenCalledWith("escanear", "", true);
+  });
+  it("allows the owner to request a private analysis by auction code", async () => {
+    const { deps, call } = setup();
+    await call("/analizar nvhp7jO8", 1524876607, 1524876607, "private");
+    expect(deps.execute).toHaveBeenCalledWith("analizar", "nvhp7jO8", true);
   });
   it("allows the owner recovery command only in their private chat", async () => {
     const { deps, call } = setup();
@@ -108,6 +114,54 @@ describe("Telegram commands authorization", () => {
     const response = await call("/invertir", 1524876607, 1524876607, "private");
     expect(deps.execute).not.toHaveBeenCalled();
     expect(response.body).toContain("ayuda");
+  });
+});
+
+describe("opportunity analysis", () => {
+  it("explains a scored opportunity that missed the review threshold", () => {
+    const text = formatOpportunityAnalysis({
+      opportunity: {
+        id: "x",
+        auctionCode: "nvhp7jO8",
+        commercialName: "COMPAÑIA MINERA SOL DE LOS ANDES",
+        currency: "USD",
+        totalAmountCents: 11_287_864,
+        fundedAmountCents: 11_076_257,
+        remainingAmountCents: 211_607,
+        annualReturnPct: 15.39,
+        monthlyReturnPct: 1.2,
+        risk: "C",
+        investmentType: "Confirming",
+        closesAt: "2026-09-14",
+        dueAt: "2026-12-04",
+        collectionProblem: false,
+        debtor: { legalName: "DEUDOR", taxId: null },
+        supplier: { legalName: "", taxId: null },
+        debtorHistory: null,
+        supplierHistory: null,
+        url: "https://www.prestamype.com/app/inversionista/oportunidades",
+      },
+      evaluation: {
+        decision: "IGNORE",
+        score: 60.6,
+        components: { return: 5.78, supplierHistory: 2.33 },
+        reasons: [],
+        warnings: [],
+      },
+      alerted: false,
+    }, {
+      allowedCurrencies: ["PEN", "USD"],
+      allowedRisks: ["A+", "A", "B", "C"],
+      minimumAnnualReturnPct: 13,
+      minimumInvestmentCents: 10_000,
+      reviewScore: 65,
+      highPriorityScore: 80,
+    });
+    expect(text).toContain("Código: nvhp7jO8");
+    expect(text).toContain("4.4 puntos por debajo");
+    expect(text).toContain("Historial del proveedor: 2.33");
+    expect(text).toContain("Moneda USD permitida");
+    expect(text).toContain("Alertada: no");
   });
 });
 

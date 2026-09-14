@@ -24,6 +24,7 @@ const PUBLIC = new Set([
   "criterios",
 ]);
 const PRIVATE = new Set([
+  "analizar",
   "estado",
   "escanear",
   "pausar",
@@ -261,6 +262,59 @@ function brief(item: {
   return `${o.commercialName}\nID: ${o.id}\n${o.currency} ${(o.totalAmountCents / 100).toFixed(2)} · ${o.annualReturnPct}% anual · Riesgo ${o.risk}\nScore ${item.evaluation.score}/100 · ${item.evaluation.decision}\nDatos: ${item.detailCheckedAt ?? "fecha desconocida"}`;
 }
 
+const componentLabels: Record<string, string> = {
+  return: "Retorno",
+  risk: "Riesgo",
+  debtorHistory: "Historial del deudor",
+  supplierHistory: "Historial del proveedor",
+  experience: "Experiencia",
+  term: "Plazo",
+  concentration: "Concentración",
+};
+
+export function formatOpportunityAnalysis(item: {
+  opportunity: Opportunity;
+  evaluation: Evaluation;
+  alerted?: boolean;
+}, config: MonitorConfig): string {
+  const { opportunity: o, evaluation: e } = item;
+  const threshold = e.decision === "INVEST" ? config.highPriorityScore : config.reviewScore;
+  const gap = Math.max(0, config.reviewScore - e.score);
+  const passed = [
+    config.allowedCurrencies.includes(o.currency) ? `Moneda ${o.currency} permitida` : null,
+    config.allowedRisks.includes(o.risk) ? `Riesgo ${o.risk} permitido` : null,
+    o.annualReturnPct >= config.minimumAnnualReturnPct
+      ? `Retorno ${o.annualReturnPct.toFixed(2)}% supera el mínimo de ${config.minimumAnnualReturnPct}%`
+      : null,
+    o.remainingAmountCents >= config.minimumInvestmentCents
+      ? `Disponible ${o.currency} ${(o.remainingAmountCents / 100).toFixed(2)} supera el mínimo`
+      : null,
+  ].filter((value): value is string => value !== null);
+  const causes = [
+    ...e.reasons,
+    ...e.warnings,
+    ...(e.decision === "IGNORE" && e.score > 0
+      ? [`El score quedó ${gap.toFixed(1)} puntos por debajo del mínimo de ${config.reviewScore}`]
+      : []),
+  ];
+  const components = Object.entries(e.components)
+    .map(([name, points]) => `${componentLabels[name] ?? name}: ${points.toFixed(2)}`)
+    .join("\n");
+  return [
+    `Análisis: ${o.commercialName}`,
+    `Código: ${o.auctionCode}`,
+    `Monto: ${o.currency} ${(o.totalAmountCents / 100).toFixed(2)}`,
+    `Disponible: ${o.currency} ${(o.remainingAmountCents / 100).toFixed(2)}`,
+    `Retorno: ${o.annualReturnPct.toFixed(2)}% anual · Riesgo ${o.risk}`,
+    `Resultado: ${e.decision} · Score ${e.score.toFixed(1)}/100`,
+    `Umbral aplicable: ${threshold}/100 · Alertada: ${item.alerted ? "sí" : "no"}`,
+    passed.length ? `\nReglas cumplidas:\n• ${passed.join("\n• ")}` : "",
+    causes.length ? `\nPor qué no alertó / advertencias:\n• ${causes.join("\n• ")}` : "",
+    components ? `\nDesglose:\n${components}` : "",
+    "\nAnálisis basado en los datos guardados; la disponibilidad puede haber cambiado.",
+  ].filter(Boolean).join("\n");
+}
+
 export function isOpportunityOpenInLima(
   closesAt: string,
   now = new Date(),
@@ -284,7 +338,7 @@ async function execute(
     return (
       "Consultas de datos guardados:\n/oportunidades\n/detalle ID\n/criterios\n/ayuda" +
       (admin
-        ? "\n\nAdministración privada:\n/estado\n/sesionestado\n/escanear\n/pausar\n/reanudar\n/recuperar\n\nLímites: 1 comando cada 3 s; 2.000/mes entre todos. Escaneos manuales: 1 cada 10 min, máximo 5/día."
+        ? "\n\nAdministración privada:\n/analizar CODIGO\n/estado\n/sesionestado\n/escanear\n/pausar\n/reanudar\n/recuperar\n\nLímites: 1 comando cada 3 s; 2.000/mes entre todos. Escaneos manuales: 1 cada 10 min, máximo 5/día."
         : "")
     );
   if (command === "detalle") {
@@ -310,6 +364,33 @@ async function execute(
   const cfg = await get(configKey);
   if (!cfg?.monitor) return "Configuración no disponible.";
   const monitor = cfg.monitor as MonitorConfig;
+  if (command === "analizar") {
+    if (!/^[A-Za-z0-9]{4,32}$/.test(argument))
+      return "Uso: /analizar CODIGO (usa el código de subasta mostrado por Prestamype).";
+    let cursor: Record<string, unknown> | undefined;
+    for (let page = 0; page < 10; page += 1) {
+      const result = await db.send(new QueryCommand({
+        TableName: required("TABLE_NAME"),
+        IndexName: "EntityTypeIndex",
+        KeyConditionExpression: "GSI1PK = :type",
+        FilterExpression: "opportunity.auctionCode = :code",
+        ExpressionAttributeValues: { ":type": "OPPORTUNITY", ":code": argument },
+        ProjectionExpression: "opportunity,evaluation,alerted,detailCheckedAt",
+        ExclusiveStartKey: cursor,
+        Limit: 100,
+      }));
+      const found = result.Items?.find((item) => item.opportunity && item.evaluation);
+      if (found)
+        return formatOpportunityAnalysis(found as {
+          opportunity: Opportunity;
+          evaluation: Evaluation;
+          alerted?: boolean;
+        }, monitor);
+      cursor = result.LastEvaluatedKey;
+      if (!cursor) break;
+    }
+    return "No encontré ese código entre las oportunidades guardadas. Revisa mayúsculas y minúsculas.";
+  }
   if (command === "criterios")
     return `Monedas: ${monitor.allowedCurrencies.join(", ")}\nRiesgos: ${monitor.allowedRisks.join(", ")}\nRetorno mínimo evaluado: ${monitor.minimumAnnualReturnPct}% anual\nREVISAR desde ${monitor.reviewScore}; INVERTIR desde ${monitor.highPriorityScore}.\nEl score es una regla del monitor, no una probabilidad de cobro. No se realizan inversiones.`;
   if (command === "oportunidades") {
