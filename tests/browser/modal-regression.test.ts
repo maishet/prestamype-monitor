@@ -15,3 +15,33 @@ it.each(["stacked", "sequential"])("closes %s campaigns without following a diff
     expect(await page.locator(".generic-modal-overlay").count()).toBe(0);
   } finally { await browser.close(); }
 }, 20000);
+
+it("tries the icon when clicking its wrapper succeeds without closing", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<div class="generic-modal-overlay" style="position:fixed;inset:0">
+      <button style="position:absolute;left:100px;top:100px;width:200px;height:80px">
+        <i class="icon-close" style="position:absolute;left:0;top:0" onclick="document.querySelector('.generic-modal-overlay').remove()">X</i>
+      </button></div>`);
+    const client = new PrestamypeClient({ storageState: {} });
+    const dismiss = client as unknown as { dismissOverlay(page: PageLike, deadline: number): Promise<void> };
+    await dismiss.dismissOverlay(page as unknown as PageLike, Date.now() + 15000);
+    expect(await page.locator(".generic-modal-overlay").count()).toBe(0);
+  } finally { await browser.close(); }
+}, 20000);
+
+it("clicks the campaign backdrop instead of a nested inert dialog", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<div class="generic-modal-overlay" style="position:fixed;inset:0" onclick="if(event.target===this)this.remove()">
+      <div role="dialog" aria-modal="true" style="position:absolute;inset:80px;background:white">
+        <button><i class="icon-close">X</i></button>
+      </div></div>`);
+    const client = new PrestamypeClient({ storageState: {} });
+    const dismiss = client as unknown as { dismissOverlay(page: PageLike, deadline: number): Promise<void> };
+    await dismiss.dismissOverlay(page as unknown as PageLike, Date.now() + 15000);
+    expect(await page.locator(".generic-modal-overlay").count()).toBe(0);
+  } finally { await browser.close(); }
+}, 20000);

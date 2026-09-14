@@ -76,6 +76,12 @@ const PROHIBITED_ACTION =
 const LETTER_RISKS: readonly RiskGrade[] = ["A+", "A", "B", "C", "D", "E"];
 const ACTIVE_PORTFOLIO_STATES = /por cobrar|en proceso/iu;
 const MAX_PAGES = 5;
+/**
+ * Opening a row may require the main panel plus two independently loaded tabs.
+ * Keep enough of the scan deadline for that unit of work or return the details
+ * already completed; the next scheduled scan will pick up the deferred rows.
+ */
+const MAX_DETAIL_START_RESERVE_MS = 30_000;
 /** How long the browser gets to shut itself down before it is killed. */
 const CLEANUP_BUDGET_MS = 3_000;
 /** Chromium under @sparticuz ships as either of these. */
@@ -450,6 +456,7 @@ export class PrestamypeClient implements OpportunitySource {
     const results: Opportunity[] = [];
     let scanned = 0;
     let skippedUnchanged = 0;
+    let deferredForBudget = 0;
     let exhausted = false;
 
     for (
@@ -478,6 +485,11 @@ export class PrestamypeClient implements OpportunitySource {
           skippedUnchanged += 1;
           continue;
         }
+        if (!this.hasDetailBudget(deadline)) {
+          deferredForBudget += 1;
+          exhausted = true;
+          break;
+        }
         results.push(
           await this.openAndParseDetail(page, row, index, id, deadline),
         );
@@ -490,11 +502,20 @@ export class PrestamypeClient implements OpportunitySource {
       JSON.stringify({
         scanned,
         skippedUnchanged,
+        deferredForBudget,
         detailed: results.length,
         floor,
       }),
     );
     return results;
+  }
+
+  private hasDetailBudget(deadline: number): boolean {
+    const reserve = Math.min(
+      MAX_DETAIL_START_RESERVE_MS,
+      Math.max(5_000, Math.floor(this.deadlineMs / 3)),
+    );
+    return deadline - this.now() >= reserve;
   }
 
   private isUnchanged(
@@ -586,6 +607,7 @@ export class PrestamypeClient implements OpportunitySource {
     locator: LocatorLike,
     purpose: string,
     deadline: number,
+    force = false,
   ): Promise<void> {
     this.ensureDeadline(deadline);
     if (purpose !== "overlay.close" && this.page !== null) {
@@ -597,25 +619,40 @@ export class PrestamypeClient implements OpportunitySource {
       throw new PageStructureError("MISSING_FIELD", `interaction.${purpose}`);
     const label = await this.withDeadline(locator.textContent(), deadline);
     assertAllowedInteraction({ kind: "click", name: label ?? "" });
-    await this.withDeadline(locator.click(), deadline);
+    await this.withDeadline(locator.click(force ? { force: true } : undefined), deadline);
   }
 
   private async dismissOverlay(
     page: PageLike,
     deadline: number,
   ): Promise<void> {
-    const visibleSelector =
-      ':is(.generic-modal-overlay, [role="dialog"][aria-modal="true"], dialog[open]):visible';
+    const overlaySelectors = [
+      ".generic-modal-overlay:visible",
+      '[role="dialog"][aria-modal="true"]:visible',
+      "dialog[open]:visible",
+    ] as const;
+    const visibleSelector = `:is(${overlaySelectors.join(", ")})`;
     for (let dismissed = 0; dismissed < 4; dismissed += 1) {
-      let selector = visibleSelector;
-      let modal = page.locator(selector).first?.() ?? page.locator(selector);
-      if (!(await this.withDeadline(modal.isVisible(), deadline))) return;
-      const candidates = page.locator(visibleSelector);
-      if (candidates.count !== undefined && candidates.nth !== undefined) {
-        const count = await this.withDeadline(candidates.count(), deadline);
-        if (count === 0) return;
-        modal = candidates.nth(count - 1);
+      let selector = "";
+      let modal: LocatorLike | null = null;
+      // A campaign may contain an aria-modal dialog inside its full-screen
+      // overlay. The outer node owns the backdrop close handler; selecting the
+      // last match from a union sometimes chose the inert inner dialog.
+      for (const candidateSelector of overlaySelectors) {
+        const candidates = page.locator(candidateSelector);
+        let candidate = candidates.first?.() ?? candidates;
+        if (candidates.count !== undefined && candidates.nth !== undefined) {
+          const count = await this.withDeadline(candidates.count(), deadline);
+          if (count === 0) continue;
+          candidate = candidates.nth(count - 1);
+        }
+        if (!(await this.withDeadline(candidate.isVisible(), deadline)))
+          continue;
+        selector = candidateSelector;
+        modal = candidate;
+        break;
       }
+      if (modal === null) return;
       if (modal.evaluate !== undefined) {
         const identity = String(++this.overlaySequence);
         await this.withDeadline(modal.evaluate((element, value) => {
@@ -681,9 +718,11 @@ export class PrestamypeClient implements OpportunitySource {
           try {
             await this.withDeadline(close.click({ force: true }), deadline);
           } catch {
-            // Some markup has no button wrapper around the icon. Force the
-            // icon itself as the final semantic close attempt; unlike a normal
-            // click this bypasses the overlay hit-test interception.
+            // A missing wrapper is handled by the icon fallback below.
+          }
+          // A successful click is not proof of dismissal. Some campaigns bind
+          // their handler to the icon only, leaving its wrapper inert.
+          if (await this.withDeadline(modal.isVisible(), deadline)) {
             try {
               await this.withDeadline(icon.click({ force: true }), deadline);
             } catch {
@@ -788,7 +827,7 @@ export class PrestamypeClient implements OpportunitySource {
     const current =
       (await this.withDeadline(trigger.textContent(), deadline)) ?? "";
     if (/retorno\s+mayor/iu.test(current)) return;
-    await this.safeClick(trigger, "sort.open", deadline);
+    await this.safeClick(trigger, "sort.open", deadline, true);
     const option = page.locator(
       ".multi-select-dropdown .multi-select-option:has-text('Retorno mayor')",
     );
@@ -796,7 +835,7 @@ export class PrestamypeClient implements OpportunitySource {
       console.warn("Sort option 'Retorno mayor' not found");
       return;
     }
-    await this.safeClick(option, "sort.select", deadline);
+    await this.safeClick(option, "sort.select", deadline, true);
   }
 
   private async openRowPanel(

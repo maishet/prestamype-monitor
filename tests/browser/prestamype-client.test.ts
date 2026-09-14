@@ -73,7 +73,9 @@ function createFakePage(options: FakePageOptions = {}) {
       async isVisible() {
         if (
           selector.includes("generic-modal-overlay") ||
-          selector.includes("slider-modal--first-investment")
+          selector.includes("slider-modal--first-investment") ||
+          selector.includes('[role="dialog"]') ||
+          selector.includes("dialog[open]")
         )
           return false;
         if (selector.includes("captcha")) return false;
@@ -380,6 +382,29 @@ describe("PrestamypeClient scan", () => {
     expect(first.debtor.taxId).toBe("20123456789");
   });
 
+  it("returns completed details before the remaining scan budget becomes unsafe", async () => {
+    let clock = 0;
+    let closedPanels = 0;
+    const page = createFakePage({
+      onClick: (selector) => {
+        if (!selector.includes("icon-close")) return;
+        closedPanels += 1;
+        if (closedPanels === 1) clock = 41_000;
+      },
+    });
+    const client = createClient(page.page, {
+      now: () => clock,
+      deadlineMs: 60_000,
+    });
+    client.beginScan();
+
+    const opportunities = await client.listEligibleOpportunities(config, {});
+    await client.close();
+
+    expect(opportunities).toHaveLength(1);
+    expect(closedPanels).toBe(1);
+  });
+
   it("stops walking once returns drop below the configured floor", async () => {
     const client = createClient(fake.page);
     client.beginScan();
@@ -621,6 +646,36 @@ describe("PrestamypeClient failure handling", () => {
     await client.close();
     const sortCalls = order.filter((entry) => entry.includes("select-sort"));
     expect(sortCalls[0]).toMatch(/^isVisible:/u);
+  });
+
+  it("forces the safe sort controls after overlays have been dismissed", async () => {
+    const fake = createFakePage();
+    const original = fake.page.locator;
+    fake.page.locator = (selector: string) => {
+      const inner = original(selector);
+      if (
+        !selector.includes("select-sort") &&
+        !selector.includes("multi-select-option")
+      )
+        return inner;
+      return {
+        ...inner,
+        textContent: async () =>
+          selector.includes("select-sort")
+            ? "Ordenar por: Recomendado"
+            : "Retorno mayor",
+        click: async (options) => {
+          if (options?.force !== true) throw new Error("element is not stable");
+          await inner.click(options);
+        },
+      };
+    };
+    const client = createClient(fake.page);
+    client.beginScan();
+    await expect(
+      client.listEligibleOpportunities(config, {}),
+    ).resolves.toBeDefined();
+    await client.close();
   });
 
   it("does not hang when the table never stops loading", async () => {

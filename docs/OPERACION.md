@@ -80,6 +80,22 @@ Errores `PageStructureError` indican que cambió el DOM o faltan datos en la pá
 
 ### Modales consecutivos y superpuestos
 
+El cierre también verifica si el botón tuvo efecto antes de descartar el icono como alternativa. Un clic sin excepción puede no activar el manejador del icono; la regresión de Chromium incluye un botón contenedor sin acción y un icono que sí cierra el modal.
+
 El cierre selecciona la última capa visible y fija su identidad DOM antes de actuar. La espera comprueba ese mismo elemento: un selector dinámico de «primer modal visible» puede saltar al segundo y producir un falso `overlay.did-not-close`. Las pantallas de autenticación y consentimiento siguen requiriendo intervención.
 
-Regresión local con Chromium: `npm exec vitest -- run tests/browser/modal-regression.test.ts`. Cubre dos campañas superpuestas y dos consecutivas. Tras desplegar, comprobar varios ciclos automáticos completos; una invocación `START` aislada no acredita un escaneo. Si hay pausa manual, los ciclos pueden terminar sin abrir el navegador.
+El contenedor exterior `.generic-modal-overlay` tiene prioridad sobre cualquier
+`role="dialog"` anidado: el exterior es el que recibe el clic de fondo. La
+regresión también cubre un diálogo interior inerte.
+
+Después de los modales, el selector seguro «Ordenar por» y su opción usan clic
+forzado porque Vue puede mantener el control visible pero inestable mientras
+termina de desmontar la campaña. Esto no se aplica a filas ni a controles de
+inversión.
+
+Un ciclo no inicia otro panel de detalle si quedan menos de 30 segundos de su
+presupuesto. Devuelve y persiste lo ya procesado; las filas diferidas quedan
+para la siguiente ejecución automática, evitando perder todo el ciclo por
+`ScanDeadlineError`.
+
+Regresión local con Chromium: `npm exec vitest -- run tests/browser/modal-regression.test.ts`. Cubre campañas superpuestas, consecutivas, botón contenedor inerte y diálogo anidado. Tras desplegar, comprobar varios ciclos automáticos completos; una invocación `START` aislada no acredita un escaneo. Si hay pausa manual, los ciclos pueden terminar sin abrir el navegador.
