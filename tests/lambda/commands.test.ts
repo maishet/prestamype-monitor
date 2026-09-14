@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createCommandHandler,
+  isOpportunityOpenInLima,
   type CommandDependencies,
 } from "../../src/lambda/commands.js";
 
@@ -107,5 +108,25 @@ describe("Telegram commands authorization", () => {
     const response = await call("/invertir", 1524876607, 1524876607, "private");
     expect(deps.execute).not.toHaveBeenCalled();
     expect(response.body).toContain("ayuda");
+  });
+});
+
+describe("opportunity closing date", () => {
+  it("keeps an opportunity visible through its closing day in Lima", () => {
+    expect(
+      isOpportunityOpenInLima(
+        "2026-09-14",
+        new Date("2026-09-15T04:59:59.000Z"),
+      ),
+    ).toBe(true);
+  });
+
+  it("expires it when the next calendar day begins in Lima", () => {
+    expect(
+      isOpportunityOpenInLima(
+        "2026-09-14",
+        new Date("2026-09-15T05:00:00.000Z"),
+      ),
+    ).toBe(false);
   });
 });

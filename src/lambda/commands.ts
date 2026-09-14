@@ -260,6 +260,21 @@ function brief(item: {
   const o = item.opportunity;
   return `${o.commercialName}\nID: ${o.id}\n${o.currency} ${(o.totalAmountCents / 100).toFixed(2)} · ${o.annualReturnPct}% anual · Riesgo ${o.risk}\nScore ${item.evaluation.score}/100 · ${item.evaluation.decision}\nDatos: ${item.detailCheckedAt ?? "fecha desconocida"}`;
 }
+
+export function isOpportunityOpenInLima(
+  closesAt: string,
+  now = new Date(),
+): boolean {
+  const closeDate = closesAt.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(closeDate)) return false;
+  const limaDate = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Lima",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+  return closeDate >= limaDate;
+}
 async function execute(
   command: string,
   argument: string,
@@ -315,7 +330,7 @@ async function execute(
           item.evaluation &&
           ["INVEST", "REVIEW"].includes(item.evaluation.decision) &&
           item.opportunity.remainingAmountCents > 0 &&
-          Date.parse(item.opportunity.closesAt) > Date.now(),
+          isOpportunityOpenInLima(item.opportunity.closesAt),
       )
       .sort((a, b) => b.evaluation.score - a.evaluation.score)
       .slice(0, 5);
