@@ -382,6 +382,46 @@ describe("PrestamypeClient scan", () => {
     expect(first.debtor.taxId).toBe("20123456789");
   });
 
+  it("stops after Invertir when the detail policy rejects further enrichment", async () => {
+    const client = createClient(fake.page);
+    client.beginScan();
+    const opportunities = await client.listEligibleOpportunities(config, {}, {
+      needsDebtor: () => false,
+      needsSupplier: () => false,
+    });
+    await client.close();
+
+    expect(opportunities.length).toBeGreaterThan(0);
+    expect(fake.clicks.some((selector) => selector.includes("Deudor"))).toBe(
+      false,
+    );
+    expect(fake.clicks.some((selector) => selector.includes("Proveedor"))).toBe(
+      false,
+    );
+    expect(opportunities.every((item) => item.debtorHistory === null)).toBe(
+      true,
+    );
+  });
+
+  it("loads Deudor but skips Proveedor when its maximum cannot change the decision", async () => {
+    const client = createClient(fake.page);
+    client.beginScan();
+    const opportunities = await client.listEligibleOpportunities(config, {}, {
+      needsDebtor: () => true,
+      needsSupplier: () => false,
+    });
+    await client.close();
+
+    expect(fake.clicks.some((selector) => selector.includes("Deudor"))).toBe(
+      true,
+    );
+    expect(fake.clicks.some((selector) => selector.includes("Proveedor"))).toBe(
+      false,
+    );
+    expect(opportunities[0]?.debtorHistory).not.toBeNull();
+    expect(opportunities[0]?.supplierHistory).toBeNull();
+  });
+
   it("returns completed details before the remaining scan budget becomes unsafe", async () => {
     let clock = 0;
     let closedPanels = 0;

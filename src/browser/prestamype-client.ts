@@ -3,7 +3,10 @@ import { readFileSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
-import type { OpportunitySource } from "../application/ports.js";
+import type {
+  OpportunityDetailPolicy,
+  OpportunitySource,
+} from "../application/ports.js";
 import type {
   CollectionConflict,
   MonitorConfig,
@@ -433,11 +436,17 @@ export class PrestamypeClient implements OpportunitySource {
   async listEligibleOpportunities(
     config: MonitorConfig,
     knownFingerprints: Readonly<Record<string, OpportunityFingerprintRecord>>,
+    detailPolicy?: OpportunityDetailPolicy,
   ): Promise<Opportunity[]> {
     const deadline = this.currentScanDeadline();
     const release = await this.acquireOperation(deadline);
     try {
-      return await this.scanOpportunities(config, knownFingerprints, deadline);
+      return await this.scanOpportunities(
+        config,
+        knownFingerprints,
+        deadline,
+        detailPolicy,
+      );
     } catch (error) {
       this.closeOnDeadline(error);
       throw error;
@@ -450,6 +459,7 @@ export class PrestamypeClient implements OpportunitySource {
     config: MonitorConfig,
     knownFingerprints: Readonly<Record<string, OpportunityFingerprintRecord>>,
     deadline: number,
+    detailPolicy?: OpportunityDetailPolicy,
   ): Promise<Opportunity[]> {
     const page = await this.getPage(deadline);
     await this.navigate(page, OPPORTUNITIES_PATH, deadline);
@@ -466,6 +476,7 @@ export class PrestamypeClient implements OpportunitySource {
     let scanned = 0;
     let skippedUnchanged = 0;
     let deferredForBudget = 0;
+    const detailCounts = { investTabs: 0, debtorTabs: 0, supplierTabs: 0 };
     let exhausted = false;
 
     for (
@@ -500,7 +511,15 @@ export class PrestamypeClient implements OpportunitySource {
           break;
         }
         results.push(
-          await this.openAndParseDetail(page, row, index, id, deadline),
+          await this.openAndParseDetail(
+            page,
+            row,
+            index,
+            id,
+            deadline,
+            detailCounts,
+            detailPolicy,
+          ),
         );
       }
       if (!exhausted && !(await this.goToNextPage(page, html, deadline))) break;
@@ -513,6 +532,7 @@ export class PrestamypeClient implements OpportunitySource {
         skippedUnchanged,
         deferredForBudget,
         detailed: results.length,
+        ...detailCounts,
         floor,
       }),
     );
@@ -556,33 +576,65 @@ export class PrestamypeClient implements OpportunitySource {
     index: number,
     id: string,
     deadline: number,
+    detailCounts: {
+      investTabs: number;
+      debtorTabs: number;
+      supplierTabs: number;
+    },
+    detailPolicy?: OpportunityDetailPolicy,
   ): Promise<Opportunity> {
     await this.openRowPanel(page, index, deadline);
-    await this.assertAuthenticated(page, deadline);
-    const panel = parseOpportunityPanel(
-      await this.withDeadline(page.content(), deadline),
-    );
-    if (panel.availableBalanceCents !== null)
-      this.observedBalanceCents = panel.availableBalanceCents;
-
-    const debtor = await this.readPartyTab(page, "Deudor", deadline);
-    const supplier = await this.readPartyTab(page, "Proveedor", deadline);
-    await this.closePanel(page, deadline);
-
-    if (
-      debtor.history?.averageDelayDays !== undefined &&
-      debtor.history?.averageDelayDays !== null &&
-      debtor.history.averageDelayDays > 365
-    )
-      console.warn(
-        "Implausible average delay",
-        JSON.stringify({
-          auctionCode: panel.auctionCode,
-          averageDelayDays: debtor.history.averageDelayDays,
-        }),
+    try {
+      await this.assertAuthenticated(page, deadline);
+      const panel = parseOpportunityPanel(
+        await this.withDeadline(page.content(), deadline),
       );
+      detailCounts.investTabs += 1;
+      if (panel.availableBalanceCents !== null)
+        this.observedBalanceCents = panel.availableBalanceCents;
 
-    return toOpportunity(id, row, panel, debtor, supplier);
+      const unavailable = { history: null, profile: null };
+      let opportunity = toOpportunity(
+        id,
+        row,
+        panel,
+        unavailable,
+        unavailable,
+      );
+      if (
+        detailPolicy !== undefined &&
+        !detailPolicy.needsDebtor(opportunity)
+      )
+        return opportunity;
+
+      const debtor = await this.readPartyTab(page, "Deudor", deadline);
+      detailCounts.debtorTabs += 1;
+      opportunity = toOpportunity(id, row, panel, debtor, unavailable);
+      if (
+        detailPolicy !== undefined &&
+        !detailPolicy.needsSupplier(opportunity)
+      )
+        return opportunity;
+
+      const supplier = await this.readPartyTab(page, "Proveedor", deadline);
+      detailCounts.supplierTabs += 1;
+      if (
+        debtor.history?.averageDelayDays !== undefined &&
+        debtor.history?.averageDelayDays !== null &&
+        debtor.history.averageDelayDays > 365
+      )
+        console.warn(
+          "Implausible average delay",
+          JSON.stringify({
+            auctionCode: panel.auctionCode,
+            averageDelayDays: debtor.history.averageDelayDays,
+          }),
+        );
+
+      return toOpportunity(id, row, panel, debtor, supplier);
+    } finally {
+      await this.closePanel(page, deadline);
+    }
   }
 
   private async readPartyTab(

@@ -6,6 +6,7 @@ import type {
   Evaluation,
   MonitorConfig,
   Opportunity,
+  PaymentHistory,
   PortfolioSnapshot,
 } from "./types.js";
 
@@ -14,6 +15,52 @@ export interface EvaluateOpportunityInput {
   readonly portfolio: PortfolioSnapshot;
   readonly blacklistEntries: readonly BlacklistEntry[];
   readonly config?: MonitorConfig;
+}
+
+export interface UnknownOpportunityDetails {
+  readonly debtorHistory: boolean;
+  readonly supplierHistory: boolean;
+}
+
+const MAXIMUM_HISTORY: PaymentHistory = {
+  totalAuctions: 100,
+  paidOnTime: 100,
+  paidLate: 0,
+  currentOnTime: 0,
+  overdue: 0,
+  averageDelayDays: 0,
+  delinquencyPct: 0,
+  historicalAmountCents: 10_000_000,
+};
+
+/**
+ * Whether information that has not been read yet could still lift this
+ * opportunity to REVIEW. Unknown inputs are replaced with finite maxima and
+ * concentration receives its maximum five points, so false negatives are not
+ * introduced by progressive loading.
+ */
+export function canReachReview(
+  input: EvaluateOpportunityInput,
+  unknown: UnknownOpportunityDetails,
+): boolean {
+  const opportunity: Opportunity = {
+    ...input.opportunity,
+    debtorHistory: unknown.debtorHistory
+      ? MAXIMUM_HISTORY
+      : input.opportunity.debtorHistory,
+    supplierHistory: unknown.supplierHistory
+      ? MAXIMUM_HISTORY
+      : input.opportunity.supplierHistory,
+  };
+  const evaluation = evaluateOpportunity({ ...input, opportunity });
+  if (
+    evaluation.decision === "DO_NOT_INVEST" ||
+    evaluation.components.return === undefined
+  )
+    return false;
+  const concentration = evaluation.components.concentration ?? 0;
+  const upperBound = evaluation.score - concentration + 5;
+  return upperBound >= (input.config ?? DEFAULT_CONFIG).reviewScore;
 }
 
 export function evaluateOpportunity({

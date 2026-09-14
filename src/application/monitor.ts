@@ -1,4 +1,7 @@
-import { evaluateOpportunity } from "../domain/evaluate.js";
+import {
+  canReachReview,
+  evaluateOpportunity,
+} from "../domain/evaluate.js";
 import type {
   BlacklistEntry,
   Evaluation,
@@ -140,6 +143,28 @@ export async function runMonitor(
     const candidates = await source.listEligibleOpportunities(
       dependencies.config,
       fingerprints,
+      {
+        needsDebtor: (opportunity) =>
+          canReachReview(
+            {
+              opportunity,
+              portfolio,
+              blacklistEntries,
+              config: dependencies.config,
+            },
+            { debtorHistory: true, supplierHistory: true },
+          ),
+        needsSupplier: (opportunity) =>
+          canReachReview(
+            {
+              opportunity,
+              portfolio,
+              blacklistEntries,
+              config: dependencies.config,
+            },
+            { debtorHistory: false, supplierHistory: true },
+          ),
+      },
     );
     const observedBalance = source.availableBalanceCents?.() ?? null;
     const effectivePortfolio: PortfolioSnapshot =

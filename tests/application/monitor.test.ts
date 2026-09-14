@@ -13,6 +13,7 @@ import {
 import { PageStructureError } from "../../src/browser/errors.js";
 import type {
   MonitorRepository,
+  OpportunityDetailPolicy,
   OpportunitySource,
 } from "../../src/application/ports.js";
 
@@ -140,6 +141,75 @@ function setup(
 }
 
 describe("runMonitor", () => {
+  it("passes a conservative progressive detail policy to the source", async () => {
+    const context = setup();
+    context.dependencies.config = {
+      ...DEFAULT_CONFIG,
+      reviewScore: 71,
+      highPriorityScore: 85,
+    };
+    await runMonitor(context.dependencies, {
+      owner: "run",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+
+    const policy = vi.mocked(context.source.listEligibleOpportunities).mock
+      .calls[0]?.[2] as OpportunityDetailPolicy | undefined;
+    expect(policy).toBeDefined();
+    expect(policy!.needsDebtor(opportunity)).toBe(true);
+
+    const weakHistory = {
+      totalAuctions: 0,
+      paidOnTime: 0,
+      paidLate: 0,
+      currentOnTime: 0,
+      overdue: 0,
+      averageDelayDays: 30,
+      delinquencyPct: 100,
+      historicalAmountCents: 0,
+    };
+    expect(
+      policy!.needsSupplier({ ...opportunity, debtorHistory: weakHistory }),
+    ).toBe(false);
+    expect(
+      policy!.needsSupplier({
+        ...opportunity,
+        debtorHistory: {
+          ...weakHistory,
+          totalAuctions: 100,
+          paidOnTime: 100,
+          averageDelayDays: 0,
+          delinquencyPct: 0,
+          historicalAmountCents: 10_000_000,
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not request histories for a visible blacklist match", async () => {
+    const context = setup();
+    vi.mocked(context.repository.getBlacklist).mockResolvedValue([
+      {
+        taxId: null,
+        normalizedName: "PAGADOR SAC",
+        reason: "Cobranza",
+        source: "manual",
+        createdAt: "2026-09-14T00:00:00.000Z",
+      },
+    ]);
+    await runMonitor(context.dependencies, {
+      owner: "run",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+
+    const policy = vi.mocked(context.source.listEligibleOpportunities).mock
+      .calls[0]?.[2] as OpportunityDetailPolicy | undefined;
+    expect(policy).toBeDefined();
+    expect(policy!.needsDebtor(opportunity)).toBe(false);
+  });
+
   it("keeps one key for an auction no matter what changes about it", () => {
     const base = alertIdentityKeys(opportunity)[0];
     // An open auction moves on its own: every investor changes the funded and

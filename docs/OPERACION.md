@@ -103,4 +103,25 @@ presupuesto. Devuelve y persiste lo ya procesado; las filas diferidas quedan
 para la siguiente ejecución automática, evitando perder todo el ciclo por
 `ScanDeadlineError`.
 
+### Evaluación progresiva
+
+La tabla descarta primero riesgo, moneda y retorno. Una oportunidad con una
+alerta registrada nunca vuelve a abrirse, aunque cambie su monto o avance; una
+oportunidad nunca alertada solo se reabre si cambian sus valores visibles.
+
+Para candidatos restantes, el navegador abre primero `Invertir`. Solo abre
+`Deudor` si los historiales desconocidos todavía podrían elevar el score hasta
+`REVIEW`, y solo abre `Proveedor` si después de leer Deudor aún podría cambiar
+la decisión. Los límites usan máximos conservadores para no descartar una
+oportunidad potencialmente alertable.
+
+El evento `Opportunities scanned` publica:
+
+- `investTabs`: paneles cuya pestaña Invertir fue analizada.
+- `debtorTabs`: pestañas Deudor realmente consultadas.
+- `supplierTabs`: pestañas Proveedor realmente consultadas.
+- `detailed`: oportunidades devueltas para evaluación; no equivale a alertas.
+
+`alertsSent` continúa siendo el único contador de mensajes enviados.
+
 Regresión local con Chromium: `npm exec vitest -- run tests/browser/modal-regression.test.ts`. Cubre campañas superpuestas, consecutivas, botón contenedor inerte y diálogo anidado. Tras desplegar, comprobar varios ciclos automáticos completos; una invocación `START` aislada no acredita un escaneo. Si hay pausa manual, los ciclos pueden terminar sin abrir el navegador.

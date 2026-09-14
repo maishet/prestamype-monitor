@@ -16,8 +16,14 @@ export interface OpportunitySource {
   listEligibleOpportunities(
     config: MonitorConfig,
     knownFingerprints: Readonly<Record<string, OpportunityFingerprintRecord>>,
+    detailPolicy?: OpportunityDetailPolicy,
   ): Promise<Opportunity[]>;
   close(): Promise<void>;
+}
+
+export interface OpportunityDetailPolicy {
+  needsDebtor(opportunity: Opportunity): boolean;
+  needsSupplier(opportunity: Opportunity): boolean;
 }
 
 export interface MonitorRepository {

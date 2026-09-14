@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_CONFIG } from "../../src/config/defaults.js";
-import { evaluateOpportunity } from "../../src/domain/evaluate.js";
+import {
+  canReachReview,
+  evaluateOpportunity,
+} from "../../src/domain/evaluate.js";
 import type {
   BlacklistEntry,
   Opportunity,
@@ -265,5 +268,93 @@ describe("evaluateOpportunity", () => {
       score: 0,
       components: {},
     });
+  });
+});
+
+describe("canReachReview", () => {
+  it("keeps a candidate whose unknown histories can still reach REVIEW", () => {
+    expect(
+      canReachReview(
+        {
+          opportunity: {
+            ...opportunity,
+            debtorHistory: null,
+            supplierHistory: null,
+          },
+          portfolio,
+          blacklistEntries: [],
+          config: DEFAULT_CONFIG,
+        },
+        { debtorHistory: true, supplierHistory: true },
+      ),
+    ).toBe(true);
+  });
+
+  it("stops when even the maximum unknown histories cannot reach REVIEW", () => {
+    const weakHistory: PaymentHistory = {
+      ...history,
+      totalAuctions: 0,
+      paidOnTime: 0,
+      averageDelayDays: 30,
+      delinquencyPct: 100,
+      historicalAmountCents: 0,
+    };
+    expect(
+      canReachReview(
+        {
+          opportunity: {
+            ...opportunity,
+            risk: "C",
+            annualReturnPct: 15,
+            closesAt: null,
+            dueAt: null,
+            debtorHistory: weakHistory,
+            supplierHistory: null,
+          },
+          portfolio: { ...portfolio, availableBalanceCents: null },
+          blacklistEntries: [],
+          config: DEFAULT_CONFIG,
+        },
+        { debtorHistory: false, supplierHistory: true },
+      ),
+    ).toBe(false);
+  });
+
+  it("does not load histories for a deterministically filtered candidate", () => {
+    expect(
+      canReachReview(
+        {
+          opportunity: {
+            ...opportunity,
+            remainingAmountCents: 1,
+            debtorHistory: null,
+            supplierHistory: null,
+          },
+          portfolio,
+          blacklistEntries: [],
+          config: DEFAULT_CONFIG,
+        },
+        { debtorHistory: true, supplierHistory: true },
+      ),
+    ).toBe(false);
+  });
+
+  it("does not load histories after a blacklist match visible in Invertir", () => {
+    expect(
+      canReachReview(
+        {
+          opportunity: {
+            ...opportunity,
+            debtor: { legalName: "Corporación Leribe S.A.C.", taxId: null },
+            debtorHistory: null,
+            supplierHistory: null,
+          },
+          portfolio,
+          blacklistEntries: [leribe],
+          config: DEFAULT_CONFIG,
+        },
+        { debtorHistory: true, supplierHistory: true },
+      ),
+    ).toBe(false);
   });
 });
