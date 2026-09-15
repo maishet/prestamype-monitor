@@ -250,6 +250,28 @@ describe("runMonitor", () => {
     );
   });
 
+  it("marks an unalerted opportunity with missing histories for a retry", async () => {
+    const context = setup({
+      evaluation: {
+        decision: "IGNORE",
+        score: 40,
+        components: {},
+        reasons: ["below threshold"],
+        warnings: ["Debtor history is unavailable"],
+      },
+    });
+    await runMonitor(context.dependencies, {
+      owner: "run",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+    expect(context.repository.saveOpportunity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ alerted: false, detailIncomplete: true }),
+    );
+  });
+
   it("records an alert it did not send because the key was already taken", async () => {
     const context = setup();
     vi.mocked(context.repository.claimAlert).mockResolvedValue(false);

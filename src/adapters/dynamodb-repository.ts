@@ -466,7 +466,7 @@ export class DynamoRepository implements MonitorRepository, SessionStore {
             KeyConditionExpression: "GSI1PK = :opportunity",
             ExpressionAttributeValues: { ":opportunity": "OPPORTUNITY" },
             ProjectionExpression:
-              "id, visibleFingerprint, detailCheckedAt, alerted",
+              "id, visibleFingerprint, detailCheckedAt, alerted, detailIncomplete, opportunity.debtorHistory, opportunity.supplierHistory",
             ...(exclusiveStartKey === undefined
               ? {}
               : { ExclusiveStartKey: exclusiveStartKey }),
@@ -478,13 +478,21 @@ export class DynamoRepository implements MonitorRepository, SessionStore {
             typeof item.visibleFingerprint === "string" &&
             typeof item.detailCheckedAt === "string"
           ) {
-            fingerprints[item.id] = {
+            const fingerprint: OpportunityFingerprintRecord = {
               visibleFingerprint: item.visibleFingerprint,
               detailCheckedAt: item.detailCheckedAt,
               // Absent on every record written before this field existed, which
               // reads as "not alerted" and simply costs one more detail read.
               alerted: item.alerted === true,
             };
+            const storedOpportunity = record(item.opportunity);
+            if (
+              item.detailIncomplete === true ||
+              storedOpportunity?.debtorHistory === null ||
+              storedOpportunity?.supplierHistory === null
+            )
+              fingerprint.detailIncomplete = true;
+            fingerprints[item.id] = fingerprint;
           }
         }
         exclusiveStartKey = record(record(result)?.LastEvaluatedKey);
@@ -518,6 +526,7 @@ export class DynamoRepository implements MonitorRepository, SessionStore {
         visibleFingerprint: metadata.visibleFingerprint,
         detailCheckedAt: metadata.detailCheckedAt,
         alerted: metadata.alerted === true,
+        detailIncomplete: metadata.detailIncomplete === true,
       };
       assertDynamoSerializable(item);
       assertFinalItemKeys(item);

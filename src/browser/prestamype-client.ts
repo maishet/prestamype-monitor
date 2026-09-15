@@ -489,6 +489,7 @@ export class PrestamypeClient implements OpportunitySource {
         parseOpportunityRows(html),
         deadline,
       );
+      const candidates: Array<{ index: number; row: OpportunityRow; id: string }> = [];
       for (const [index, row] of rows.entries()) {
         scanned += 1;
         // Shadow-rendered return badges can be absent from light DOM. Keep
@@ -514,6 +515,13 @@ export class PrestamypeClient implements OpportunitySource {
           skippedUnchanged += 1;
           continue;
         }
+        candidates.push({ index, row, id });
+      }
+      candidates.sort((a, b) =>
+        Number(knownFingerprints[b.id]?.detailIncomplete === true) -
+        Number(knownFingerprints[a.id]?.detailIncomplete === true),
+      );
+      for (const { index, row, id } of candidates) {
         if (!this.hasDetailBudget(deadline)) {
           deferredForBudget += 1;
           exhausted = true;
@@ -619,6 +627,10 @@ export class PrestamypeClient implements OpportunitySource {
     // however much its funding moves afterwards: a second message is impossible
     // by construction, so its panel never needs opening again.
     if (known.alerted === true) return true;
+    // A row whose optional detail tabs were not loaded is never final, even
+    // when its visible table fingerprint is unchanged. Revisit it next cycle
+    // so missing history can be filled without requiring a manual scan.
+    if (known.detailIncomplete === true) return false;
     // Otherwise the table settles it. It carries the risk, the return, the
     // amount and the funded share, so whatever could change a verdict shows up
     // here, and a row that hashes the same is the row already held.

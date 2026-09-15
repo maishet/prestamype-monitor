@@ -193,6 +193,10 @@ export async function runMonitor(
           visibleFingerprint: opportunityFingerprint(opportunity),
           detailCheckedAt,
           alerted,
+          detailIncomplete:
+            !alerted &&
+            (opportunity.debtorHistory === null ||
+              opportunity.supplierHistory === null),
         });
       if (evaluation.decision === "IGNORE") {
         await save();

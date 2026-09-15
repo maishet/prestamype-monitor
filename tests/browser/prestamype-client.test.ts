@@ -524,6 +524,24 @@ describe("PrestamypeClient scan", () => {
     expect(fake.clicks.filter((s) => s.includes("row_table"))).toEqual([]);
   });
 
+  it("reopens an unchanged row marked with incomplete detail", async () => {
+    const row = parseOpportunityRows(TABLE)[0]!;
+    const known = {
+      [opportunityRowKey(row)]: {
+        visibleFingerprint: opportunityRowFingerprint(row),
+        detailCheckedAt: new Date().toISOString(),
+        alerted: false,
+        detailIncomplete: true,
+      },
+    };
+    const client = createClient(fake.page);
+    client.beginScan();
+    const opportunities = await client.listEligibleOpportunities(config, known);
+    await client.close();
+    expect(opportunities.length).toBeGreaterThan(0);
+    expect(fake.clicks.some((s) => s.includes("row_table"))).toBe(true);
+  });
+
   it("does not reopen an unchanged row however stale the detail is", async () => {
     const rows = parseOpportunityRows(TABLE);
     const known = Object.fromEntries(
