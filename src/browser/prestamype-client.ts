@@ -532,6 +532,11 @@ export class PrestamypeClient implements OpportunitySource {
             ),
           );
         } catch (error) {
+          if (error instanceof ScanDeadlineError) {
+            deferredForBudget += 1;
+            exhausted = true;
+            break;
+          }
           const recoverableDetailError =
             (error instanceof Error && error.name === "TimeoutError") ||
             (error instanceof PageStructureError &&
@@ -871,13 +876,33 @@ export class PrestamypeClient implements OpportunitySource {
         if (!stillVisible) break;
         await this.withDeadline(this.sleep(100), deadline);
       }
-      if (stillVisible)
-        throw new PageStructureError("MISSING_FIELD", "overlay.did-not-close");
+      if (stillVisible) {
+        // Some campaign variants keep a transparent wrapper visible even after
+        // their content is gone. A final body click clears the pointer trap;
+        // if the wrapper still reports visible, treat it as non-blocking rather
+        // than pausing the monitor (authentication/consent overlays already
+        // returned above as hard failures).
+        try {
+          await this.withDeadline(
+            page.locator("body").click({ force: true, position: { x: 1, y: 1 } }),
+            deadline,
+          );
+        } catch {
+          // Best effort only; the next interaction remains force-clicked.
+        }
+        const fresh = page.locator(selector);
+        stillVisible = await this.withDeadline(
+          (fresh.first?.() ?? fresh).isVisible(),
+          deadline,
+        );
+        if (stillVisible)
+          console.warn("Dismissible overlay remains visible; continuing safely");
+      }
       console.info("Dismissible overlay closed");
     }
     const remaining = page.locator(visibleSelector);
     if (await this.withDeadline((remaining.first?.() ?? remaining).isVisible(), deadline))
-      throw new PageStructureError("MISSING_FIELD", "overlay.too-many");
+      console.warn("Non-blocking overlay remains; continuing scan");
   }
 
   /**
@@ -1015,12 +1040,37 @@ export class PrestamypeClient implements OpportunitySource {
     label: string,
     deadline: number,
   ): Promise<boolean> {
+    // Party tabs are optional enrichment. Keep a slow/non-rendering tab from
+    // consuming the entire scan budget reserved for the Invertir panel.
+    const tabDeadline = Math.min(deadline, this.now() + 2_500);
     const tab = page.locator(`${LIVE_SELECTORS.panelTab}:has-text('${label}')`);
-    if (!(await this.withDeadline(tab.isVisible(), deadline))) {
+    if (!(await this.withDeadline(tab.isVisible(), tabDeadline))) {
       console.warn(`Panel tab not available: ${label}`);
       return false;
     }
-    await this.safeClick(tab, `panel.tab.${label}`, deadline);
+    try {
+      await this.safeClick(tab, `panel.tab.${label}`, tabDeadline);
+    } catch (error) {
+      // Party tabs are enrichment. A responsive panel can briefly re-render
+      // between the visibility check and the click; do not turn that optional
+      // tab race into a monitor-wide pause. The required Invertir tab is parsed
+      // before this method and remains fail-closed.
+      if (
+        (error instanceof PageStructureError &&
+          error.field === `interaction.panel.tab.${label}`) ||
+        (error instanceof Error && error.name === "TimeoutError")
+      ) {
+        console.warn(
+          "Optional panel tab unavailable",
+          JSON.stringify({
+            label,
+            code: error instanceof PageStructureError ? error.code : error.name,
+          }),
+        );
+        return false;
+      }
+      throw error;
+    }
     return true;
   }
 

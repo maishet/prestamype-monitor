@@ -382,6 +382,30 @@ describe("PrestamypeClient scan", () => {
     expect(first.debtor.taxId).toBe("20123456789");
   });
 
+  it("treats a re-rendered Deudor tab as optional enrichment", async () => {
+    const original = fake.page.locator;
+    fake.page.locator = (selector) => {
+      const locator = original(selector);
+      if (!selector.includes(":has-text('Deudor')")) return locator;
+      return {
+        ...locator,
+        async click() {
+          throw new PageStructureError(
+            "MISSING_FIELD",
+            "interaction.panel.tab.Deudor",
+          );
+        },
+      };
+    };
+    const client = createClient(fake.page);
+    client.beginScan();
+    const opportunities = await client.listEligibleOpportunities(config, {});
+    await client.close();
+
+    expect(opportunities.length).toBeGreaterThan(0);
+    expect(opportunities[0]?.debtorHistory).toBeNull();
+  });
+
   it("stops after Invertir when the detail policy rejects further enrichment", async () => {
     const client = createClient(fake.page);
     client.beginScan();
