@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   isOpportunityTableLoading,
+  isOpportunityTableReady,
   isPanelOpen,
   parseMoney,
   parseOpportunityPanel,
@@ -57,11 +58,70 @@ describe("primitives", () => {
 describe("opportunities table", () => {
   const html = fixture("opportunities-table.html");
 
+  it("skips a transient clickable row that has not rendered its amount yet", () => {
+    const validRow = load(html)("tr.row_table--clickable").first().toString();
+    const transientRow = `<tr class="row_table--clickable"><td></td><td></td><td></td><td></td><td></td><td></td></tr>`;
+    const page = `<table class="table"><tbody>${transientRow}${validRow}</tbody></table>`;
+
+    expect(parseOpportunityRows(page)).toHaveLength(1);
+    expect(parseOpportunityRows(page)[0]?.commercialName).toBe("METALVAL");
+  });
+
+  it("reads the amount from the whole cell when the amount-label class changes", () => {
+    const row = load(html)("tr.row_table--clickable")
+      .first()
+      .toString()
+      .replaceAll("amount-label", "amount-value");
+    const page = `<table class="table"><tbody>${row}</tbody></table>`;
+
+    expect(parseOpportunityRows(page)[0]?.totalAmountCents).toBe(25_099_068);
+  });
+
+  it("reads the investment type from the whole cell when its class changes", () => {
+    const row = load(html)("tr.row_table--clickable")
+      .first()
+      .toString()
+      .replaceAll("tir-column", "investment-type");
+    const page = `<table class="table"><tbody>${row}</tbody></table>`;
+
+    expect(parseOpportunityRows(page)[0]?.investmentType).toBe("Factoring");
+  });
+
+  it("accepts auxiliary text around the investment type", () => {
+    const row = load(html)("tr.row_table--clickable")
+      .first()
+      .toString()
+      .replace(">Factoring<", ">Factoring · disponible<");
+    const page = `<table class="table"><tbody>${row}</tbody></table>`;
+
+    expect(parseOpportunityRows(page)[0]?.investmentType).toBe("Factoring");
+  });
+
+  it("keeps a row evaluable when the type is rendered in an inaccessible slot", () => {
+    const row = load(html)("tr.row_table--clickable")
+      .first()
+      .toString()
+      .replace(">Factoring<", "><neo-investment-slot></neo-investment-slot><");
+    const page = `<table class="table"><tbody>${row}</tbody></table>`;
+
+    expect(parseOpportunityRows(page)[0]?.investmentType).toBe("Factoring");
+  });
+
+  it("fails closed when every clickable row is malformed", () => {
+    const page = `<table class="table"><tbody><tr class="row_table--clickable"><td><div class="cell-content client"><div class="label">CLIENTE</div></div></td><td>C</td><td><div class="cell-content"></div></td><td></td><td></td><td></td></tr></tbody></table>`;
+
+    expect(() => parseOpportunityRows(page)).toThrowError(
+      "A required page field is missing (row[0].totalAmount)",
+    );
+  });
+
   it("detects the loading state instead of reporting zero opportunities", () => {
     expect(
       isOpportunityTableLoading(fixture("opportunities-table-loading.html")),
     ).toBe(true);
     expect(isOpportunityTableLoading(html)).toBe(false);
+    expect(isOpportunityTableReady(html)).toBe(true);
+    expect(isOpportunityTableReady(fixture("opportunities-table-loading.html"))).toBe(false);
   });
 
   it("parses every row of the filtered and sorted page", () => {
@@ -102,6 +162,11 @@ describe("opportunities table", () => {
     );
     expect(returns).toEqual([...returns].sort((a, b) => b - a));
     expect(returns[0]).toBe(14.84);
+  });
+
+  it("keeps a shadow-only return as an unevaluable row instead of failing the scan", () => {
+    const shadowOnly = html.replace("14.84 %", "<neo-badge></neo-badge>");
+    expect(parseOpportunityRows(shadowOnly)[0]?.annualReturnPct).toBe(0);
   });
 
   it("prefers the progress bar width over the rounded percentage", () => {

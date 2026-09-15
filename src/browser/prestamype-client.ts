@@ -35,6 +35,7 @@ import {
   parsePager,
   parsePartyHistory,
   parsePartyProfile,
+  parsePercentage,
   parsePortfolioRows,
   type OpportunityPanel,
   type OpportunityRow,
@@ -341,8 +342,6 @@ export class PrestamypeClient implements OpportunitySource {
   private scanDeadline: number | null = null;
   private observedBalanceCents: number | null = null;
   private readonly requestCounts = new Map<string, number>();
-  private overlaySequence = 0;
-
   constructor(private readonly options: PrestamypeClientOptions) {
     this.launcher = options.launcher ?? productionLauncher;
     this.now = options.now ?? Date.now;
@@ -466,9 +465,9 @@ export class PrestamypeClient implements OpportunitySource {
     await this.step("authenticate", () =>
       this.assertAuthenticated(page, deadline),
     );
-    await this.step("wait-rows", () => this.waitForRows(page, deadline));
+    await this.step("wait-rows", () => this.waitForOpportunityRows(page, deadline));
     await this.step("sort", () => this.sortByHighestReturn(page, deadline));
-    await this.step("wait-sorted-rows", () => this.waitForRows(page, deadline));
+    await this.step("wait-sorted-rows", () => this.waitForOpportunityRows(page, deadline));
 
     const floor = walkFloor(config);
     const currencies = config.allowedCurrencies;
@@ -485,10 +484,19 @@ export class PrestamypeClient implements OpportunitySource {
       pageNumber += 1
     ) {
       const html = await this.withDeadline(page.content(), deadline);
-      const rows = parseOpportunityRows(html);
+      const rows = await this.hydrateOpportunityReturns(
+        page,
+        parseOpportunityRows(html),
+        deadline,
+      );
       for (const [index, row] of rows.entries()) {
         scanned += 1;
-        if (row.annualReturnPct < floor) {
+        // Shadow-rendered return badges can be absent from light DOM. Keep
+        // those rows in the candidate stream so openAndParseDetail can read
+        // the authoritative value from the Invertir panel; only a verified
+        // value participates in the sorted-page cutoff.
+        const returnKnown = row.annualReturnPct > 0;
+        if (returnKnown && row.annualReturnPct < floor) {
           exhausted = true;
           break;
         }
@@ -496,7 +504,8 @@ export class PrestamypeClient implements OpportunitySource {
         if (
           !config.allowedRisks.includes(risk) ||
           !currencies.includes(row.currency) ||
-          row.annualReturnPct < minimumReturnFor(config, risk)
+          (returnKnown &&
+            row.annualReturnPct < minimumReturnFor(config, risk))
         )
           continue;
 
@@ -510,17 +519,35 @@ export class PrestamypeClient implements OpportunitySource {
           exhausted = true;
           break;
         }
-        results.push(
-          await this.openAndParseDetail(
-            page,
-            row,
-            index,
-            id,
-            deadline,
-            detailCounts,
-            detailPolicy,
-          ),
-        );
+        try {
+          results.push(
+            await this.openAndParseDetail(
+              page,
+              row,
+              index,
+              id,
+              deadline,
+              detailCounts,
+              detailPolicy,
+            ),
+          );
+        } catch (error) {
+          const recoverableDetailError =
+            (error instanceof Error && error.name === "TimeoutError") ||
+            (error instanceof PageStructureError &&
+              /^(interaction\.row|panel(?:\.|$))/u.test(error.field));
+          if (!recoverableDetailError) throw error;
+          // A single row can re-render between the table snapshot and the
+          // click. Detail is enrichment, not a reason to pause all monitoring;
+          // keep scanning the remaining rows and report only a sanitized cause.
+          console.warn(
+            "Skipping opportunity detail",
+            JSON.stringify({
+              row: index,
+              code: error instanceof PageStructureError ? error.code : error instanceof Error ? error.name : "unknown",
+            }),
+          );
+        }
       }
       if (!exhausted && !(await this.goToNextPage(page, html, deadline))) break;
     }
@@ -537,6 +564,35 @@ export class PrestamypeClient implements OpportunitySource {
       }),
     );
     return results;
+  }
+
+  private async hydrateOpportunityReturns(
+    page: PageLike,
+    rows: readonly OpportunityRow[],
+    deadline: number,
+  ): Promise<OpportunityRow[]> {
+    const renderedRows = page.locator(LIVE_SELECTORS.dataRow);
+    const count = renderedRows.count === undefined
+      ? rows.length
+      : await this.withDeadline(renderedRows.count(), deadline);
+    const hydrated: OpportunityRow[] = [];
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index]!;
+      const rendered = index < count ? renderedRows.nth?.(index) : undefined;
+      const cell = rendered?.locator?.("td")?.nth?.(4);
+      if (cell === undefined) {
+        hydrated.push(row);
+        continue;
+      }
+      const raw = (await this.withDeadline(cell.textContent(), deadline)) ?? "";
+      try {
+        const annualReturnPct = parsePercentage(raw, "annualReturnPct");
+        hydrated.push({ ...row, annualReturnPct });
+      } catch {
+        hydrated.push(row);
+      }
+    }
+    return hydrated;
   }
 
   private hasDetailBudget(deadline: number): boolean {
@@ -714,14 +770,6 @@ export class PrestamypeClient implements OpportunitySource {
         break;
       }
       if (modal === null) return;
-      if (modal.evaluate !== undefined) {
-        const identity = String(++this.overlaySequence);
-        await this.withDeadline(modal.evaluate((element, value) => {
-          element.setAttribute("data-monitor-overlay", value);
-        }, identity), deadline);
-        selector = `[data-monitor-overlay="${identity}"]`;
-        modal = page.locator(selector).first?.() ?? page.locator(selector);
-      }
       const text = (
         (await this.withDeadline(modal.textContent(), deadline)) ?? ""
       )
@@ -797,27 +845,34 @@ export class PrestamypeClient implements OpportunitySource {
           throw new PageStructureError("MISSING_FIELD", "overlay.safe-close");
         await this.safeClick(close, "overlay.close", deadline);
       }
-      if (
-        await this.withDeadline(modal.isVisible(), deadline)
-      ) {
-        if (modal.evaluate === undefined)
-          throw new PageStructureError("MISSING_FIELD", "overlay.did-not-close");
-        // Campaign handlers are remote application code and have repeatedly
-        // acknowledged clicks without changing their state. At this point the
-        // text above has already excluded authentication and manual consent;
-        // remove only the pinned campaign node so it cannot block safe reads.
-        await this.withDeadline(
-          modal.evaluate((element) => element.remove(), ""),
+      // Do not use locator.evaluate here. Campaigns frequently re-render the
+      // overlay immediately after a click; Playwright then waits for the old
+      // locator to become attached and consumes the whole scan budget. Re-read
+      // a fresh locator and retry the harmless backdrop click instead.
+      let stillVisible = await this.withDeadline(modal.isVisible(), deadline);
+      for (const position of [
+        { x: 4, y: 4 },
+        { x: 12, y: 12 },
+      ]) {
+        if (!stillVisible) break;
+        try {
+          await this.withDeadline(
+            modal.click({ force: true, position }),
+            deadline,
+          );
+        } catch {
+          // A detached campaign node is already effectively dismissed.
+        }
+        const fresh = page.locator(selector);
+        stillVisible = await this.withDeadline(
+          (fresh.first?.() ?? fresh).isVisible(),
           deadline,
         );
-        console.warn("Dismissible overlay removed after inert handlers");
+        if (!stillVisible) break;
+        await this.withDeadline(this.sleep(100), deadline);
       }
-      const limit = Math.min(deadline, this.now() + 3_000);
-      while (await this.withDeadline(modal.isVisible(), limit)) {
-        if (this.now() + 100 >= limit)
-          throw new PageStructureError("MISSING_FIELD", "overlay.did-not-close");
-        await this.withDeadline(this.sleep(100), limit);
-      }
+      if (stillVisible)
+        throw new PageStructureError("MISSING_FIELD", "overlay.did-not-close");
       console.info("Dismissible overlay closed");
     }
     const remaining = page.locator(visibleSelector);
@@ -886,6 +941,21 @@ export class PrestamypeClient implements OpportunitySource {
     );
   }
 
+  private async waitForOpportunityRows(
+    page: PageLike,
+    deadline: number,
+  ): Promise<boolean> {
+    return (
+      (await this.waitForContent(
+        page,
+        "table",
+        (html) => !isOpportunityTableLoading(html),
+        deadline,
+        12_000,
+      )) !== null
+    );
+  }
+
   private async sortByHighestReturn(
     page: PageLike,
     deadline: number,
@@ -926,7 +996,7 @@ export class PrestamypeClient implements OpportunitySource {
     const target = row.locator(
       `${LIVE_SELECTORS.clientCell} ${LIVE_SELECTORS.clientName}`,
     );
-    await this.safeClick(target, `row.${index}`, deadline);
+    await this.safeClick(target, `row.${index}`, deadline, true);
     // The slide-over mounts and then fills itself from a second request, so it
     // is not enough for it to exist: wait until the auction code is rendered.
     const html = await this.waitForContent(

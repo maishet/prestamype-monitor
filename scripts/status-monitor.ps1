@@ -11,7 +11,22 @@ if ($ValidateOnly -or $WhatIfPreference) { Write-Output "Validación local corre
 $tableName = & aws cloudformation describe-stacks --stack-name $StackName --region $Region --query "Stacks[0].Outputs[?OutputKey=='TableName'].OutputValue | [0]" --output text
 if ($LASTEXITCODE -ne 0 -or $tableName -notmatch '^[A-Za-z0-9_.-]{3,255}$') { throw "No se pudo resolver TableName de forma segura." }
 
-$itemJson = & aws dynamodb get-item --table-name $tableName --key '{"PK":{"S":"CONFIG"},"SK":{"S":"MONITOR"}}' --consistent-read --region $Region --output json
+$requestPath = Join-Path ([System.IO.Path]::GetTempPath()) ("prestamype-status-" + [guid]::NewGuid().ToString("N") + ".json")
+$request = [ordered]@{
+    TableName = $tableName
+    Key = [ordered]@{
+        PK = [ordered]@{ S = "CONFIG" }
+        SK = [ordered]@{ S = "MONITOR" }
+    }
+    ConsistentRead = $true
+}
+try {
+    $requestJson = $request | ConvertTo-Json -Depth 5 -Compress
+    [System.IO.File]::WriteAllText($requestPath, $requestJson, [System.Text.UTF8Encoding]::new($false))
+    $itemJson = & aws dynamodb get-item --cli-input-json ("file://" + $requestPath) --region $Region --output json
+} finally {
+    Remove-Item -LiteralPath $requestPath -Force -ErrorAction SilentlyContinue
+}
 if ($LASTEXITCODE -ne 0) { throw "No se pudo consultar el estado del monitor." }
 $response = $itemJson | ConvertFrom-Json
 if ($null -eq $response.Item) { throw "No existe la configuración CONFIG/MONITOR." }
