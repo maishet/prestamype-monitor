@@ -1090,8 +1090,22 @@ export class PrestamypeClient implements OpportunitySource {
     const close = page.locator(
       ".panel-header .icon-close-im, .panel-header button[aria-label='Cerrar']",
     );
-    if (await this.withDeadline(close.isVisible(), deadline))
-      await this.safeClick(close, "panel.close", deadline);
+    try {
+      if (await this.withDeadline(close.isVisible(), deadline))
+        await this.safeClick(close, "panel.close", deadline);
+    } catch (error) {
+      // Cleanup is idempotent: a failed panel load may already have removed
+      // the slide-over before finally{} runs. Never turn that harmless state
+      // into a monitor-wide PageStructureError.
+      if (
+        error instanceof PageStructureError ||
+        (error instanceof Error && error.name === "TimeoutError")
+      ) {
+        console.warn("Panel already closed during cleanup");
+        return;
+      }
+      throw error;
+    }
   }
 
   /** Advances the paginator when the current page is exhausted. */

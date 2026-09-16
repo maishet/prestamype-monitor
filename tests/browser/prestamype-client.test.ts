@@ -542,6 +542,25 @@ describe("PrestamypeClient scan", () => {
     expect(fake.clicks.some((s) => s.includes("row_table"))).toBe(true);
   });
 
+  it("does not fail when a panel already disappeared before cleanup", async () => {
+    const client = createClient(fake.page);
+    client.beginScan();
+    let visibilityChecks = 0;
+    const page = {
+      locator: () => ({
+        isVisible: async () => visibilityChecks++ === 0,
+        textContent: async () => "Cerrar",
+        click: async () => undefined,
+      }),
+    } as unknown as PageLike;
+    await expect(
+      (client as unknown as {
+        closePanel: (page: PageLike, deadline: number) => Promise<void>;
+      }).closePanel(page, Date.now() + 1_000),
+    ).resolves.toBeUndefined();
+    await client.close();
+  });
+
   it("does not reopen an unchanged row however stale the detail is", async () => {
     const rows = parseOpportunityRows(TABLE);
     const known = Object.fromEntries(
