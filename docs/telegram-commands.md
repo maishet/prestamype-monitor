@@ -13,7 +13,7 @@ no abren el navegador. La lista muestra hasta cinco resultados de los primeros
 datos y no se garantiza que la oferta siga disponible en Prestamype.
 
 Solo el usuario configurado en `TelegramOwnerId`, dentro de su propio chat privado,
-puede usar `/estado`, `/escanear`, `/pausar` y `/reanudar`. Los comandos privados no
+puede usar `/estado`, `/actualizarportafolio`, `/escanear`, `/pausar` y `/reanudar`. Los comandos privados no
 se ejecutan desde grupos, aunque quien los envíe sea el propietario. La función
 no tiene permisos para leer la sesión de Prestamype ni su clave de cifrado.
 
@@ -32,6 +32,9 @@ en las consultas públicas. Los nombres de usuario no otorgan permisos.
   Invoca la Lambda existente de forma asíncrona. Respeta su estado, pausas,
   bloqueo de ejecución y control de presupuesto. La finalización se notifica
   únicamente al propietario; las alertas siguen sus destinos habituales.
+- `/actualizarportafolio`: marca una actualización manual del snapshot de
+  `/mis-inversiones`; se ejecuta en el próximo ciclo, después de consultar
+  `/oportunidades`, y deja el caché vigente por siete días.
 - `/pausar` desactiva futuras ejecuciones; no interrumpe una que ya empezó.
 - `/reanudar` activa el monitor, pero nunca elimina una pausa de seguridad o costo.
 - Duplicados, solicitudes no autorizadas y límites alcanzados se descartan sin

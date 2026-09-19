@@ -86,6 +86,11 @@ export interface ScanHandlerDependencies {
     config: MonitorConfig,
     signal: AbortSignal,
     budgetMs: number,
+    portfolioCache?: {
+      readonly snapshot: MonitorConfig["portfolioSnapshot"];
+      readonly refreshedAt?: string | undefined;
+      readonly refreshRequested?: boolean | undefined;
+    },
   ) => Promise<MonitorDependencies>;
   readonly runMonitor: (
     dependencies: MonitorDependencies,
@@ -404,6 +409,11 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
         config.monitor,
         controller.signal,
         Math.max(1, remainingMillis(context) - 2_500),
+        {
+          snapshot: config.monitor.portfolioSnapshot,
+          refreshedAt: config.monitor.portfolioSnapshotAt,
+          refreshRequested: config.monitor.portfolioRefreshRequested,
+        },
       );
       controller.signal.throwIfAborted();
       if (remainingMillis(context) < 5_000) return;
@@ -516,11 +526,12 @@ function createProductionHandler(): ReturnType<typeof createScanHandler> {
     assessCost: assessMonthlyUsage,
     loadSecrets: loadRuntimeSecrets,
     decryptSession: decryptStoredSession,
-    createMonitorDependencies: async (
+      createMonitorDependencies: async (
       storageState,
       config,
       signal,
       budgetMs,
+      portfolioCache,
     ) => {
       signal.throwIfAborted();
       const secrets = await loadRuntimeSecrets({ signal });
@@ -537,6 +548,29 @@ function createProductionHandler(): ReturnType<typeof createScanHandler> {
             deadlineMs: Math.max(1, Math.min(100_000, budgetMs)),
           }),
         config,
+        ...(portfolioCache?.snapshot !== undefined &&
+        typeof portfolioCache.refreshedAt === "string"
+          ? {
+              cachedPortfolio: {
+                snapshot: portfolioCache.snapshot,
+                refreshedAt: portfolioCache.refreshedAt,
+              },
+            }
+          : {}),
+        refreshPortfolio: portfolioCache?.refreshRequested === true,
+        savePortfolioCache: async (snapshot, refreshedAt) => {
+          const latest = await repository.loadConfig<ScanRuntimeConfig>();
+          if (latest === null) return;
+          await repository.saveConfig({
+            ...latest,
+            monitor: {
+              ...latest.monitor,
+              portfolioSnapshot: snapshot,
+              portfolioSnapshotAt: refreshedAt,
+              portfolioRefreshRequested: false,
+            },
+          });
+        },
       };
     },
     runMonitor: async (dependencies, input) => {

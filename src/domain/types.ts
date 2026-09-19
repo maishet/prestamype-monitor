@@ -81,6 +81,10 @@ export interface MonitorConfig {
   reviewScore: number;
   detailRefreshIntervalMs?: number;
   minimumProtectedAnnualReturnPct?: number;
+  /** Persisted portfolio snapshot used between weekly refreshes. */
+  portfolioSnapshot?: PortfolioSnapshot;
+  portfolioSnapshotAt?: string;
+  portfolioRefreshRequested?: boolean;
 }
 
 export interface Evaluation {

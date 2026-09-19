@@ -32,6 +32,7 @@ const PRIVATE = new Set([
   "recuperar",
   "sesionestado",
   "sesion-estado",
+  "actualizarportafolio",
 ]);
 const MONTHLY_COMMAND_LIMIT = 2_000;
 // 128 MiB for the full 10-second timeout, reserved before executing each command.
@@ -338,7 +339,7 @@ async function execute(
     return (
       "Consultas de datos guardados:\n/oportunidades\n/detalle ID\n/criterios\n/ayuda" +
       (admin
-        ? "\n\nAdministración privada:\n/analizar CODIGO\n/estado\n/sesionestado\n/escanear\n/pausar\n/reanudar\n/recuperar\n\nLímites: 1 comando cada 3 s; 2.000/mes entre todos. Escaneos manuales: 1 cada 10 min, máximo 5/día."
+        ? "\n\nAdministración privada:\n/analizar CODIGO\n/estado\n/sesionestado\n/actualizarportafolio\n/escanear\n/pausar\n/reanudar\n/recuperar\n\nLímites: 1 comando cada 3 s; 2.000/mes entre todos. Escaneos manuales: 1 cada 10 min, máximo 5/día."
         : "")
     );
   if (command === "detalle") {
@@ -428,6 +429,20 @@ async function execute(
       : "No hay oportunidades vigentes alertables en los registros consultados. No se ejecutó un escaneo.";
   }
   if (!admin) return "Comando no autorizado.";
+  if (command === "actualizarportafolio") {
+    await db.send(
+      new UpdateCommand({
+        TableName: required("TABLE_NAME"),
+        Key: configKey,
+        UpdateExpression: "SET monitor = :monitor",
+        ConditionExpression: "attribute_exists(PK)",
+        ExpressionAttributeValues: {
+          ":monitor": { ...monitor, portfolioRefreshRequested: true },
+        },
+      }),
+    );
+    return "Actualización de portafolio solicitada. Se aplicará en el próximo escaneo.";
+  }
   if (command === "estado") {
     const usage = await get(
       key(`USAGE#${new Date().toISOString().slice(0, 7)}`),

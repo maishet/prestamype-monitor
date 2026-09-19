@@ -33,7 +33,11 @@ La sesión se guarda cifrada en Parameter Store; nunca guardar credenciales en e
 .\scripts\status-monitor.ps1
 ```
 
-`invoke-once` solo encola un escaneo y no activa el monitor. El monitor usa los riesgos y monedas persistidos en DynamoDB; `evaluated` es la cantidad de oportunidades que pasan esos filtros y llegan a evaluación.
+`invoke-once` solo encola un escaneo y no activa el monitor. Cada ciclo empieza en
+`/app/inversionista/oportunidades`. El snapshot de `/app/inversionista/mis-inversiones`
+se actualiza automáticamente como máximo una vez cada siete días; mientras tanto
+se reutiliza para evaluar rápidamente las oportunidades. `evaluated` es la cantidad
+de oportunidades que pasan los filtros y llegan a evaluación.
 
 ## Telegram
 
@@ -50,6 +54,7 @@ Los comandos administrativos solo aceptan mensajes de `TELEGRAM_OWNER_ID` enviad
 /analizar CODIGO  Explica por qué una subasta alertó o no (código de Prestamype)
 /estado       Estado y último error registrado
 /sesionestado  Comprueba si existe sesión cifrada y si requiere recaptura
+/actualizarportafolio  Fuerza la actualización de mis inversiones en el próximo ciclo
 /escanear     Solicita un escaneo manual (con límites de seguridad)
 /pausar       Desactiva el monitor
 /reanudar     Activa el monitor si no hay una pausa de seguridad

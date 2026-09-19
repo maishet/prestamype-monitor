@@ -32,6 +32,15 @@ export interface MonitorDependencies {
     config: MonitorConfig;
   }) => Evaluation;
   readonly formatAlert?: typeof formatOpportunityAlert;
+  readonly cachedPortfolio?: {
+    readonly snapshot: PortfolioSnapshot;
+    readonly refreshedAt: string;
+  };
+  readonly refreshPortfolio?: boolean;
+  readonly savePortfolioCache?: (
+    snapshot: PortfolioSnapshot,
+    refreshedAt: string,
+  ) => Promise<void>;
 }
 
 export interface MonitorRunInput {
@@ -119,7 +128,20 @@ export async function runMonitor(
       await dependencies.repository.getOpportunityFingerprints();
     source = await dependencies.createSource();
     source.beginScan?.();
-    const portfolio = await source.getPortfolio();
+    const cachedPortfolio = dependencies.cachedPortfolio;
+    const cacheAgeMs = cachedPortfolio === undefined
+      ? Number.POSITIVE_INFINITY
+      : now.getTime() - Date.parse(cachedPortfolio.refreshedAt);
+    const refreshPortfolio =
+      dependencies.refreshPortfolio === true ||
+      !Number.isFinite(cacheAgeMs) ||
+      cacheAgeMs >= 7 * 24 * 60 * 60 * 1_000;
+    const emptyPortfolio: PortfolioSnapshot = {
+      availableBalanceCents: null,
+      activeTotalCents: null,
+      exposureByParty: {},
+    };
+    let portfolio = cachedPortfolio?.snapshot ?? emptyPortfolio;
     const detectedEntries: BlacklistEntry[] = [];
     for (const conflict of portfolio.collectionConflicts ?? []) {
       const party = conflict.party;
@@ -139,33 +161,69 @@ export async function runMonitor(
     }
     if (detectedEntries.length > 0)
       await dependencies.repository.addBlacklistEntries(detectedEntries);
-    const blacklistEntries = [...persistedBlacklist, ...detectedEntries];
+    let blacklistEntries = [...persistedBlacklist, ...detectedEntries];
+    // Opportunities are intentionally scanned first. A cached portfolio is
+    // sufficient for scoring and detail policy until the weekly refresh runs.
     const candidates = await source.listEligibleOpportunities(
       dependencies.config,
       fingerprints,
-      {
-        needsDebtor: (opportunity) =>
-          canReachReview(
-            {
-              opportunity,
-              portfolio,
-              blacklistEntries,
-              config: dependencies.config,
-            },
-            { debtorHistory: true, supplierHistory: true },
-          ),
-        needsSupplier: (opportunity) =>
-          canReachReview(
-            {
-              opportunity,
-              portfolio,
-              blacklistEntries,
-              config: dependencies.config,
-            },
-            { debtorHistory: false, supplierHistory: true },
-          ),
-      },
+      cachedPortfolio === undefined
+        ? undefined
+        : {
+          needsDebtor: (opportunity) =>
+            canReachReview(
+              {
+                opportunity,
+                portfolio,
+                blacklistEntries,
+                config: dependencies.config,
+              },
+              { debtorHistory: true, supplierHistory: true },
+            ),
+          needsSupplier: (opportunity) =>
+            canReachReview(
+              {
+                opportunity,
+                portfolio,
+                blacklistEntries,
+                config: dependencies.config,
+              },
+              { debtorHistory: false, supplierHistory: true },
+            ),
+          },
     );
+    if (refreshPortfolio) {
+      portfolio = await source.getPortfolio();
+      const refreshedAt = now.toISOString();
+      await dependencies.savePortfolioCache?.(portfolio, refreshedAt);
+      const refreshedEntries: BlacklistEntry[] = [];
+      for (const conflict of portfolio.collectionConflicts ?? []) {
+        const party = conflict.party;
+        if (
+          hasBlacklistIdentity(
+            party,
+            [...persistedBlacklist, ...detectedEntries, ...refreshedEntries],
+          )
+        )
+          continue;
+        refreshedEntries.push({
+          taxId: party.taxId,
+          normalizedName: normalizeLegalName(party.legalName),
+          reason: `Cobranza en curso: ${safeCollectionText(conflict.stage)}`,
+          source: "portfolio-collection",
+          createdAt: now.toISOString(),
+          status: safeCollectionText(conflict.state),
+          evidence: safeCollectionText(conflict.stage),
+        });
+      }
+      if (refreshedEntries.length > 0)
+        await dependencies.repository.addBlacklistEntries(refreshedEntries);
+      blacklistEntries = [
+        ...persistedBlacklist,
+        ...detectedEntries,
+        ...refreshedEntries,
+      ];
+    }
     const observedBalance = source.availableBalanceCents?.() ?? null;
     const effectivePortfolio: PortfolioSnapshot =
       observedBalance === null

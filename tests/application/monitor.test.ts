@@ -128,7 +128,7 @@ function setup(
       return "alert";
     },
   );
-  const dependencies = {
+  const dependencies: any = {
     repository,
     notifier,
     createSource,
@@ -136,6 +136,8 @@ function setup(
     clock: () => new Date("2026-08-27T12:00:00.000Z"),
     evaluate,
     formatAlert,
+    refreshPortfolio: false,
+    savePortfolioCache: vi.fn(async () => undefined),
   };
   return { events, source, repository, notifier, createSource, dependencies };
 }
@@ -143,6 +145,10 @@ function setup(
 describe("runMonitor", () => {
   it("passes a conservative progressive detail policy to the source", async () => {
     const context = setup();
+    context.dependencies.cachedPortfolio = {
+      snapshot: portfolio,
+      refreshedAt: "2026-08-27T11:00:00.000Z",
+    };
     context.dependencies.config = {
       ...DEFAULT_CONFIG,
       reviewScore: 71,
@@ -189,6 +195,10 @@ describe("runMonitor", () => {
 
   it("does not request histories for a visible blacklist match", async () => {
     const context = setup();
+    context.dependencies.cachedPortfolio = {
+      snapshot: portfolio,
+      refreshedAt: "2026-08-27T11:00:00.000Z",
+    };
     vi.mocked(context.repository.getBlacklist).mockResolvedValue([
       {
         taxId: null,
@@ -208,6 +218,48 @@ describe("runMonitor", () => {
       .calls[0]?.[2] as OpportunityDetailPolicy | undefined;
     expect(policy).toBeDefined();
     expect(policy!.needsDebtor(opportunity)).toBe(false);
+  });
+
+  it("scans opportunities without refreshing a fresh weekly portfolio cache", async () => {
+    const context = setup();
+    context.dependencies.cachedPortfolio = {
+      snapshot: portfolio,
+      refreshedAt: "2026-08-27T11:00:00.000Z",
+    };
+
+    await runMonitor(context.dependencies, {
+      owner: "run",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+
+    expect(context.source.listEligibleOpportunities).toHaveBeenCalled();
+    expect(context.source.getPortfolio).not.toHaveBeenCalled();
+    expect(context.dependencies.savePortfolioCache).not.toHaveBeenCalled();
+  });
+
+  it("refreshes and persists the portfolio when a manual update is requested", async () => {
+    const context = setup();
+    context.dependencies.cachedPortfolio = {
+      snapshot: portfolio,
+      refreshedAt: "2026-08-27T11:00:00.000Z",
+    };
+    context.dependencies.refreshPortfolio = true;
+
+    await runMonitor(context.dependencies, {
+      owner: "run",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+
+    expect(context.events.indexOf("candidates")).toBeLessThan(
+      context.events.indexOf("portfolio"),
+    );
+    expect(context.source.getPortfolio).toHaveBeenCalledOnce();
+    expect(context.dependencies.savePortfolioCache).toHaveBeenCalledWith(
+      portfolio,
+      "2026-08-27T12:00:00.000Z",
+    );
   });
 
   it("keeps one key for an auction no matter what changes about it", () => {
@@ -304,8 +356,8 @@ describe("runMonitor", () => {
       "fingerprints",
       "source",
       "begin-scan",
-      "portfolio",
       "candidates",
+      "portfolio",
       "evaluate",
       "claim",
       "send",
@@ -555,8 +607,11 @@ describe("runMonitor", () => {
         }),
       ]),
     );
+    expect(context.events.indexOf("candidates")).toBeLessThan(
+      context.events.indexOf("add-blacklist"),
+    );
     expect(context.events.indexOf("add-blacklist")).toBeLessThan(
-      context.events.indexOf("candidates"),
+      context.events.indexOf("evaluate"),
     );
     expect(context.dependencies.evaluate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -728,12 +783,12 @@ describe("runMonitor", () => {
     expect(
       vi
         .mocked(context.repository.claimAlert)
-        .mock.calls.map((call) => call[2]),
+        .mock.calls.map((call: any) => call[2]),
     ).toEqual([1_787_832_090, 1_787_832_150]);
     expect(
       vi
         .mocked(context.dependencies.formatAlert)
-        .mock.calls.map((call) => call[3]),
+        .mock.calls.map((call: any) => call[3]),
     ).toEqual([
       new Date("2026-08-27T12:01:00.000Z"),
       new Date("2026-08-27T12:02:00.000Z"),
