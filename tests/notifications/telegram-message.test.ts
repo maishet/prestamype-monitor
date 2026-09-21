@@ -82,6 +82,17 @@ describe("formatOpportunityAlert", () => {
     expect(lines[6]).toBe("📈 20.00% anual (1.53% mensual)");
   });
 
+  it("uses dollar notation for USD opportunity amounts", () => {
+    const message = format({
+      currency: "USD",
+      totalAmountCents: 5_771_411,
+      remainingAmountCents: 4_990_124,
+    });
+
+    expect(message).toContain("Restante $49,901.24 de $57,714.11");
+    expect(message).not.toContain("Restante S/49,901.24 de S/57,714.11");
+  });
+
   it("renders the funded amount as a progress line", () => {
     expect(format()).toContain("<pre>███░░░░░░░ 25%</pre>");
 

@@ -1,5 +1,6 @@
 import type {
   Evaluation,
+  Currency,
   Opportunity,
   PaymentHistory,
   PortfolioSnapshot,
@@ -33,9 +34,7 @@ interface MessageLine {
   readonly priority: "essential" | "normal" | "detail";
 }
 
-const moneyFormatter = new Intl.NumberFormat("es-PE", {
-  style: "currency",
-  currency: "PEN",
+const amountFormatter = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
@@ -84,9 +83,10 @@ function safeText(
   return `${output.join("")}…`;
 }
 
-function formatMoney(cents: number): string {
+function formatMoney(cents: number, currency: Currency = "PEN"): string {
   if (!Number.isFinite(cents)) return "no disponible";
-  return moneyFormatter.format(cents / 100).replace(/^S\/\s+/u, "S/");
+  const symbol = currency === "USD" ? "$" : "S/";
+  return `${symbol}${amountFormatter.format(cents / 100)}`;
 }
 
 function formatPercentage(value: number): string {
@@ -333,9 +333,10 @@ export function formatOpportunityAlert(
   );
   push(formatFundingProgress(fundedPct), "essential");
   push(
-    `Restante ${formatMoney(opportunity.remainingAmountCents)} de ${formatMoney(
-      opportunity.totalAmountCents,
-    )}`,
+    `Restante ${formatMoney(
+      opportunity.remainingAmountCents,
+      opportunity.currency,
+    )} de ${formatMoney(opportunity.totalAmountCents, opportunity.currency)}`,
     "essential",
   );
   push(
