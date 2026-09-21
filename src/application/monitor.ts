@@ -66,7 +66,11 @@ export interface MonitorRunResult {
  * worsened payment history will not reopen one that already went out.
  */
 export function alertIdentityKeys(opportunity: Opportunity): readonly string[] {
-  return [JSON.stringify([opportunity.id])];
+  // The row-derived id can change when Prestamype re-renders a row (for
+  // example, when its payment date or legal-name cell changes). The auction
+  // code is the stable identity shown in the detail panel and must own the
+  // one-alert guarantee.
+  return [JSON.stringify([opportunity.auctionCode])];
 }
 
 function safeCollectionText(value: string): string {

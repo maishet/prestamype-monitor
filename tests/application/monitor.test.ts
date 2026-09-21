@@ -282,8 +282,16 @@ describe("runMonitor", () => {
       expect(alertIdentityKeys(moved)[0]).toBe(base);
     }
     // Only a different auction is a different alert.
-    expect(alertIdentityKeys({ ...opportunity, id: "opp-2" })[0]).not.toBe(
-      base,
+    expect(
+      alertIdentityKeys({ ...opportunity, auctionCode: "other-auction" })[0],
+    ).not.toBe(base);
+  });
+
+  it("deduplicates row identities that resolve to the same auction code", () => {
+    expect(
+      alertIdentityKeys({ ...opportunity, id: "row-derived-id-1" }),
+    ).toEqual(
+      alertIdentityKeys({ ...opportunity, id: "row-derived-id-2" }),
     );
   });
   it("records that an opportunity has alerted so its panel stays shut", async () => {
