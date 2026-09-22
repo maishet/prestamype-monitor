@@ -217,6 +217,20 @@ describe("assertAllowedInteraction", () => {
         assertAllowedInteraction({ kind: "click", name }),
       ).not.toThrow();
   });
+
+  it("allows company names containing investment words but blocks exact money actions", () => {
+    expect(() =>
+      assertAllowedInteraction({
+        kind: "click",
+        name: "INVERSIONES JORDIE S.A.",
+      }),
+    ).not.toThrow();
+    for (const name of ["Invertir", "Realizar inversión", "Depositar"]) {
+      expect(() => assertAllowedInteraction({ kind: "click", name })).toThrow(
+        PageStructureError,
+      );
+    }
+  });
 });
 
 describe("row identity", () => {

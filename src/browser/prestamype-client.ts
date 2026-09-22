@@ -75,7 +75,7 @@ const PROTECTED_PATHS = new Set([
  * every row, and the detail panel a "Realizar inversión" one.
  */
 const PROHIBITED_ACTION =
-  /invertir|inversi[óo]n|reservar|pagar|confirmar|depositar|dep[óo]sito|retirar/i;
+  /^(?:invertir|realizar inversion|realizar deposito|reservar|pagar|confirmar|depositar|deposito|retirar)$/iu;
 
 const LETTER_RISKS: readonly RiskGrade[] = ["A+", "A", "B", "C", "D", "E"];
 const ACTIVE_PORTFOLIO_STATES = /por cobrar|en proceso/iu;
@@ -239,7 +239,12 @@ export function assertAllowedInteraction(interaction: {
   kind: "click";
   name: string;
 }): void {
-  if (PROHIBITED_ACTION.test(interaction.name)) {
+  const normalizedName = interaction.name
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (PROHIBITED_ACTION.test(normalizedName)) {
     throw new PageStructureError("UNSUPPORTED_VALUE", "interaction");
   }
 }
