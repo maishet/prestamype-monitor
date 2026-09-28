@@ -29,6 +29,7 @@ import {
   LIVE_SELECTORS,
   OPPORTUNITIES_URL,
   isOpportunityTableLoading,
+  isOpportunityTableReady,
   isPanelOpen,
   parseOpportunityPanel,
   parseOpportunityRows,
@@ -470,9 +471,27 @@ export class PrestamypeClient implements OpportunitySource {
     await this.step("authenticate", () =>
       this.assertAuthenticated(page, deadline),
     );
-    await this.step("wait-rows", () => this.waitForOpportunityRows(page, deadline));
+    // Dismiss first-investment/campaign overlays before waiting for Vue's
+    // opportunity request. If the sort control is absent while the overlay is
+    // blocking the board, sortByHighestReturn intentionally degrades to the
+    // default order and never reaches safeClick(), so the overlay would remain
+    // open for both table waits.
+    await this.step("dismiss-overlays", () =>
+      this.dismissOverlay(page, deadline),
+    );
+    if (
+      !(await this.step("wait-rows", () =>
+        this.waitForOpportunityRows(page, deadline),
+      ))
+    )
+      throw new PageStructureError("MISSING_FIELD", "opportunitiesTable");
     await this.step("sort", () => this.sortByHighestReturn(page, deadline));
-    await this.step("wait-sorted-rows", () => this.waitForOpportunityRows(page, deadline));
+    if (
+      !(await this.step("wait-sorted-rows", () =>
+        this.waitForOpportunityRows(page, deadline),
+      ))
+    )
+      throw new PageStructureError("MISSING_FIELD", "opportunitiesTable");
 
     const floor = walkFloor(config);
     const currencies = config.allowedCurrencies;
@@ -494,7 +513,11 @@ export class PrestamypeClient implements OpportunitySource {
         parseOpportunityRows(html),
         deadline,
       );
-      const candidates: Array<{ index: number; row: OpportunityRow; id: string }> = [];
+      const candidates: Array<{
+        index: number;
+        row: OpportunityRow;
+        id: string;
+      }> = [];
       for (const [index, row] of rows.entries()) {
         scanned += 1;
         // Shadow-rendered return badges can be absent from light DOM. Keep
@@ -510,8 +533,7 @@ export class PrestamypeClient implements OpportunitySource {
         if (
           !config.allowedRisks.includes(risk) ||
           !currencies.includes(row.currency) ||
-          (returnKnown &&
-            row.annualReturnPct < minimumReturnFor(config, risk))
+          (returnKnown && row.annualReturnPct < minimumReturnFor(config, risk))
         )
           continue;
 
@@ -522,9 +544,10 @@ export class PrestamypeClient implements OpportunitySource {
         }
         candidates.push({ index, row, id });
       }
-      candidates.sort((a, b) =>
-        Number(knownFingerprints[b.id]?.detailIncomplete === true) -
-        Number(knownFingerprints[a.id]?.detailIncomplete === true),
+      candidates.sort(
+        (a, b) =>
+          Number(knownFingerprints[b.id]?.detailIncomplete === true) -
+          Number(knownFingerprints[a.id]?.detailIncomplete === true),
       );
       for (const { index, row, id } of candidates) {
         if (!this.hasDetailBudget(deadline)) {
@@ -562,7 +585,12 @@ export class PrestamypeClient implements OpportunitySource {
             "Skipping opportunity detail",
             JSON.stringify({
               row: index,
-              code: error instanceof PageStructureError ? error.code : error instanceof Error ? error.name : "unknown",
+              code:
+                error instanceof PageStructureError
+                  ? error.code
+                  : error instanceof Error
+                    ? error.name
+                    : "unknown",
             }),
           );
         }
@@ -590,9 +618,10 @@ export class PrestamypeClient implements OpportunitySource {
     deadline: number,
   ): Promise<OpportunityRow[]> {
     const renderedRows = page.locator(LIVE_SELECTORS.dataRow);
-    const count = renderedRows.count === undefined
-      ? rows.length
-      : await this.withDeadline(renderedRows.count(), deadline);
+    const count =
+      renderedRows.count === undefined
+        ? rows.length
+        : await this.withDeadline(renderedRows.count(), deadline);
     const hydrated: OpportunityRow[] = [];
     for (let index = 0; index < rows.length; index += 1) {
       const row = rows[index]!;
@@ -672,17 +701,8 @@ export class PrestamypeClient implements OpportunitySource {
         this.observedBalanceCents = panel.availableBalanceCents;
 
       const unavailable = { history: null, profile: null };
-      let opportunity = toOpportunity(
-        id,
-        row,
-        panel,
-        unavailable,
-        unavailable,
-      );
-      if (
-        detailPolicy !== undefined &&
-        !detailPolicy.needsDebtor(opportunity)
-      )
+      let opportunity = toOpportunity(id, row, panel, unavailable, unavailable);
+      if (detailPolicy !== undefined && !detailPolicy.needsDebtor(opportunity))
         return opportunity;
 
       const debtor = await this.readPartyTab(page, "Deudor", deadline);
@@ -758,7 +778,10 @@ export class PrestamypeClient implements OpportunitySource {
       throw new PageStructureError("MISSING_FIELD", `interaction.${purpose}`);
     const label = await this.withDeadline(locator.textContent(), deadline);
     assertAllowedInteraction({ kind: "click", name: label ?? "" });
-    await this.withDeadline(locator.click(force ? { force: true } : undefined), deadline);
+    await this.withDeadline(
+      locator.click(force ? { force: true } : undefined),
+      deadline,
+    );
   }
 
   private async dismissOverlay(
@@ -818,7 +841,8 @@ export class PrestamypeClient implements OpportunitySource {
         );
       // The live page puts an <i class="icon-close"> over its button hitbox.
       // Force the containing close button so the overlay cannot intercept it.
-      const icon = page.locator(`${selector} i.icon-close`).first?.() ??
+      const icon =
+        page.locator(`${selector} i.icon-close`).first?.() ??
         page.locator(`${selector} i.icon-close`);
       const closeSelector = `${selector} :is(button, [role="button"]):visible:is(:has(i.icon-close), [aria-label="Cerrar" i], [aria-label="Close" i], :text-is("Cerrar"), :text-is("Ahora no"), :text-is("Close"), :text-is("\u00d7"), :text-is("X"))`;
       const close =
@@ -901,7 +925,9 @@ export class PrestamypeClient implements OpportunitySource {
         // returned above as hard failures).
         try {
           await this.withDeadline(
-            page.locator("body").click({ force: true, position: { x: 1, y: 1 } }),
+            page
+              .locator("body")
+              .click({ force: true, position: { x: 1, y: 1 } }),
             deadline,
           );
         } catch {
@@ -913,12 +939,19 @@ export class PrestamypeClient implements OpportunitySource {
           deadline,
         );
         if (stillVisible)
-          console.warn("Dismissible overlay remains visible; continuing safely");
+          console.warn(
+            "Dismissible overlay remains visible; continuing safely",
+          );
       }
       console.info("Dismissible overlay closed");
     }
     const remaining = page.locator(visibleSelector);
-    if (await this.withDeadline((remaining.first?.() ?? remaining).isVisible(), deadline))
+    if (
+      await this.withDeadline(
+        (remaining.first?.() ?? remaining).isVisible(),
+        deadline,
+      )
+    )
       console.warn("Non-blocking overlay remains; continuing scan");
   }
 
@@ -991,7 +1024,7 @@ export class PrestamypeClient implements OpportunitySource {
       (await this.waitForContent(
         page,
         "table",
-        (html) => !isOpportunityTableLoading(html),
+        isOpportunityTableReady,
         deadline,
         12_000,
       )) !== null

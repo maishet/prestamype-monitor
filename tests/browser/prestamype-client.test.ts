@@ -423,10 +423,14 @@ describe("PrestamypeClient scan", () => {
   it("stops after Invertir when the detail policy rejects further enrichment", async () => {
     const client = createClient(fake.page);
     client.beginScan();
-    const opportunities = await client.listEligibleOpportunities(config, {}, {
-      needsDebtor: () => false,
-      needsSupplier: () => false,
-    });
+    const opportunities = await client.listEligibleOpportunities(
+      config,
+      {},
+      {
+        needsDebtor: () => false,
+        needsSupplier: () => false,
+      },
+    );
     await client.close();
 
     expect(opportunities.length).toBeGreaterThan(0);
@@ -444,10 +448,14 @@ describe("PrestamypeClient scan", () => {
   it("loads Deudor but skips Proveedor when its maximum cannot change the decision", async () => {
     const client = createClient(fake.page);
     client.beginScan();
-    const opportunities = await client.listEligibleOpportunities(config, {}, {
-      needsDebtor: () => true,
-      needsSupplier: () => false,
-    });
+    const opportunities = await client.listEligibleOpportunities(
+      config,
+      {},
+      {
+        needsDebtor: () => true,
+        needsSupplier: () => false,
+      },
+    );
     await client.close();
 
     expect(fake.clicks.some((selector) => selector.includes("Deudor"))).toBe(
@@ -568,9 +576,11 @@ describe("PrestamypeClient scan", () => {
       }),
     } as unknown as PageLike;
     await expect(
-      (client as unknown as {
-        closePanel: (page: PageLike, deadline: number) => Promise<void>;
-      }).closePanel(page, Date.now() + 1_000),
+      (
+        client as unknown as {
+          closePanel: (page: PageLike, deadline: number) => Promise<void>;
+        }
+      ).closePanel(page, Date.now() + 1_000),
     ).resolves.toBeUndefined();
     await client.close();
   });
@@ -793,6 +803,46 @@ describe("PrestamypeClient failure handling", () => {
     await client.close();
   });
 
+  it("dismisses a blocking campaign before waiting for opportunity rows", async () => {
+    let campaignOpen = true;
+    const loading = fixture("opportunities-table-loading.html");
+    const fake = createFakePage({
+      html: () => (campaignOpen ? loading : TABLE),
+    });
+    const original = fake.page.locator;
+    fake.page.locator = (selector) => {
+      if (selector.includes("generic-modal-overlay"))
+        return {
+          isVisible: async () => campaignOpen,
+          textContent: async () => "Aviso de campaña",
+          click: async () => {
+            campaignOpen = false;
+          },
+          first: () => fake.page.locator(selector),
+          nth: () => fake.page.locator(selector),
+        };
+      const locator = original(selector);
+      if (selector.includes("select-sort"))
+        return {
+          ...locator,
+          isVisible: async () => !campaignOpen,
+        };
+      return locator;
+    };
+
+    const client = createClient(fake.page);
+    client.beginScan();
+    try {
+      await client.listEligibleOpportunities(
+        { ...config, allowedRisks: [] },
+        {},
+      );
+      expect(campaignOpen).toBe(false);
+    } finally {
+      await client.close();
+    }
+  });
+
   it("does not hang when the table never stops loading", async () => {
     const loading = fixture("opportunities-table-loading.html");
     const fake = createFakePage({ html: () => loading });
@@ -808,10 +858,12 @@ describe("PrestamypeClient failure handling", () => {
       deadlineMs: 60_000,
     });
     client.beginScan();
-    // The wait must run out its budget and move on, not throw a deadline error.
-    const opportunities = await client.listEligibleOpportunities(config, {});
+    // An unread board must fail closed rather than be mistaken for an empty
+    // opportunity list or continue into sorting without a rendered control.
+    await expect(client.listEligibleOpportunities(config, {})).rejects.toThrow(
+      "A required page field is missing (opportunitiesTable)",
+    );
     await client.close();
-    expect(opportunities).toEqual([]);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
