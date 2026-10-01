@@ -843,6 +843,61 @@ describe("PrestamypeClient failure handling", () => {
     }
   });
 
+  it("reloads opportunities once if sorting leaves the refreshed table unready", async () => {
+    const loading = fixture("opportunities-table-loading.html");
+    let currentHtml = loading;
+    const fake = createFakePage({ html: () => currentHtml });
+    let navigations = 0;
+    let sorted = false;
+    fake.page.goto = async (target) => {
+      fake.setUrl(target);
+      navigations += 1;
+      currentHtml = TABLE;
+      return { status: () => 200 };
+    };
+    const original = fake.page.locator;
+    fake.page.locator = (selector) => {
+      if (selector.includes("multi-select-trigger")) {
+        const locator = original(selector);
+        return {
+          ...locator,
+          isVisible: async () => true,
+          textContent: async () =>
+            sorted ? "Ordenar por: Retorno mayor" : "Ordenar por: Recomendado",
+        };
+      }
+      if (selector.includes("multi-select-option"))
+        return {
+          ...original(selector),
+          isVisible: async () => true,
+          textContent: async () => "Retorno mayor",
+          click: async () => {
+            sorted = true;
+            currentHtml = loading;
+          },
+        };
+      return original(selector);
+    };
+
+    let clock = 0;
+    const client = createClient(fake.page, {
+      now: () => clock,
+      sleep: async (milliseconds: number) => {
+        clock += milliseconds;
+      },
+    });
+    client.beginScan();
+    try {
+      await client.listEligibleOpportunities(
+        { ...config, allowedRisks: [] },
+        {},
+      );
+      expect(navigations).toBe(2);
+    } finally {
+      await client.close();
+    }
+  });
+
   it("does not hang when the table never stops loading", async () => {
     const loading = fixture("opportunities-table-loading.html");
     const fake = createFakePage({ html: () => loading });

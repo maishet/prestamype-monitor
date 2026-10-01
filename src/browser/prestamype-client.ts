@@ -485,13 +485,35 @@ export class PrestamypeClient implements OpportunitySource {
       ))
     )
       throw new PageStructureError("MISSING_FIELD", "opportunitiesTable");
-    await this.step("sort", () => this.sortByHighestReturn(page, deadline));
+    let sortedByReturn = await this.step("sort", () =>
+      this.sortByHighestReturn(page, deadline),
+    );
     if (
       !(await this.step("wait-sorted-rows", () =>
         this.waitForOpportunityRows(page, deadline),
       ))
-    )
-      throw new PageStructureError("MISSING_FIELD", "opportunitiesTable");
+    ) {
+      // Selecting a sort option can make the SPA issue a fresh data request.
+      // If that request leaves the table in its loading state, reopen the
+      // opportunities route once and scan its default order instead. The
+      // cutoff below is disabled in that fallback so an unsorted page can
+      // never hide valid opportunities on a later page.
+      console.warn(
+        "Sorted opportunity table did not render; reopening the board once",
+      );
+      await this.step("reload-opportunities", async () => {
+        await this.navigate(page, OPPORTUNITIES_PATH, deadline);
+        await this.assertAuthenticated(page, deadline);
+        await this.dismissOverlay(page, deadline);
+      });
+      sortedByReturn = false;
+      if (
+        !(await this.step("wait-reloaded-rows", () =>
+          this.waitForOpportunityRows(page, deadline),
+        ))
+      )
+        throw new PageStructureError("MISSING_FIELD", "opportunitiesTable");
+    }
 
     const floor = walkFloor(config);
     const currencies = config.allowedCurrencies;
@@ -525,7 +547,7 @@ export class PrestamypeClient implements OpportunitySource {
         // the authoritative value from the Invertir panel; only a verified
         // value participates in the sorted-page cutoff.
         const returnKnown = row.annualReturnPct > 0;
-        if (returnKnown && row.annualReturnPct < floor) {
+        if (sortedByReturn && returnKnown && row.annualReturnPct < floor) {
           exhausted = true;
           break;
         }
@@ -1034,7 +1056,7 @@ export class PrestamypeClient implements OpportunitySource {
   private async sortByHighestReturn(
     page: PageLike,
     deadline: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const trigger = page.locator(
       ".multi-select.select-sort .multi-select-trigger",
     );
@@ -1043,20 +1065,21 @@ export class PrestamypeClient implements OpportunitySource {
     // locator timeout and fails the scan instead of degrading it.
     if (!(await this.withDeadline(trigger.isVisible(), deadline))) {
       console.warn("Sort control not rendered; scanning in the default order");
-      return;
+      return false;
     }
     const current =
       (await this.withDeadline(trigger.textContent(), deadline)) ?? "";
-    if (/retorno\s+mayor/iu.test(current)) return;
+    if (/retorno\s+mayor/iu.test(current)) return true;
     await this.safeClick(trigger, "sort.open", deadline, true);
     const option = page.locator(
       ".multi-select-dropdown .multi-select-option:has-text('Retorno mayor')",
     );
     if (!(await this.withDeadline(option.isVisible(), deadline))) {
       console.warn("Sort option 'Retorno mayor' not found");
-      return;
+      return false;
     }
     await this.safeClick(option, "sort.select", deadline, true);
+    return true;
   }
 
   private async openRowPanel(
