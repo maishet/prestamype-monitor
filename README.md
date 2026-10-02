@@ -1,46 +1,76 @@
+<div align="center">
+
 # Prestamype Monitor
 
-Monitor de solo lectura para oportunidades de factoring en [Prestamype](https://www.prestamype.com), construido para Node.js 22 y desplegado como una función AWS Lambda programada. Lee la cartera y las oportunidades del inversionista, evalúa reglas locales sobre riesgo, retorno e historial, y envía una recomendación por Telegram cuando encuentra algo interesante.
+**Monitor experimental y de solo lectura para oportunidades de factoring.**
+
+[![Estado](https://img.shields.io/badge/estado-experimental-orange)](#-estado-del-proyecto)
+[![Node.js](https://img.shields.io/badge/Node.js-22-339933?logo=node.js&logoColor=white)](#requisitos)
+[![Licencia](https://img.shields.io/badge/licencia-ISC-blue.svg)](LICENSE)
+[![Modo](https://img.shields.io/badge/modo-solo%20lectura-2ea44f)](#seguridad-y-l%C3%ADmites)
+
+[Cómo funciona](#-cómo-funciona) · [Inicio local](#-inicio-local) · [AWS y costes](#-aws-y-control-de-costes) · [Operación](#-operación) · [Documentación](#-documentación)
+
+</div>
 
 > [!WARNING]
-> Este proyecto **no invierte, reserva, oferta, transfiere dinero ni ejecuta ninguna acción financiera**. Solo observa y notifica. No resuelve ni evade CAPTCHA, y se detiene ante cualquier bloqueo o desafío de sesión para que la intervención sea siempre manual.
+> El monitor **solo observa y notifica**. No invierte, reserva, oferta, transfiere dinero ni ejecuta acciones financieras. No resuelve ni evade CAPTCHA; ante desafíos o bloqueos, requiere intervención manual.
+>
+> Proyecto experimental e independiente. No está afiliado, respaldado ni patrocinado por Prestamype.
 
-## Contenido
+## 📌 Contenido
 
-- [Cómo funciona](#cómo-funciona)
-- [Requisitos previos](#requisitos-previos)
-- [Instalación y comprobaciones locales](#instalación-y-comprobaciones-locales)
-- [Sesión autenticada](#sesión-autenticada)
-- [Dry-run](#dry-run)
-- [Despliegue en AWS](#despliegue-en-aws)
-- [Operación](#operación)
-- [Estructura del proyecto](#estructura-del-proyecto)
-- [Límites de seguridad](#límites-de-seguridad)
-- [Documentación adicional](#documentación-adicional)
+- [Qué hace](#-qué-hace)
+- [Cómo funciona](#-cómo-funciona)
+- [Requisitos](#-requisitos)
+- [Inicio local](#-inicio-local)
+- [Sesión autenticada](#-sesión-autenticada)
+- [Dry-run](#-dry-run)
+- [Despliegue en AWS](#-despliegue-en-aws)
+- [AWS y control de costes](#-aws-y-control-de-costes)
+- [Operación](#-operación)
+- [Seguridad y límites](#-seguridad-y-límites)
+- [Estructura](#-estructura-del-proyecto)
+- [Contribuir](#-contribuir)
+- [Documentación](#-documentación)
+- [Licencia](#-licencia)
 
-## Cómo funciona
+## ✨ Qué hace
 
-Una regla de EventBridge invoca la función Lambda cada 2 minutos, de lunes a viernes, de 09:00 a 18:57 hora de Lima (14:00–23:57 UTC; Perú no tiene horario de verano). Cada invocación adquiere un bloqueo condicional en DynamoDB, comprueba que el monitor esté habilitado y dentro de su presupuesto mensual, descifra la sesión guardada, abre Chromium con Playwright en una sola pestaña, revisa oportunidades ordenadas por **Retorno mayor** y solo evalúa candidatos nuevos o modificados. Las recomendaciones se envían por Telegram y las decisiones se guardan de forma idempotente para no duplicar alertas.
+- Lee cartera y oportunidades desde páginas visibles de Prestamype.
+- Evalúa localmente reglas de riesgo, retorno e historial.
+- Envía recomendaciones por Telegram y guarda decisiones para evitar alertas duplicadas.
+- Ejecuta escaneos programados en AWS, con pausas ante problemas de sesión, límites de tasa o coste.
+- Permite probar decisiones con fixtures sanitizados sin acceder a la red.
+
+## ⚙️ Cómo funciona
+
+De lunes a viernes, EventBridge programa un escaneo cada 2 minutos entre las 09:00 y las 18:57, hora de Lima. Lambda adquiere un bloqueo en DynamoDB, valida que el monitor esté habilitado y dentro de sus límites, consulta las páginas permitidas, evalúa oportunidades nuevas o modificadas y envía las alertas por Telegram.
 
 ```mermaid
 flowchart LR
-    EB["EventBridge Schedule<br/>cada 2 min · L-V 09:00-18:57 (Lima)"] --> L["AWS Lambda<br/>Node.js 22 + Playwright"]
-    L <--> D[("DynamoDB<br/>config · sesión · bloqueo · alertas")]
-    L --> SSM[["SSM Parameter Store<br/>token · chat id · clave de sesión"]]
-    L --> PM["prestamype.com<br/>(solo lectura)"]
-    L --> TG["Telegram Bot API"]
-    CAP["Captura local de sesión<br/>(npm run auth:capture)"] --> D
+    EB["EventBridge<br/>L–V · cada 2 min"] --> L["AWS Lambda<br/>Node.js 22 + Playwright"]
+    L <--> D[("DynamoDB<br/>config · sesión cifrada<br/>bloqueo · alertas")]
+    L --> SSM[["SSM Parameter Store<br/>secretos y clave de sesión"]]
+    L --> PM["Prestamype<br/>navegación de solo lectura"]
+    L --> TG["Telegram"]
+    CAP["Captura manual de sesión"] --> D
 ```
 
-Activar o desactivar el monitor solo cambia un indicador `enabled` en DynamoDB: la regla de EventBridge sigue disparándose en su propio horario y cada invocación decide si hay algo que hacer, así que no hay ninguna cola ni cadena de mensajes que reconstruir.
+Activar o pausar el monitor solo cambia `enabled` en DynamoDB. El horario de EventBridge permanece configurado y cada invocación decide si debe procesar un escaneo.
 
-## Requisitos previos
+Los detalles de una oportunidad se vuelven a consultar cuando cambia la tarjeta visible y, de forma conservadora, cuando vence el refresco periódico (15 minutos por defecto). Así se pueden detectar cambios de historial, fechas, cobranza o score aunque la tarjeta no haya cambiado.
 
-- Node.js 22 (el proyecto fija `engines.node` en `>=22 <23`).
-- PowerShell para los scripts operativos en `scripts/*.ps1`.
-- Para desplegar: AWS CLI y AWS SAM CLI, con una identidad propia de privilegios mínimos (sin claves raíz) autenticada en la cuenta de destino.
+## 🧰 Requisitos
 
-## Instalación y comprobaciones locales
+- Node.js 22 (`engines.node`: `>=22 <23`) y npm.
+- PowerShell para los scripts operativos.
+- Para capturar una sesión local: Chromium compatible con Playwright.
+- Para desplegar: AWS CLI, AWS SAM CLI y una identidad AWS de privilegios mínimos. No uses credenciales de la cuenta raíz.
+
+## 🚀 Inicio local
+
+Instala dependencias y ejecuta las comprobaciones locales:
 
 ```powershell
 npm ci
@@ -50,11 +80,17 @@ npm run lint
 npm run format:check
 ```
 
-Estos comandos no crean ni tocan recursos de AWS. El origen canónico de la aplicación es `https://www.prestamype.com`; el apex `https://prestamype.com` solo se admite como documento inicial de redirección. No se permiten otros subdominios ni recursos de terceros.
+Estos comandos no crean ni modifican recursos AWS. Para un primer recorrido seguro, usa el modo de fixtures:
 
-## Sesión autenticada
+```powershell
+npm run dry-run -- --fixture
+```
 
-La autenticación se realiza manualmente en un navegador visible; la herramienta nunca solicita ni almacena la contraseña.
+El origen canónico de la aplicación es `https://www.prestamype.com`. El dominio apex solo se acepta como documento inicial para redirigir a `www`; no se permiten otros subdominios ni recursos de terceros.
+
+## 🔐 Sesión autenticada
+
+La autenticación se completa manualmente en un navegador visible. La herramienta no pide ni almacena tu contraseña. El adaptador AWS cifra el estado de sesión con AES-256-GCM antes de guardarlo en DynamoDB.
 
 ```powershell
 $env:TABLE_NAME = "prestamype-monitor"
@@ -62,107 +98,142 @@ $env:SESSION_KEY_PARAMETER = "/prestamype/monitor/session-key"
 npm run auth:capture
 ```
 
-Por defecto `auth:capture` usa el adaptador AWS incluido: lee la clave de sesión (32 bytes en Base64) desde Parameter Store, cifra el estado con AES-256-GCM y lo guarda en DynamoDB. Inicia sesión con AWS con credenciales que puedan leer ese parámetro y escribir la tabla antes de ejecutarlo. Se abrirá Chromium de forma visible: inicia sesión tú mismo, completa cualquier verificación legítima y espera a que carguen las oportunidades. Si Chromium no puede iniciarse, instala el navegador de Playwright con `npx playwright install chromium`.
+Inicia sesión en la ventana de Chromium y completa tú mismo cualquier verificación legítima. Si falta el navegador local, instala Chromium para Playwright con `npx playwright install chromium`.
 
-Para un adaptador local alternativo, exporta `createCaptureDependencies` y actívalo con `PRESTAMYPE_CAPTURE_ADAPTER`:
+Para un adaptador de captura local alternativo, configura `PRESTAMYPE_CAPTURE_ADAPTER` con un módulo que exporte `createCaptureDependencies`:
 
 ```powershell
 $env:PRESTAMYPE_CAPTURE_ADAPTER = "./capture-adapter.js"
 npm run auth:capture
 ```
 
-> [!IMPORTANT]
-> No copies cookies, contraseñas, tokens ni claves al terminal, al repositorio ni a registros. El estado de sesión siempre se guarda cifrado.
+> [!CAUTION]
+> No pegues ni guardes contraseñas, cookies, tokens, claves o credenciales AWS en el repositorio, argumentos de comandos, capturas o logs. No exportes cookies a archivos. Consulta el [runbook](docs/runbook.md) antes de operar en AWS.
 
-## Dry-run
+## 🧪 Dry-run
 
-### Con fixtures (modo seguro por defecto)
+### Fixtures — modo local seguro
 
 ```powershell
 npm run dry-run -- --fixture
 ```
 
-Usa únicamente los fixtures sanitizados de `tests/fixtures`, valida con `lstat` y `realpath` que nada escape de esa raíz, no carga adaptadores y no accede a la red. Produce un resumen estable de decisión, score, riesgo, retorno, monto e identificador sanitizado.
+Usa únicamente fixtures sanitizados de `tests/fixtures`, no carga adaptadores y no accede a la red. Comprueba que los archivos permanezcan dentro de la raíz permitida y genera un resumen de la decisión, score, riesgo, retorno, monto e identificador sanitizado.
 
-### Con la cuenta real
+### Cuenta real — solo lectura y explícito
 
-El acceso real nunca es implícito: requiere `--live` y un adaptador indicado por `PRESTAMYPE_DRY_RUN_ADAPTER` (rutas locales `file:`, `data:`, `node:` o specifiers de paquete; se rechazan URL de red, UNC y cualquier `file:` con autoridad u hostname).
+El modo live no se activa por defecto. Requiere `--live` y un adaptador definido mediante `PRESTAMYPE_DRY_RUN_ADAPTER`:
 
 ```powershell
 npm run dry-run -- --live
 ```
 
-El modo live descifra la sesión en memoria, abre un cliente Prestamype de solo lectura, consulta cartera y oportunidades, y muestra mensajes prospectivos prefijados con `[NO ENVIADO]`. No escribe datos ni reclama alertas, y siempre intenta cerrar el navegador y abortar de forma segura al vencer el plazo compartido entre cartera y oportunidades.
+Consulta cartera y oportunidades con una sesión descifrada en memoria y muestra mensajes prospectivos con el prefijo `[NO ENVIADO]`. No envía notificaciones, no reclama alertas ni escribe datos. Solo admite adaptadores locales o de paquete; rechaza URL de red, UNC y URL `file:` con autoridad u hostname.
 
-## Despliegue en AWS
+El adaptador definido en `PRESTAMYPE_DRY_RUN_ADAPTER` debe exportar una función asíncrona `createDryRunDependencies` que proporcione `store`, `key` y `launcher`; `config` y `blacklist` son opcionales. Las rutas locales absolutas o relativas se convierten a URL `file:` desde el directorio actual. Se aceptan specifiers `file:`, `data:`, `node:` y de paquete; se rechazan `http:`, `https:`, rutas UNC y URL `file:` con hostname o autoridad. El módulo live debe ser confiable, ya que se ejecuta en el proceso local.
 
-La infraestructura se define en [`template.yaml`](template.yaml) (SAM): una tabla DynamoDB, la función Lambda de escaneo con su capa de Playwright/Chromium (`layers/browser`), el rol IAM y el grupo de logs. El despliegue inicial deja el monitor **deshabilitado**; activarlo es un paso explícito y posterior.
+## ☁️ Despliegue en AWS
+
+La infraestructura se define en [`template.yaml`](template.yaml) y se despliega con AWS SAM. El despliegue inicial deja el monitor **deshabilitado**; la activación es un paso independiente y explícito.
 
 ```powershell
 sam build --use-container
 sam deploy --stack-name prestamype-monitor --resolve-s3 --region sa-east-1 --capabilities CAPABILITY_IAM --no-confirm-changeset --no-fail-on-empty-changeset
 ```
 
-La capa de navegador pesa cerca de 71 MiB comprimida, por encima del límite de carga directa de Lambda (50 MiB): SAM la sube y resuelve vía S3/CloudFormation, no uses `--zip-file`. Sigue el orden completo — cuenta AWS, presupuesto, parámetros SSM, blacklist inicial, sesión — descrito en [`docs/runbook.md`](docs/runbook.md) antes de desplegar en una cuenta nueva.
+La capa de Chromium/Playwright supera el límite de 50 MiB para cargas ZIP directas de Lambda. Usa SAM con S3/CloudFormation; no publiques la capa con `--zip-file`. En una cuenta nueva, sigue el [runbook de despliegue](docs/runbook.md) antes de desplegar: incluye preparación de cuenta, presupuesto, parámetros SSM, blacklist y sesión.
 
-## Operación
+## 💸 AWS y control de costes
 
-Los scripts de `scripts/` envuelven las operaciones sensibles con confirmaciones explícitas y `-ValidateOnly` para probarlos sin tocar AWS:
+Desplegar y operar recursos AWS puede generar cargos. El gasto depende de la región, la frecuencia de escaneo, las invocaciones y duración de Lambda, DynamoDB, almacenamiento y solicitudes de CloudWatch, Parameter Store y S3. No se promete un coste mensual fijo.
 
-| Script | Qué hace |
+Antes del despliegue:
+
+1. Crea un **AWS Budget mensual** para la región/cuenta, con un límite que puedas asumir y correo verificado.
+2. Configura alertas anticipadas —por ejemplo, al 50 %, 80 % y 100 % del límite— y revisa regularmente el consumo real. Ajusta los umbrales a tu uso.
+3. Recuerda que AWS Budgets **notifica; no detiene automáticamente el gasto**.
+4. Revisa retención de logs y el ciclo de vida del bucket de artefactos SAM.
+5. Mantén el monitor deshabilitado mientras validas el despliegue. Paúsalo si detectas gasto o actividad inesperados.
+
+Además del AWS Budget, el monitor tiene una guarda operativa por consumo mensual de Lambda en GB-segundos (`costLimits` en DynamoDB), que puede pausar los escaneos al acercarse a su límite configurado. Esa guarda complementa el presupuesto y no sustituye la revisión de los cargos de todos los servicios. El [runbook](docs/runbook.md) explica supervisión, pausas y desmontaje.
+
+## 🛠️ Operación
+
+Los scripts sensibles tienen `-ValidateOnly` para validar parámetros sin ejecutar la acción remota. Ejecútalos desde PowerShell en la raíz del repositorio.
+
+| Script | Función |
 |---|---|
-| `activate-monitor.ps1` | Exige escribir `ACTIVAR` y pone `enabled=true`; la regla de EventBridge ya estaba corriendo. |
-| `deactivate-monitor.ps1` | Pone `enabled=false` sin borrar ningún dato. |
-| `invoke-once.ps1` | Invoca un único escaneo directo sin activar el monitor. |
-| `status-monitor.ps1` | Muestra estado, filtros configurados y el próximo escaneo en hora de Lima. |
-| `resume-monitor.ps1` | Exige escribir `REANUDAR`; retira una pausa manual por sesión vencida, desafío de sesión o cambio de estructura ya corregido — nunca por coste o límite de tasa. |
-| `bootstrap-parameters.ps1` | Crea/repara la configuración `CONFIG/MONITOR` y sobrescribe los parámetros SSM de token, chat y clave. |
-| `seed-blacklist.ps1` | Inserta la blacklist inicial de forma idempotente, sin eliminar entradas existentes. |
-| `configure-monitor.ps1` | Actualiza riesgos permitidos, monedas, retorno mínimo o inversión mínima. |
+| `scripts/activate-monitor.ps1` | Pide escribir `ACTIVAR` y habilita el monitor. |
+| `scripts/deactivate-monitor.ps1` | Pausa el monitor sin borrar datos. |
+| `scripts/invoke-once.ps1` | Ejecuta un escaneo único sin habilitar el ciclo continuo. |
+| `scripts/status-monitor.ps1` | Muestra estado, filtros y próximo escaneo en hora de Lima. |
+| `scripts/resume-monitor.ps1` | Reanuda una pausa manual recuperable; no desbloquea pausas por coste ni rate limit. |
+| `scripts/bootstrap-parameters.ps1` | Prepara configuración y parámetros SSM secretos. |
+| `scripts/seed-blacklist.ps1` | Inserta la blacklist inicial de forma idempotente. |
+| `scripts/configure-monitor.ps1` | Cambia filtros de riesgo, monedas, retorno e inversión mínima. |
 
-Consulta [`docs/OPERACION.md`](docs/OPERACION.md) para los comandos frecuentes del día a día y [`docs/runbook.md`](docs/runbook.md) para el procedimiento completo de despliegue, incidentes, diagnóstico y desmontaje.
+Comandos útiles de Telegram:
 
 ```powershell
 npm run telegram:test
 npm run telegram:list-chats
 ```
 
-## Estructura del proyecto
+Para los pasos operativos, comandos y recuperación de incidentes, consulta [`docs/OPERACION.md`](docs/OPERACION.md), [`docs/telegram-commands.md`](docs/telegram-commands.md), [`scripts/README.md`](scripts/README.md) y el [runbook](docs/runbook.md).
 
-```
+## 🛡️ Seguridad y límites
+
+- El monitor es informativo: no invierte ni reemplaza la evaluación personal.
+- La navegación es visible y conservadora; no usa endpoints privados obtenidos por ingeniería inversa.
+- No resuelve ni evade CAPTCHA. Ante desafíos, sesión vencida, bloqueo o rate limit, detiene el proceso y requiere intervención o espera manual.
+- Solo admite documentos, scripts y solicitudes de aplicación de `www.prestamype.com`, además del documento inicial del apex para redirigir. Bloquea medios, fuentes, terceros y otros subdominios.
+- La salida usa campos permitidos y sanitiza datos sensibles conocidos, como RUC, credenciales, cookies, tokens, claves API y sesiones. Ningún filtro puede detectar todos los secretos posibles: no los pongas en campos visibles, fixtures ni configuración.
+- Los errores externos se convierten en mensajes genéricos. Los logs no deben incluir secretos, HTML privado ni registros completos de DynamoDB.
+- Los límites de tiempo y refresco son conservadores, no garantías de disponibilidad. Un timeout, cambio del DOM, HTTP 403 o 429 detiene la recomendación; no hay reintentos rápidos ni selectores genéricos de respaldo.
+
+## 🗂️ Estructura del proyecto
+
+```text
 src/
-  domain/         Reglas de negocio puras: scoring, blacklist, normalización, tipos
-  application/     Orquestación del monitor (casos de uso, puertos)
-  adapters/         DynamoDB y Parameter Store
-  browser/         Cliente Playwright y parsers del DOM de Prestamype
-  lambda/           Handler de la función programada
-  cli/              auth:capture, dry-run y captura de DOM para fixtures
-  notifications/    Cliente y formato de mensajes de Telegram
-  security/         Redacción de datos sensibles y cifrado de sesión
-  runtime/          Contenedor Lambda, guarda de costes y errores
-tests/              Pruebas unitarias e infraestructura (mismo árbol que src/)
-scripts/            Operación (PowerShell) y utilidades de Telegram/fixtures (Node)
-layers/browser/     Dependencias de la capa Lambda (Playwright + Chromium)
-docs/               Runbook, operación y specs de diseño
-template.yaml        Infraestructura AWS (SAM)
+  domain/          Reglas de negocio: scoring, blacklist, normalización y tipos
+  application/     Casos de uso y puertos del monitor
+  adapters/        DynamoDB y Parameter Store
+  browser/         Cliente Playwright y parsers
+  lambda/          Handler programado
+  cli/             Captura de sesión, dry-run y captura de DOM
+  notifications/   Telegram y formato de mensajes
+  security/        Redacción de datos y cifrado de sesión
+  runtime/         Guarda de costes, contenedor y errores
+scripts/           Operación AWS, Telegram y fixtures
+layers/browser/    Playwright y Chromium para Lambda
+tests/              Pruebas unitarias e infraestructura
+docs/               Runbook, operación y comandos de Telegram
+template.yaml       Infraestructura AWS SAM
 ```
 
-## Límites de seguridad
+## 🤝 Contribuir
 
-- La salida usa una lista permitida de campos financieros y sanitiza antes y después del formateo: redacta RUC de 11 dígitos, cabeceras de autorización/cookies, credenciales Basic/Bearer, JWT, tokens, contraseñas, claves API y sesiones, además de controles y límites de tamaño. No se puede prometer la detección de cualquier secreto sin forma reconocible; no introduzcas secretos en nombres, razones, fixtures ni configuración visible.
-- Los errores externos se convierten en mensajes genéricos; nunca se imprime la excepción original.
-- El proyecto no resuelve ni evade CAPTCHA. Ante un desafío, expiración o bloqueo, se detiene y requiere intervención manual.
-- Las recomendaciones son informativas y no sustituyen la decisión del usuario; no existe código para invertir.
-- Solo se usan páginas visibles y navegación conservadora; no se consumen endpoints privados obtenidos por ingeniería inversa.
-- La política de recursos permite documentos, scripts y solicitudes de aplicación únicamente desde `https://www.prestamype.com`, más el documento inicial del apex para su redirección. Imágenes, fuentes, media, terceros y cualquier subdominio distinto de `www` se bloquean.
-- El plazo total por escaneo y el refresco periódico de detalle (15 minutos por defecto, configurable) son límites conservadores, no garantías de disponibilidad. Un timeout, CAPTCHA, cambio de DOM, 403 o 429 detiene la recomendación; no hay reintentos rápidos ni fallback a selectores genéricos.
-- Una guarda de costes mensual (`costLimits` en DynamoDB) pausa el monitor si el consumo de GB-segundos se acerca al límite configurado.
+Se agradecen correcciones, mejoras de seguridad y cambios acompañados de pruebas. Mantén los fixtures ficticios y sanitizados; no incluyas credenciales, sesiones, información personal ni datos financieros reales. Los cambios deben respetar el modo de solo lectura y no automatizar ofertas, inversiones, transferencias ni evasión de CAPTCHA.
 
-Para desarrollar, usa `npm run test:watch`. Los fixtures deben permanecer ficticios y sanitizados.
+### Contribuidores
 
-## Documentación adicional
+<a href="https://github.com/maishet/prestamype-monitor/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=maishet/prestamype-monitor" alt="Avatares de las personas contribuidoras de Prestamype Monitor" />
+</a>
 
-- [`docs/OPERACION.md`](docs/OPERACION.md) — comandos frecuentes del día a día.
-- [`docs/runbook.md`](docs/runbook.md) — preparación de cuenta, despliegue, incidentes, diagnóstico y desmontaje completo.
-- [`docs/telegram-commands.md`](docs/telegram-commands.md) — referencia de comandos de Telegram y su uso.
-- [`scripts/README.md`](scripts/README.md) — scripts de operación y utilidades de Telegram/fixtures.
+Las contribuciones aparecen automáticamente cuando GitHub actualiza el historial público del repositorio. [Ver contribuidores en GitHub](https://github.com/maishet/prestamype-monitor/graphs/contributors).
+
+## 📚 Documentación
+
+- [Runbook AWS](docs/runbook.md) — despliegue, sesiones, seguridad, costes, operación, incidentes y desmontaje.
+- [Operación](docs/OPERACION.md) — comandos frecuentes y procedimientos del día a día.
+- [Comandos de Telegram](docs/telegram-commands.md) — referencia de comandos administrativos.
+- [Scripts](scripts/README.md) — uso de utilidades y parámetros.
+
+## 📄 Licencia
+
+Este proyecto se distribuye bajo la [licencia ISC](LICENSE). Las marcas Prestamype y de otros terceros pertenecen a sus respectivos titulares.
+
+## 🧭 Estado del proyecto
+
+**Experimental.** Las páginas de Prestamype pueden cambiar y los recursos AWS pueden generar costes. Revisa los logs sanitizados y el presupuesto, conserva la activación bajo control humano y consulta el runbook antes de operar.
