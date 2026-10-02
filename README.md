@@ -164,4 +164,3 @@ Para desarrollar, usa `npm run test:watch`. Los fixtures deben permanecer fictic
 
 - [`docs/OPERACION.md`](docs/OPERACION.md) — comandos frecuentes del día a día.
 - [`docs/runbook.md`](docs/runbook.md) — preparación de cuenta, despliegue, incidentes, diagnóstico y desmontaje completo.
-- [`docs/superpowers/specs/2026-08-26-prestamype-monitor-design.md`](docs/superpowers/specs/2026-08-26-prestamype-monitor-design.md) — diseño original de filtros, puntuación y estrategia de navegación.
