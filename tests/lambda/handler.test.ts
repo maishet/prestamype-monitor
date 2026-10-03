@@ -10,6 +10,7 @@ import {
   SessionExpiredError,
   RateLimitError,
   PageStructureError,
+  ScanDeadlineError,
 } from "../../src/browser/errors.js";
 
 const NOW = new Date("2026-08-26T12:00:00.000Z");
@@ -135,16 +136,17 @@ describe("scan Lambda handler", () => {
           notifier: { send: vi.fn() },
           createSource: async () => ({
             getPortfolio: async () => {
-              throw new Error("portfolio failed");
+              throw new ScanDeadlineError();
             },
             listEligibleOpportunities: async () => [],
             close,
           }),
           config: CONFIG.monitor,
+          deferPortfolioRefresh: vi.fn(async () => undefined),
         },
         { owner: "message-1", lockTtlSeconds: 120, alertLeaseSeconds: 300 },
       ),
-    ).rejects.toThrow("portfolio failed");
+    ).rejects.toBeInstanceOf(ScanDeadlineError);
     expect(close).toHaveBeenCalledOnce();
     expect(releaseLock).toHaveBeenCalledWith("message-1");
   });

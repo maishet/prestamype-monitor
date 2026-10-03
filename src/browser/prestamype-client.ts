@@ -960,6 +960,21 @@ export class PrestamypeClient implements OpportunitySource {
           (fresh.first?.() ?? fresh).isVisible(),
           deadline,
         );
+        // If a known marketing campaign has no working application handler,
+        // remove only that verified generic overlay. Challenge and consent
+        // screens were rejected above, before this fallback can run.
+        if (
+          stillVisible &&
+          selector === ".generic-modal-overlay:visible" &&
+          /conoce una nueva oportunidad/iu.test(text) &&
+          modal.evaluate !== undefined
+        ) {
+          await this.withDeadline(
+            modal.evaluate((element) => element.remove(), ""),
+            deadline,
+          );
+          stillVisible = await this.withDeadline(modal.isVisible(), deadline);
+        }
         if (stillVisible)
           console.warn(
             "Dismissible overlay remains visible; continuing safely",

@@ -25,7 +25,7 @@ function statements(logicalId: string): JsonObject[] {
 }
 
 describe("SAM infrastructure", () => {
-  it("keeps commands lightweight and isolates them from session secrets", () => {
+  it("keeps commands lightweight and limits session access to status lookup", () => {
     const fn = resources.CommandsFunction.Properties;
     expect(fn.MemorySize).toBe(128);
     expect(fn.Timeout).toBe(10);
@@ -34,7 +34,9 @@ describe("SAM infrastructure", () => {
     const policy = JSON.stringify(resources.CommandsRole);
     expect(policy).not.toContain("SessionKeyParameterPath");
     expect(policy).not.toContain("TelegramTokenParameterPath");
-    expect(policy).not.toContain('"SESSION"');
+    // /sesionestado reads only the encrypted session record to report whether
+    // it exists; it cannot read the session encryption key from SSM.
+    expect(policy).toContain('"SESSION"');
     expect(policy).toContain("dynamodb:LeadingKeys");
     expect(policy).toContain("lambda:InvokeFunction");
   });

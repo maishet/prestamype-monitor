@@ -85,6 +85,8 @@ export interface MonitorConfig {
   portfolioSnapshot?: PortfolioSnapshot;
   portfolioSnapshotAt?: string;
   portfolioRefreshRequested?: boolean;
+  /** Retry time after a failed non-critical weekly portfolio refresh. */
+  portfolioRefreshRetryAt?: string;
 }
 
 export interface Evaluation {

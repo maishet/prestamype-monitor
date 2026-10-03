@@ -9,13 +9,19 @@ import type {
 import {
   alertIdentityKeys,
   runMonitor,
+  type MonitorDependencies,
 } from "../../src/application/monitor.js";
-import { PageStructureError } from "../../src/browser/errors.js";
+import {
+  PageStructureError,
+  ScanDeadlineError,
+} from "../../src/browser/errors.js";
 import type {
   MonitorRepository,
   OpportunityDetailPolicy,
   OpportunitySource,
 } from "../../src/application/ports.js";
+
+type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
 
 const opportunity: Opportunity = {
   id: "opp-1",
@@ -128,7 +134,7 @@ function setup(
       return "alert";
     },
   );
-  const dependencies: any = {
+  const dependencies: Mutable<MonitorDependencies> = {
     repository,
     notifier,
     createSource,
@@ -137,6 +143,7 @@ function setup(
     evaluate,
     formatAlert,
     refreshPortfolio: false,
+    deferPortfolioRefresh: vi.fn(async () => undefined),
     savePortfolioCache: vi.fn(async () => undefined),
   };
   return { events, source, repository, notifier, createSource, dependencies };
@@ -245,6 +252,7 @@ describe("runMonitor", () => {
       refreshedAt: "2026-08-27T11:00:00.000Z",
     };
     context.dependencies.refreshPortfolio = true;
+    context.dependencies.portfolioRefreshRetryAt = "2026-08-28T12:00:00.000Z";
 
     await runMonitor(context.dependencies, {
       owner: "run",
@@ -260,6 +268,96 @@ describe("runMonitor", () => {
       portfolio,
       "2026-08-27T12:00:00.000Z",
     );
+  });
+
+  it("continues opportunity evaluation and backs off when a portfolio refresh fails", async () => {
+    const context = setup();
+    const retryAfter = "2026-08-28T12:00:00.000Z";
+    context.dependencies.cachedPortfolio = {
+      snapshot: portfolio,
+      refreshedAt: "2026-08-20T12:00:00.000Z",
+    };
+    context.dependencies.deferPortfolioRefresh = vi.fn(async () => undefined);
+    const timeout = new Error("Portfolio navigation timed out");
+    timeout.name = "TimeoutError";
+    vi.mocked(context.source.getPortfolio).mockRejectedValue(timeout);
+
+    const result = await runMonitor(context.dependencies, {
+      owner: "run",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+
+    expect(result).toEqual({ acquired: true, evaluated: 1, alertsSent: 1 });
+    expect(context.dependencies.evaluate).toHaveBeenCalledOnce();
+    expect(context.notifier.send).toHaveBeenCalledOnce();
+    expect(context.dependencies.savePortfolioCache).not.toHaveBeenCalled();
+    expect(context.dependencies.deferPortfolioRefresh).toHaveBeenCalledWith(
+      retryAfter,
+      false,
+    );
+  });
+
+  it("continues opportunity evaluation when the optional portfolio page structure changes", async () => {
+    const context = setup();
+    context.dependencies.cachedPortfolio = {
+      snapshot: portfolio,
+      refreshedAt: "2026-08-20T12:00:00.000Z",
+    };
+    vi.mocked(context.source.getPortfolio).mockRejectedValue(
+      new PageStructureError("MISSING_FIELD", "portfolioTable"),
+    );
+
+    const result = await runMonitor(context.dependencies, {
+      owner: "run",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+
+    expect(result).toEqual({ acquired: true, evaluated: 1, alertsSent: 1 });
+    expect(context.notifier.send).toHaveBeenCalledOnce();
+    expect(context.dependencies.deferPortfolioRefresh).toHaveBeenCalledWith(
+      "2026-08-28T12:00:00.000Z",
+      false,
+    );
+  });
+
+  it("skips an automatic portfolio retry until its retry time", async () => {
+    const context = setup();
+    context.dependencies.cachedPortfolio = {
+      snapshot: portfolio,
+      refreshedAt: "2026-08-01T12:00:00.000Z",
+    };
+    context.dependencies.portfolioRefreshRetryAt = "2026-08-28T12:00:00.000Z";
+
+    const result = await runMonitor(context.dependencies, {
+      owner: "run",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+
+    expect(result).toEqual({ acquired: true, evaluated: 1, alertsSent: 1 });
+    expect(context.source.listEligibleOpportunities).toHaveBeenCalledOnce();
+    expect(context.source.getPortfolio).not.toHaveBeenCalled();
+    expect(context.notifier.send).toHaveBeenCalledOnce();
+  });
+
+  it("does not continue when the shared scan deadline expires during portfolio refresh", async () => {
+    const context = setup();
+    vi.mocked(context.source.getPortfolio).mockRejectedValue(
+      new ScanDeadlineError(),
+    );
+
+    await expect(
+      runMonitor(context.dependencies, {
+        owner: "run",
+        lockTtlSeconds: 60,
+        alertLeaseSeconds: 30,
+      }),
+    ).rejects.toBeInstanceOf(ScanDeadlineError);
+
+    expect(context.notifier.send).not.toHaveBeenCalled();
+    expect(context.dependencies.deferPortfolioRefresh).not.toHaveBeenCalled();
   });
 
   it("keeps one key for an auction no matter what changes about it", () => {
@@ -290,9 +388,7 @@ describe("runMonitor", () => {
   it("deduplicates row identities that resolve to the same auction code", () => {
     expect(
       alertIdentityKeys({ ...opportunity, id: "row-derived-id-1" }),
-    ).toEqual(
-      alertIdentityKeys({ ...opportunity, id: "row-derived-id-2" }),
-    );
+    ).toEqual(alertIdentityKeys({ ...opportunity, id: "row-derived-id-2" }));
   });
   it("records that an opportunity has alerted so its panel stays shut", async () => {
     const context = setup();
@@ -463,7 +559,7 @@ describe("runMonitor", () => {
       ["blacklist match"],
       ["blacklist match", "Nuevo conflicto"],
     ]) {
-      vi.mocked(context.dependencies.evaluate).mockReturnValue({
+      vi.mocked(context.dependencies.evaluate!).mockReturnValue({
         ...denied,
         warnings,
       });
@@ -486,7 +582,7 @@ describe("runMonitor", () => {
         warnings: ["blacklist", "collection"],
       },
     });
-    vi.mocked(context.dependencies.formatAlert).mockImplementation(() => {
+    vi.mocked(context.dependencies.formatAlert!).mockImplementation(() => {
       throw new Error("format failed");
     });
     await expect(
@@ -749,7 +845,7 @@ describe("runMonitor", () => {
       opportunity,
       { ...opportunity, id: "opp-2" },
     ]);
-    vi.mocked(context.dependencies.evaluate)
+    vi.mocked(context.dependencies.evaluate!)
       .mockReturnValueOnce({
         decision: "INVEST",
         score: 90,
@@ -791,12 +887,12 @@ describe("runMonitor", () => {
     expect(
       vi
         .mocked(context.repository.claimAlert)
-        .mock.calls.map((call: any) => call[2]),
+        .mock.calls.map((call) => call[2]!),
     ).toEqual([1_787_832_090, 1_787_832_150]);
     expect(
       vi
-        .mocked(context.dependencies.formatAlert)
-        .mock.calls.map((call: any) => call[3]),
+        .mocked(context.dependencies.formatAlert!)
+        .mock.calls.map((call) => call[3]!),
     ).toEqual([
       new Date("2026-08-27T12:01:00.000Z"),
       new Date("2026-08-27T12:02:00.000Z"),

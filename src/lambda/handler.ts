@@ -90,6 +90,7 @@ export interface ScanHandlerDependencies {
       readonly snapshot: MonitorConfig["portfolioSnapshot"];
       readonly refreshedAt?: string | undefined;
       readonly refreshRequested?: boolean | undefined;
+      readonly retryAfter?: string | undefined;
     },
   ) => Promise<MonitorDependencies>;
   readonly runMonitor: (
@@ -413,6 +414,7 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
           snapshot: config.monitor.portfolioSnapshot,
           refreshedAt: config.monitor.portfolioSnapshotAt,
           refreshRequested: config.monitor.portfolioRefreshRequested,
+          retryAfter: config.monitor.portfolioRefreshRetryAt,
         },
       );
       controller.signal.throwIfAborted();
@@ -526,7 +528,7 @@ function createProductionHandler(): ReturnType<typeof createScanHandler> {
     assessCost: assessMonthlyUsage,
     loadSecrets: loadRuntimeSecrets,
     decryptSession: decryptStoredSession,
-      createMonitorDependencies: async (
+    createMonitorDependencies: async (
       storageState,
       config,
       signal,
@@ -558,16 +560,38 @@ function createProductionHandler(): ReturnType<typeof createScanHandler> {
             }
           : {}),
         refreshPortfolio: portfolioCache?.refreshRequested === true,
+        ...(typeof portfolioCache?.retryAfter === "string"
+          ? { portfolioRefreshRetryAt: portfolioCache.retryAfter }
+          : {}),
         savePortfolioCache: async (snapshot, refreshedAt) => {
+          const latest = await repository.loadConfig<ScanRuntimeConfig>();
+          if (latest === null) return;
+          const {
+            portfolioRefreshRetryAt: _retryAfter,
+            ...monitorWithoutRetry
+          } = latest.monitor;
+          void _retryAfter;
+          await repository.saveConfig({
+            ...latest,
+            monitor: {
+              ...monitorWithoutRetry,
+              portfolioSnapshot: snapshot,
+              portfolioSnapshotAt: refreshedAt,
+              portfolioRefreshRequested: false,
+            },
+          });
+        },
+        deferPortfolioRefresh: async (retryAfter, consumeManualRequest) => {
           const latest = await repository.loadConfig<ScanRuntimeConfig>();
           if (latest === null) return;
           await repository.saveConfig({
             ...latest,
             monitor: {
               ...latest.monitor,
-              portfolioSnapshot: snapshot,
-              portfolioSnapshotAt: refreshedAt,
-              portfolioRefreshRequested: false,
+              ...(consumeManualRequest
+                ? { portfolioRefreshRequested: false }
+                : {}),
+              portfolioRefreshRetryAt: retryAfter,
             },
           });
         },

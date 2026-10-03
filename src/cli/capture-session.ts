@@ -10,7 +10,8 @@ const OPPORTUNITIES_URL =
   "https://www.prestamype.com/app/inversionista/oportunidades";
 const AUTHENTICATED_MARKER =
   '[data-opportunity-card], [data-page="opportunities"], tr.row_table, div.row_table';
-const CAPTCHA_MARKER = '[data-real-authentication-challenge]';
+const CAPTCHA_MARKER =
+  '[data-challenge="captcha"], [data-real-authentication-challenge]';
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 export class CaptureSessionError extends Error {

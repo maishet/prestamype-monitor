@@ -1,7 +1,4 @@
-import {
-  canReachReview,
-  evaluateOpportunity,
-} from "../domain/evaluate.js";
+import { canReachReview, evaluateOpportunity } from "../domain/evaluate.js";
 import type {
   BlacklistEntry,
   Evaluation,
@@ -13,6 +10,12 @@ import { normalizeLegalName } from "../domain/normalization.js";
 import { opportunityFingerprint } from "../browser/prestamype-client.js";
 import { redactSensitiveText } from "../security/redaction.js";
 import { formatOpportunityAlert } from "../notifications/telegram-message.js";
+import {
+  RateLimitError,
+  ScanDeadlineError,
+  SessionChallengeError,
+  SessionExpiredError,
+} from "../browser/errors.js";
 import type {
   MonitorRepository,
   Notifier,
@@ -37,11 +40,18 @@ export interface MonitorDependencies {
     readonly refreshedAt: string;
   };
   readonly refreshPortfolio?: boolean;
+  readonly portfolioRefreshRetryAt?: string;
+  readonly deferPortfolioRefresh: (
+    retryAfter: string,
+    consumeManualRequest: boolean,
+  ) => Promise<void>;
   readonly savePortfolioCache?: (
     snapshot: PortfolioSnapshot,
     refreshedAt: string,
   ) => Promise<void>;
 }
+
+const PORTFOLIO_REFRESH_RETRY_DELAY_MS = 24 * 60 * 60 * 1_000;
 
 export interface MonitorRunInput {
   readonly owner: string;
@@ -110,6 +120,15 @@ function errorWithCause(error: unknown, fallback: string): Error {
   });
 }
 
+function isCriticalPortfolioRefreshError(error: unknown): boolean {
+  return (
+    error instanceof ScanDeadlineError ||
+    error instanceof SessionChallengeError ||
+    error instanceof SessionExpiredError ||
+    error instanceof RateLimitError
+  );
+}
+
 export async function runMonitor(
   dependencies: MonitorDependencies,
   input: MonitorRunInput,
@@ -133,13 +152,21 @@ export async function runMonitor(
     source = await dependencies.createSource();
     source.beginScan?.();
     const cachedPortfolio = dependencies.cachedPortfolio;
-    const cacheAgeMs = cachedPortfolio === undefined
-      ? Number.POSITIVE_INFINITY
-      : now.getTime() - Date.parse(cachedPortfolio.refreshedAt);
+    const cacheAgeMs =
+      cachedPortfolio === undefined
+        ? Number.POSITIVE_INFINITY
+        : now.getTime() - Date.parse(cachedPortfolio.refreshedAt);
+    const retryAtMs =
+      dependencies.portfolioRefreshRetryAt === undefined
+        ? Number.NaN
+        : Date.parse(dependencies.portfolioRefreshRetryAt);
+    const refreshBackoffActive =
+      Number.isFinite(retryAtMs) && now.getTime() < retryAtMs;
     const refreshPortfolio =
       dependencies.refreshPortfolio === true ||
-      !Number.isFinite(cacheAgeMs) ||
-      cacheAgeMs >= 7 * 24 * 60 * 60 * 1_000;
+      (!refreshBackoffActive &&
+        (!Number.isFinite(cacheAgeMs) ||
+          cacheAgeMs >= 7 * 24 * 60 * 60 * 1_000));
     const emptyPortfolio: PortfolioSnapshot = {
       availableBalanceCents: null,
       activeTotalCents: null,
@@ -174,59 +201,88 @@ export async function runMonitor(
       cachedPortfolio === undefined
         ? undefined
         : {
-          needsDebtor: (opportunity) =>
-            canReachReview(
-              {
-                opportunity,
-                portfolio,
-                blacklistEntries,
-                config: dependencies.config,
-              },
-              { debtorHistory: true, supplierHistory: true },
-            ),
-          needsSupplier: (opportunity) =>
-            canReachReview(
-              {
-                opportunity,
-                portfolio,
-                blacklistEntries,
-                config: dependencies.config,
-              },
-              { debtorHistory: false, supplierHistory: true },
-            ),
+            needsDebtor: (opportunity) =>
+              canReachReview(
+                {
+                  opportunity,
+                  portfolio,
+                  blacklistEntries,
+                  config: dependencies.config,
+                },
+                { debtorHistory: true, supplierHistory: true },
+              ),
+            needsSupplier: (opportunity) =>
+              canReachReview(
+                {
+                  opportunity,
+                  portfolio,
+                  blacklistEntries,
+                  config: dependencies.config,
+                },
+                { debtorHistory: false, supplierHistory: true },
+              ),
           },
     );
     if (refreshPortfolio) {
-      portfolio = await source.getPortfolio();
-      const refreshedAt = now.toISOString();
-      await dependencies.savePortfolioCache?.(portfolio, refreshedAt);
-      const refreshedEntries: BlacklistEntry[] = [];
-      for (const conflict of portfolio.collectionConflicts ?? []) {
-        const party = conflict.party;
-        if (
-          hasBlacklistIdentity(
-            party,
-            [...persistedBlacklist, ...detectedEntries, ...refreshedEntries],
-          )
-        )
-          continue;
-        refreshedEntries.push({
-          taxId: party.taxId,
-          normalizedName: normalizeLegalName(party.legalName),
-          reason: `Cobranza en curso: ${safeCollectionText(conflict.stage)}`,
-          source: "portfolio-collection",
-          createdAt: now.toISOString(),
-          status: safeCollectionText(conflict.state),
-          evidence: safeCollectionText(conflict.stage),
-        });
+      let portfolioRefreshed = false;
+      try {
+        portfolio = await source.getPortfolio();
+        portfolioRefreshed = true;
+      } catch (error) {
+        if (isCriticalPortfolioRefreshError(error)) throw error;
+        const retryAfter = new Date(
+          now.getTime() + PORTFOLIO_REFRESH_RETRY_DELAY_MS,
+        ).toISOString();
+        const errorType =
+          error instanceof Error &&
+          /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name)
+            ? error.name
+            : "UnknownError";
+        console.warn(
+          "Portfolio refresh failed; continuing with cached data",
+          JSON.stringify({ errorType, retryAfter }),
+        );
+        try {
+          await dependencies.deferPortfolioRefresh(
+            retryAfter,
+            dependencies.refreshPortfolio === true,
+          );
+        } catch {
+          console.warn("Could not persist portfolio refresh backoff");
+        }
       }
-      if (refreshedEntries.length > 0)
-        await dependencies.repository.addBlacklistEntries(refreshedEntries);
-      blacklistEntries = [
-        ...persistedBlacklist,
-        ...detectedEntries,
-        ...refreshedEntries,
-      ];
+      if (portfolioRefreshed) {
+        const refreshedAt = now.toISOString();
+        await dependencies.savePortfolioCache?.(portfolio, refreshedAt);
+        const refreshedEntries: BlacklistEntry[] = [];
+        for (const conflict of portfolio.collectionConflicts ?? []) {
+          const party = conflict.party;
+          if (
+            hasBlacklistIdentity(party, [
+              ...persistedBlacklist,
+              ...detectedEntries,
+              ...refreshedEntries,
+            ])
+          )
+            continue;
+          refreshedEntries.push({
+            taxId: party.taxId,
+            normalizedName: normalizeLegalName(party.legalName),
+            reason: `Cobranza en curso: ${safeCollectionText(conflict.stage)}`,
+            source: "portfolio-collection",
+            createdAt: now.toISOString(),
+            status: safeCollectionText(conflict.state),
+            evidence: safeCollectionText(conflict.stage),
+          });
+        }
+        if (refreshedEntries.length > 0)
+          await dependencies.repository.addBlacklistEntries(refreshedEntries);
+        blacklistEntries = [
+          ...persistedBlacklist,
+          ...detectedEntries,
+          ...refreshedEntries,
+        ];
+      }
     }
     const observedBalance = source.availableBalanceCents?.() ?? null;
     const effectivePortfolio: PortfolioSnapshot =
