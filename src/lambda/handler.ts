@@ -12,6 +12,7 @@ import { loadRuntimeSecrets } from "../adapters/parameter-store.js";
 import { PrestamypeClient } from "../browser/prestamype-client.js";
 import type { EncryptedSession, MonitorConfig } from "../domain/types.js";
 import { TelegramClient } from "../notifications/telegram-client.js";
+import { createAdminDiagnosticNotifier } from "../notifications/diagnostic-notifier.js";
 import { decryptSession as decryptStoredSession } from "../security/session-crypto.js";
 import { redactSensitiveText } from "../security/redaction.js";
 import {
@@ -611,9 +612,9 @@ function createProductionHandler(): ReturnType<typeof createScanHandler> {
         options === undefined ? undefined : { signal: options.signal },
       );
       options?.signal.throwIfAborted();
-      await new TelegramClient({
+      await createAdminDiagnosticNotifier({
         token: secrets.telegramToken,
-        chatId: secrets.telegramChatId,
+        administratorChatId: requiredEnvironment("TELEGRAM_OWNER_ID"),
       }).send(
         message,
         options === undefined ? undefined : { signal: options.signal },
