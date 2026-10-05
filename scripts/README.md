@@ -81,13 +81,13 @@ npm run telegram:test
 
 Lee el token y los destinos desde Parameter Store (`/prestamype/prod/telegram-token` y `/prestamype/prod/telegram-chat-id` por defecto) y envía un mensaje real de prueba a cada chat indicado. Si hay más de un destino, sepáralos por comas en el parámetro SSM de chat. Requiere AWS CLI/credenciales con permiso de lectura de esos secretos y salida a Telegram. Opcionalmente, las variables `AWS_REGION`, `TELEGRAM_TOKEN_PARAMETER`, `TELEGRAM_CHAT_ID_PARAMETER` y `TELEGRAM_TEST_MESSAGE` permiten personalizar región, rutas y texto; no pongas secretos en `TELEGRAM_TEST_MESSAGE`.
 
-### Listar chats vistos por el bot
+### Listar chats configurados
 
 ```powershell
 npm run telegram:list-chats
 ```
 
-Consulta `getUpdates` y lista IDs/tipos/títulos de chats presentes en actualizaciones recientes. Envía primero `/start` al bot en privado o en el grupo. Este método no funciona mientras Telegram tenga registrado el webhook del monitor; no retires el webhook en producción para listar chats. Región y ruta del token se pueden ajustar con `AWS_REGION` y `TELEGRAM_TOKEN_PARAMETER`.
+Lee los destinos del parámetro SSM de chat y consulta `getChat` por cada uno para listar ID/tipo/título, sin enviar mensajes. Funciona con el webhook del monitor registrado. Un destino que Telegram rechace (ID obsoleto, bot expulsado del grupo) aparece como `ERROR` con el motivo y el comando termina con código 1. No descubre chats nuevos: solo muestra los ya configurados. Región y rutas se pueden ajustar con `AWS_REGION`, `TELEGRAM_TOKEN_PARAMETER` y `TELEGRAM_CHAT_ID_PARAMETER`.
 
 ### Preparar o registrar el webhook
 
