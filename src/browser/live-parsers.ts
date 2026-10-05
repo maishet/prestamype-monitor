@@ -301,6 +301,22 @@ export function isOpportunityTableReady(html: string): boolean {
   }
 }
 
+export interface OpportunityTableState {
+  readonly tables: number;
+  readonly dataRows: number;
+  readonly loadingRows: number;
+}
+
+/** Counts only: enough to tell a board that never rendered from a changed one. */
+export function describeOpportunityTable(html: string): OpportunityTableState {
+  const $ = load(html);
+  return {
+    tables: $(LIVE_SELECTORS.opportunitiesTable).length,
+    dataRows: $(LIVE_SELECTORS.dataRow).length,
+    loadingRows: $(LIVE_SELECTORS.loadingRow).length,
+  };
+}
+
 function parseOpportunityRow(
   $: CheerioAPI,
   row: Cheerio<AnyNode>,

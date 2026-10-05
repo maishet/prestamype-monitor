@@ -74,7 +74,9 @@ aws cloudformation describe-stacks --stack-name prestamype-monitor --region sa-e
 aws logs tail /aws/lambda/prestamype-monitor-scan --region sa-east-1 --since 10m --format short
 ```
 
-Errores `PageStructureError` indican que cambió el DOM o faltan datos en la página. `ScanDeadlineError` indica que el navegador no obtuvo la tabla dentro del límite seguro.
+Errores `PageStructureError` indican que cambió el DOM o faltan datos en la página. `ScanDeadlineError` indica que el ciclo agotó su límite seguro de navegador.
+
+Si la tabla de oportunidades no aparece en 12 s, el ciclo reabre la página una vez. Si tampoco aparece, falla con `The opportunities table did not render` sin pausar el monitor: el siguiente ciclo lo reintenta. Solo se pausa por `PageStructureError (opportunitiesTable)` cuando hay filas visibles que ya no se pueden leer. El aviso `Wait budget ran out` incluye `state` con el número de tablas, filas y filas de carga.
 
 ## Flujo de validación
 

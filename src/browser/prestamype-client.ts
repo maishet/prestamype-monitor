@@ -28,6 +28,7 @@ import {
 import {
   LIVE_SELECTORS,
   OPPORTUNITIES_URL,
+  describeOpportunityTable,
   isOpportunityTableLoading,
   isOpportunityTableReady,
   isPanelOpen,
@@ -479,12 +480,30 @@ export class PrestamypeClient implements OpportunitySource {
     await this.step("dismiss-overlays", () =>
       this.dismissOverlay(page, deadline),
     );
+    const reopenBoard = async (): Promise<void> => {
+      await this.navigate(page, OPPORTUNITIES_PATH, deadline);
+      await this.assertAuthenticated(page, deadline);
+      await this.dismissOverlay(page, deadline);
+    };
     if (
       !(await this.step("wait-rows", () =>
         this.waitForOpportunityRows(page, deadline),
       ))
-    )
-      throw new PageStructureError("MISSING_FIELD", "opportunitiesTable");
+    ) {
+      // About one load in a hundred never finishes booting the SPA: the route's
+      // lazy chunks are not even requested. A second navigation recovers it,
+      // and pausing the monitor for it would need a manual /recuperar.
+      console.warn(
+        "Opportunity table did not render; reopening the board once",
+      );
+      await this.step("reload-opportunities", reopenBoard);
+      if (
+        !(await this.step("wait-reloaded-rows", () =>
+          this.waitForOpportunityRows(page, deadline),
+        ))
+      )
+        throw await this.boardNotRendered(page, deadline);
+    }
     let sortedByReturn = await this.step("sort", () =>
       this.sortByHighestReturn(page, deadline),
     );
@@ -501,18 +520,14 @@ export class PrestamypeClient implements OpportunitySource {
       console.warn(
         "Sorted opportunity table did not render; reopening the board once",
       );
-      await this.step("reload-opportunities", async () => {
-        await this.navigate(page, OPPORTUNITIES_PATH, deadline);
-        await this.assertAuthenticated(page, deadline);
-        await this.dismissOverlay(page, deadline);
-      });
+      await this.step("reload-opportunities", reopenBoard);
       sortedByReturn = false;
       if (
         !(await this.step("wait-reloaded-rows", () =>
           this.waitForOpportunityRows(page, deadline),
         ))
       )
-        throw new PageStructureError("MISSING_FIELD", "opportunitiesTable");
+        throw await this.boardNotRendered(page, deadline);
     }
 
     const floor = walkFloor(config);
@@ -1007,20 +1022,41 @@ export class PrestamypeClient implements OpportunitySource {
     ready: (html: string) => boolean,
     deadline: number,
     budgetMs: number,
+    describe?: (html: string) => object,
   ): Promise<string | null> {
     const limit = Math.min(deadline, this.now() + budgetMs);
     const started = this.now();
+    let last: string | null = null;
+    const outOfBudget = (): null => {
+      console.warn(
+        "Wait budget ran out",
+        JSON.stringify({
+          waitingFor: label,
+          waitedMs: this.now() - started,
+          ...(last !== null && describe !== undefined
+            ? { state: describe(last) }
+            : {}),
+        }),
+      );
+      this.logRequestSummary(`timeout:${label}`);
+      return null;
+    };
+    // The races below are timed against this wait's own budget, so losing one
+    // while the scan still has time left is the budget running out, not the
+    // scan deadline: a page busy re-rendering can sit on content() past it.
+    const budgetOnly = (error: unknown): boolean =>
+      error instanceof ScanDeadlineError && this.now() < deadline;
     for (;;) {
       const remaining = limit - this.now();
-      if (remaining <= 0) {
-        console.warn(
-          "Wait budget ran out",
-          JSON.stringify({ waitingFor: label, waitedMs: this.now() - started }),
-        );
-        this.logRequestSummary(`timeout:${label}`);
-        return null;
+      if (remaining <= 0) return outOfBudget();
+      let html: string;
+      try {
+        html = await this.withDeadline(page.content(), limit);
+      } catch (error) {
+        if (!budgetOnly(error)) throw error;
+        return outOfBudget();
       }
-      const html = await this.withDeadline(page.content(), limit);
+      last = html;
       if (ready(html)) {
         console.info(
           "Ready",
@@ -1033,8 +1069,45 @@ export class PrestamypeClient implements OpportunitySource {
         this.logRequestSummary(`ready:${label}`);
         return html;
       }
-      await this.withDeadline(this.sleep(Math.min(250, remaining)), limit + 50);
+      try {
+        await this.withDeadline(
+          this.sleep(Math.min(250, remaining)),
+          limit + 50,
+        );
+      } catch (error) {
+        if (!budgetOnly(error)) throw error;
+        return outOfBudget();
+      }
     }
+  }
+
+  /**
+   * What to throw once a reopened board still has no readable rows.
+   *
+   * Rows on screen that no longer parse mean the markup changed, which needs a
+   * person and is worth pausing for. Anything else is a board that did not
+   * finish loading, and the next tick gets a fresh attempt at it.
+   */
+  private async boardNotRendered(
+    page: PageLike,
+    deadline: number,
+  ): Promise<Error> {
+    const unrendered = new Error("The opportunities table did not render");
+    let html: string;
+    try {
+      html = await this.withDeadline(
+        page.content(),
+        Math.min(deadline, this.now() + 2_000),
+      );
+    } catch (error) {
+      if (!(error instanceof ScanDeadlineError) || this.now() >= deadline)
+        throw error;
+      return unrendered;
+    }
+    const state = describeOpportunityTable(html);
+    if (state.dataRows > 0 && state.loadingRows === 0)
+      return new PageStructureError("MISSING_FIELD", "opportunitiesTable");
+    return unrendered;
   }
 
   /** False when the budget ran out with the table still unrendered. */
@@ -1064,6 +1137,7 @@ export class PrestamypeClient implements OpportunitySource {
         isOpportunityTableReady,
         deadline,
         12_000,
+        describeOpportunityTable,
       )) !== null
     );
   }

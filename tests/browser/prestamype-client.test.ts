@@ -915,12 +915,130 @@ describe("PrestamypeClient failure handling", () => {
     client.beginScan();
     // An unread board must fail closed rather than be mistaken for an empty
     // opportunity list or continue into sorting without a rendered control.
-    await expect(client.listEligibleOpportunities(config, {})).rejects.toThrow(
-      "A required page field is missing (opportunitiesTable)",
+    // It is not a changed page either: that would pause the monitor for a load
+    // the next tick gets through.
+    const failure = await client
+      .listEligibleOpportunities(config, {})
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(PageStructureError);
+    expect((failure as Error).message).toBe(
+      "The opportunities table did not render",
     );
     await client.close();
-    expect(warn).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      "Wait budget ran out",
+      expect.stringContaining('"loadingRows":'),
+    );
     warn.mockRestore();
+  });
+
+  it("reopens the board once when the first load never renders the table", async () => {
+    const loading = fixture("opportunities-table-loading.html");
+    let currentHtml = loading;
+    const fake = createFakePage({ html: () => currentHtml });
+    let navigations = 0;
+    fake.page.goto = async (target) => {
+      fake.setUrl(target);
+      navigations += 1;
+      if (navigations === 2) currentHtml = TABLE;
+      return { status: () => 200 };
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let clock = 0;
+    const client = createClient(fake.page, {
+      now: () => clock,
+      sleep: async (milliseconds: number) => {
+        clock += milliseconds;
+      },
+    });
+    client.beginScan();
+    try {
+      await client.listEligibleOpportunities(
+        { ...config, allowedRisks: [] },
+        {},
+      );
+      expect(navigations).toBe(2);
+    } finally {
+      await client.close();
+      warn.mockRestore();
+    }
+  });
+
+  it("still reports a changed page when rendered rows no longer parse", async () => {
+    const changed = TABLE.replaceAll("<td", "<div").replaceAll(
+      "</td>",
+      "</div>",
+    );
+    const fake = createFakePage({ html: () => changed });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let clock = 0;
+    const client = createClient(fake.page, {
+      now: () => clock,
+      sleep: async (milliseconds: number) => {
+        clock += milliseconds;
+      },
+    });
+    client.beginScan();
+    await expect(
+      client.listEligibleOpportunities(config, {}),
+    ).rejects.toBeInstanceOf(PageStructureError);
+    await client.close();
+    warn.mockRestore();
+  });
+
+  it("treats a page that stops answering mid-wait as an unrendered table", async () => {
+    let navigations = 0;
+    let hung = false;
+    const fake = createFakePage({ html: () => TABLE });
+    const content = fake.page.content;
+    fake.page.content = () =>
+      hung ? new Promise<string>(() => undefined) : content();
+    fake.page.goto = async (target) => {
+      fake.setUrl(target);
+      navigations += 1;
+      hung = false;
+      return { status: () => 200 };
+    };
+    const original = fake.page.locator;
+    fake.page.locator = (selector) => {
+      if (selector.includes("multi-select-trigger"))
+        return {
+          ...original(selector),
+          textContent: async () => "Ordenar por: Recomendado",
+        };
+      if (selector.includes("multi-select-option"))
+        return {
+          ...original(selector),
+          click: async () => {
+            hung = true;
+          },
+        };
+      return original(selector);
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.useFakeTimers();
+    const client = createClient(fake.page, {
+      now: () => Date.now(),
+      sleep: (milliseconds: number) =>
+        new Promise<void>((resolve) => setTimeout(resolve, milliseconds)),
+    });
+    client.beginScan();
+    try {
+      const scan = client.listEligibleOpportunities(
+        { ...config, allowedRisks: [] },
+        {},
+      );
+      await vi.advanceTimersByTimeAsync(13_000);
+      // The wait's own twelve seconds ran out, not the scan's deadline: this
+      // used to surface as ScanDeadlineError and skip the reload below.
+      await expect(scan).resolves.toEqual([]);
+      expect(navigations).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      await client.close();
+      warn.mockRestore();
+    }
   });
 
   it("refuses to report an unrendered portfolio as an empty one", async () => {
