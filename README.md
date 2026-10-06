@@ -143,6 +143,12 @@ sam deploy --stack-name prestamype-monitor --resolve-s3 --region sa-east-1 --cap
 
 La capa de Chromium/Playwright supera el límite de 50 MiB para cargas ZIP directas de Lambda. Usa SAM con S3/CloudFormation; no publiques la capa con `--zip-file`. En una cuenta nueva, sigue el [runbook de despliegue](docs/runbook.md) antes de desplegar: incluye preparación de cuenta, presupuesto, parámetros SSM, blacklist y sesión.
 
+### Despliegue automático (GitHub Actions)
+
+Cada push a `main` ejecuta [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml): typecheck, lint y tests, y si pasan, `sam build --use-container` y `sam deploy` a `sa-east-1`. Los pull requests solo ejecutan la verificación.
+
+No hay claves de AWS en GitHub. El workflow obtiene credenciales temporales por OIDC asumiendo un rol que solo puede usar la rama `main` de este repositorio y que solo tiene permisos sobre el stack `prestamype-monitor`. Ese rol se crea una vez con [`infra/github-oidc-deploy.yaml`](infra/github-oidc-deploy.yaml); el único dato que se guarda en GitHub es su ARN, como secreto `AWS_DEPLOY_ROLE_ARN`. Los pasos están en el [runbook](docs/runbook.md#despliegue-automático-desde-github).
+
 ## 💸 AWS y control de costes
 
 Desplegar y operar recursos AWS puede generar cargos. El gasto depende de la región, la frecuencia de escaneo, las invocaciones y duración de Lambda, DynamoDB, almacenamiento y solicitudes de CloudWatch, Parameter Store y S3. No se promete un coste mensual fijo.

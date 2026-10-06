@@ -1,0 +1,54 @@
+name: Verify and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Typecheck, lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # The modal regression suite drives a real Chromium.
+      - run: npx playwright install --with-deps chromium
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+
+  deploy:
+    name: Deploy to AWS (sa-east-1)
+    needs: verify
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Short-lived credentials through GitHub's OIDC provider; no access keys
+    # are stored anywhere. The role is created by infra/github-oidc-deploy.yaml.
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      group: deploy-prestamype-monitor
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: sa-east-1
+      - run: sam build --use-container
+      # Stack name, region, capabilities and parameter paths come from
+      # samconfig.toml; none of them is a secret.
+      - run: sam deploy --no-confirm-changeset --no-fail-on-empty-changeset

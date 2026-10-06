@@ -77,6 +77,40 @@ Puede quedar un mensaje ya en vuelo; confirma que no aparecen nuevos ciclos tras
 - Los logs deben contener categorías y correlaciones sanitizadas, nunca token, chat ID, clave, cookies, cabeceras, HTML privado, errores crudos ni registros completos de DynamoDB. Retención prevista: siete días.
 - Revisa al menos semanalmente invocaciones, GB-segundos, solicitudes SQS/DynamoDB/SSM, logs ingeridos y presupuesto. Desactiva ante cualquier anomalía o correo de coste.
 
+## Despliegue automático desde GitHub
+
+El workflow [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) despliega cada push a `main` tras pasar typecheck, lint y tests. Usa OIDC: GitHub emite un token de corta duración y AWS lo cambia por credenciales temporales de un rol dedicado. Nunca se crean ni guardan access keys.
+
+Preparación, una sola vez, con una identidad administrativa local:
+
+1. Obtén el bucket de artefactos de SAM:
+
+   ```powershell
+   aws cloudformation describe-stack-resource --stack-name aws-sam-cli-managed-default --logical-resource-id SamCliSourceBucket --region sa-east-1 --query StackResourceDetail.PhysicalResourceId --output text
+   ```
+
+2. Crea el proveedor OIDC y el rol de despliegue (usa `CreateOidcProvider=false` si la cuenta ya tiene el proveedor `token.actions.githubusercontent.com`):
+
+   ```powershell
+   aws cloudformation deploy --template-file infra/github-oidc-deploy.yaml --stack-name prestamype-monitor-github-deploy --region sa-east-1 --capabilities CAPABILITY_NAMED_IAM --parameter-overrides SamSourceBucket=<bucket-del-paso-1>
+   ```
+
+3. Lee el ARN del rol y guárdalo en GitHub como secreto de repositorio `AWS_DEPLOY_ROLE_ARN` (Settings → Secrets and variables → Actions):
+
+   ```powershell
+   aws cloudformation describe-stacks --stack-name prestamype-monitor-github-deploy --region sa-east-1 --query "Stacks[0].Outputs[?OutputKey=='DeployRoleArn'].OutputValue" --output text
+   ```
+
+4. Protege la rama `main` en GitHub (require pull request o, como mínimo, impide push forzado): quien pueda escribir en `main` puede desplegar.
+
+Qué puede y qué no puede hacer el rol:
+
+- Solo lo asume un workflow de `maishet/prestamype-monitor` ejecutándose en `refs/heads/main`; un fork, otra rama o un pull request no obtienen credenciales.
+- Solo toca los stacks `prestamype-monitor` y `aws-sam-cli-managed-default`, el bucket de artefactos, y funciones, capas, roles, tabla, log groups y regla de EventBridge cuyo nombre empieza por `prestamype-monitor-`.
+- No lee Parameter Store ni DynamoDB: la sesión cifrada, el token de Telegram y los datos del monitor siguen fuera del alcance del pipeline.
+
+Para desplegar a mano sigue valiendo `sam build --use-container` y `sam deploy` con la identidad local. Si un despliegue automático falla, el stack queda en su versión anterior; revisa el job en la pestaña Actions y los eventos del stack en CloudFormation.
+
 ## Rollback
 
 1. Ejecuta `./scripts/deactivate-monitor.ps1`.
