@@ -2,7 +2,10 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Every test spawns a PowerShell; the 5 s default is tight on a cold CI runner.
+vi.setConfig({ testTimeout: 30_000 });
 
 const scripts = [
   "bootstrap-parameters.ps1",

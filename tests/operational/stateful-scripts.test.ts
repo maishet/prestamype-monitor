@@ -9,6 +9,10 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+
+// Every test spawns a PowerShell and a Node child; the 5 s default is tight on
+// a cold CI runner.
+vi.setConfig({ testTimeout: 30_000 });
 import { createScanHandler } from "../../src/lambda/handler.js";
 import { captureSession } from "../../src/cli/capture-session.js";
 
