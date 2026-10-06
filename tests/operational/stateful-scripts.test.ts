@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createScanHandler } from "../../src/lambda/handler.js";
 import { captureSession } from "../../src/cli/capture-session.js";
@@ -107,10 +107,10 @@ function runResumeWithConfirmation(
 
 describe.each(shells)("stateful operational scripts in %s", (shell) => {
   it("bootstraps disabled config before streaming secrets and drains a flooding child", () => {
-    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-    const statePath = `${dir}\\state.json`;
-    const helperPath = `${dir}\\helper.json`;
-    const testScript = `${dir}\\bootstrap-test.ps1`;
+    const dir = mkdtempSync(join(tmpdir(), "prestamype-ops-"));
+    const statePath = join(dir, "state.json");
+    const helperPath = join(dir, "helper.json");
+    const testScript = join(dir, "bootstrap-test.ps1");
     const fakeHelper = resolve("tests/operational/fake-secure-child.mjs");
     const production = readFileSync(
       resolve("scripts/bootstrap-parameters.ps1"),
@@ -175,10 +175,10 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
   });
 
   it("keeps the monitor disabled when secure parameter loading fails", () => {
-    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-    const statePath = `${dir}\\state.json`;
-    const helperPath = `${dir}\\helper.json`;
-    const testScript = `${dir}\\bootstrap-test.ps1`;
+    const dir = mkdtempSync(join(tmpdir(), "prestamype-ops-"));
+    const statePath = join(dir, "state.json");
+    const helperPath = join(dir, "helper.json");
+    const testScript = join(dir, "bootstrap-test.ps1");
     const fakeHelper = resolve("tests/operational/fake-secure-child.mjs");
     writeFileSync(
       testScript,
@@ -239,8 +239,8 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
     }
   });
   it("seeds idempotently and invokes the exact body without touching config", () => {
-    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-    const statePath = `${dir}\\state.json`;
+    const dir = mkdtempSync(join(tmpdir(), "prestamype-ops-"));
+    const statePath = join(dir, "state.json");
     try {
       writeFileSync(
         statePath,
@@ -274,8 +274,8 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
   });
 
   it("activates once, no-ops when already enabled, and deactivates preserving config", () => {
-    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-    const statePath = `${dir}\\state.json`;
+    const dir = mkdtempSync(join(tmpdir(), "prestamype-ops-"));
+    const statePath = join(dir, "state.json");
     try {
       writeFileSync(
         statePath,
@@ -313,8 +313,8 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
       { ...structuredClone(fullConfig), paused_until: { S: "manual" } },
     ],
   ])("rejects %s config after a conditional failure", (_label, config) => {
-    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-    const statePath = `${dir}\\state.json`;
+    const dir = mkdtempSync(join(tmpdir(), "prestamype-ops-"));
+    const statePath = join(dir, "state.json");
     try {
       writeFileSync(
         statePath,
@@ -336,8 +336,8 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
     "SessionChallengeError",
     "PageStructureError",
   ])("resumes a recoverable manual pause (%s) without sending", (reason) => {
-    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-    const statePath = `${dir}\\state.json`;
+    const dir = mkdtempSync(join(tmpdir(), "prestamype-ops-"));
+    const statePath = join(dir, "state.json");
     const config = {
       ...structuredClone(fullConfig),
       // The handler pauses without touching enabled, so this is the only
@@ -378,8 +378,8 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
     // two is what made the documented recovery path impossible to run: the
     // handler pauses without touching enabled, so the script demanded a state
     // that never occurs.
-    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-    const statePath = `${dir}\\state.json`;
+    const dir = mkdtempSync(join(tmpdir(), "prestamype-ops-"));
+    const statePath = join(dir, "state.json");
     const config = {
       ...structuredClone(fullConfig),
       enabled: { BOOL: false },
@@ -410,8 +410,8 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
   ])(
     "rejects %s without update or send",
     (_label, pausedUntil, reason, enabled) => {
-      const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-      const statePath = `${dir}\\state.json`;
+      const dir = mkdtempSync(join(tmpdir(), "prestamype-ops-"));
+      const statePath = join(dir, "state.json");
       const config: Record<string, unknown> = {
         ...structuredClone(fullConfig),
         enabled: { BOOL: enabled },
@@ -440,8 +440,8 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
   );
 
   it("reports a generic failure when the pause changes between read and update", () => {
-    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-    const statePath = `${dir}\\state.json`;
+    const dir = mkdtempSync(join(tmpdir(), "prestamype-ops-"));
+    const statePath = join(dir, "state.json");
     const config = {
       ...structuredClone(fullConfig),
       paused_until: { S: "manual" },
@@ -472,8 +472,8 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
   it.each(["reanudar", " REANUDAR", "REANUDAR ", ""])(
     "rejects non-exact confirmation %j before AWS",
     (confirmation) => {
-      const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-      const statePath = `${dir}\\state.json`;
+      const dir = mkdtempSync(join(tmpdir(), "prestamype-ops-"));
+      const statePath = join(dir, "state.json");
       try {
         writeFileSync(statePath, JSON.stringify({ calls: [] }));
         expect(() =>
@@ -489,9 +489,9 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
   it.each(["ValidateOnly", "WhatIf"])(
     "%s exits before prompt and AWS",
     (mode) => {
-      const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-      const statePath = `${dir}\\state.json`;
-      const marker = `${dir}\\prompted`;
+      const dir = mkdtempSync(join(tmpdir(), "prestamype-ops-"));
+      const statePath = join(dir, "state.json");
+      const marker = join(dir, "prompted");
       const scriptPath = resolve("scripts/resume-monitor.ps1").replace(
         /'/g,
         "''",
@@ -536,8 +536,8 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
     ],
     ["unsafe output", [{ OutputKey: "TableName", OutputValue: "bad/table" }]],
   ])("rejects %s without Dynamo mutation", (_label, stackOutputs) => {
-    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-    const statePath = `${dir}\\state.json`;
+    const dir = mkdtempSync(join(tmpdir(), "prestamype-ops-"));
+    const statePath = join(dir, "state.json");
     const config = {
       ...structuredClone(fullConfig),
       paused_until: { S: "manual" },
@@ -596,8 +596,8 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
       },
     ],
   ])("rejects %s without update or send", (_label, config) => {
-    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-    const statePath = `${dir}\\state.json`;
+    const dir = mkdtempSync(join(tmpdir(), "prestamype-ops-"));
+    const statePath = join(dir, "state.json");
     try {
       writeFileSync(
         statePath,
@@ -622,8 +622,8 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
   });
 
   it("supports the safe recovery sequence through one-shot execution and later activation", async () => {
-    const dir = mkdtempSync(`${tmpdir()}\\prestamype-ops-`);
-    const statePath = `${dir}\\state.json`;
+    const dir = mkdtempSync(join(tmpdir(), "prestamype-ops-"));
+    const statePath = join(dir, "state.json");
     const config = {
       ...structuredClone(fullConfig),
       enabled: { BOOL: true },
