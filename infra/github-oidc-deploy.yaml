@@ -70,7 +70,17 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepository}:ref:refs/heads/${GitHubBranch}"
+              # GitHub now qualifies owner and repository with their numeric ids
+              # in the subject ("repo:owner@123/name@456:ref:..."); the plain form
+              # is kept for tokens that still use it. Names cannot contain "@",
+              # so the wildcards only ever match those ids.
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  - !Sub "repo:${GitHubRepository}:ref:refs/heads/${GitHubBranch}"
+                  - !Sub
+                    - "repo:${Owner}@*/${Name}@*:ref:refs/heads/${GitHubBranch}"
+                    - Owner: !Select [0, !Split ["/", !Ref GitHubRepository]]
+                      Name: !Select [1, !Split ["/", !Ref GitHubRepository]]
       Policies:
         - PolicyName: sam-deploy
           PolicyDocument:
