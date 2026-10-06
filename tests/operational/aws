@@ -1,0 +1,4 @@
+#!/bin/sh
+# Linux/macOS twin of aws.cmd: the operational tests put this directory first
+# on PATH so the scripts talk to fake-aws.mjs instead of the real CLI.
+exec "$REAL_NODE" "$(dirname "$0")/fake-aws.mjs" "$@"

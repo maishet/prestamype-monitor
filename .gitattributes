@@ -1,0 +1,2 @@
+# Shell shims must keep LF endings and the executable bit on every platform.
+tests/operational/aws text eol=lf

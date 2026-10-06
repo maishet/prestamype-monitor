@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -20,6 +26,9 @@ const shells = ["pwsh", "powershell"].flatMap((name) => {
   }
 });
 const fixturePath = resolve("tests/operational");
+// Windows resolves `aws` to aws.cmd through PATHEXT; elsewhere the extensionless
+// shell shim is used, and it must be executable whatever mode git checked out.
+if (process.platform !== "win32") chmodSync(join(fixturePath, "aws"), 0o755);
 const fullConfig = {
   PK: { S: "CONFIG" },
   SK: { S: "MONITOR" },
