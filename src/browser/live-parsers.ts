@@ -7,6 +7,7 @@ import type {
   PaymentHistory,
   RiskGrade,
 } from "../domain/types.js";
+import { normalizeLegalName } from "../domain/normalization.js";
 import { PageStructureError } from "./errors.js";
 
 export const PRESTAMYPE_ORIGIN = "https://www.prestamype.com";
@@ -422,6 +423,39 @@ function parseRemainingDays(raw: string): number | null {
 
 export function isPanelOpen(html: string): boolean {
   return load(html)(LIVE_SELECTORS.panel).length > 0;
+}
+
+/** The company the open slide-over is about, or null while nothing is open. */
+export function panelCompanyName(html: string): string | null {
+  const $ = load(html);
+  const panel = $(LIVE_SELECTORS.panel).first();
+  if (panel.length === 0) return null;
+  return text(panel.find(LIVE_SELECTORS.panelCompanyName).first()) || null;
+}
+
+/**
+ * Whether the open slide-over describes this row.
+ *
+ * The panel that is closing for one row is still in the DOM when the next row
+ * is clicked, and the board can re-sort between the snapshot and the click.
+ * Either way the auction code, return and amounts read from it belong to a
+ * different opportunity than the row they are stored under.
+ */
+export function panelBelongsToRow(
+  html: string,
+  row: Pick<OpportunityRow, "commercialName" | "legalName">,
+): boolean {
+  const $ = load(html);
+  const panel = $(LIVE_SELECTORS.panel).first();
+  if (panel.length === 0) return false;
+  const shown = [
+    text(panel.find(LIVE_SELECTORS.panelCompanyName).first()),
+    text(panel.find(LIVE_SELECTORS.panelCompanyLegalName).first()),
+  ]
+    .map(normalizeLegalName)
+    .filter((name) => name !== "");
+  const expected = [row.commercialName, row.legalName].map(normalizeLegalName);
+  return shown.some((name) => expected.includes(name));
 }
 
 export function parseOpportunityPanel(html: string): OpportunityPanel {

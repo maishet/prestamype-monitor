@@ -32,6 +32,8 @@ import {
   isOpportunityTableLoading,
   isOpportunityTableReady,
   isPanelOpen,
+  panelBelongsToRow,
+  panelCompanyName,
   parseOpportunityPanel,
   parseOpportunityRows,
   parsePager,
@@ -628,6 +630,10 @@ export class PrestamypeClient implements OpportunitySource {
                   : error instanceof Error
                     ? error.name
                     : "unknown",
+              // Only the fixed interaction/panel field names reach this branch.
+              ...(error instanceof PageStructureError
+                ? { field: error.field }
+                : {}),
             }),
           );
         }
@@ -727,7 +733,7 @@ export class PrestamypeClient implements OpportunitySource {
     },
     detailPolicy?: OpportunityDetailPolicy,
   ): Promise<Opportunity> {
-    await this.openRowPanel(page, index, deadline);
+    await this.openRowPanel(page, row, index, deadline);
     try {
       await this.assertAuthenticated(page, deadline);
       const panel = parseOpportunityPanel(
@@ -1173,26 +1179,44 @@ export class PrestamypeClient implements OpportunitySource {
 
   private async openRowPanel(
     page: PageLike,
+    row: OpportunityRow,
     index: number,
     deadline: number,
   ): Promise<void> {
     const rows = page.locator(LIVE_SELECTORS.dataRow);
-    const row = rows.nth?.(index);
-    if (row?.locator === undefined)
+    // The board can re-sort between the snapshot and the click, so prefer the
+    // row that carries this company's name and fall back to the position only
+    // when the name does not single one out.
+    const byName = page.locator(
+      `${LIVE_SELECTORS.dataRow}:has(${LIVE_SELECTORS.clientCell} ${LIVE_SELECTORS.clientName}:text-is("${escapeSelectorText(row.commercialName)}"))`,
+    );
+    const named =
+      byName.count !== undefined &&
+      (await this.withDeadline(byName.count(), deadline)) === 1;
+    const target = named ? byName : rows.nth?.(index);
+    if (target?.locator === undefined)
       throw new PageStructureError("MISSING_FIELD", "interaction.row");
-    const target = row.locator(
+    const name = target.locator(
       `${LIVE_SELECTORS.clientCell} ${LIVE_SELECTORS.clientName}`,
     );
-    await this.safeClick(target, `row.${index}`, deadline, true);
+    await this.safeClick(name, `row.${index}`, deadline, true);
     // The slide-over mounts and then fills itself from a second request, so it
-    // is not enough for it to exist: wait until the auction code is rendered.
+    // is not enough for it to exist: wait until the auction code is rendered,
+    // and until it is this row's. The panel closing for the previous row is
+    // still in the DOM at this point, complete with its own auction code.
     const html = await this.waitForContent(
       page,
       "panel",
       (content) =>
-        isPanelOpen(content) && /C[oó]digo de subasta/iu.test(content),
+        isPanelOpen(content) &&
+        /C[oó]digo de subasta/iu.test(content) &&
+        panelBelongsToRow(content, row),
       deadline,
       8_000,
+      (content) => ({
+        open: isPanelOpen(content),
+        company: panelCompanyName(content),
+      }),
     );
     if (html === null) throw new PageStructureError("MISSING_FIELD", "panel");
   }
@@ -1241,8 +1265,21 @@ export class PrestamypeClient implements OpportunitySource {
       ".panel-header .icon-close-im, .panel-header button[aria-label='Cerrar']",
     );
     try {
-      if (await this.withDeadline(close.isVisible(), deadline))
+      if (await this.withDeadline(close.isVisible(), deadline)) {
         await this.safeClick(close, "panel.close", deadline);
+        // The slide-over animates out. Clicking the next row while it is still
+        // there lands on its overlay, and its content still parses as a panel.
+        if (
+          (await this.waitForContent(
+            page,
+            "panel-close",
+            (html) => !isPanelOpen(html),
+            deadline,
+            3_000,
+          )) === null
+        )
+          console.warn("Panel still open after close; continuing");
+      }
     } catch (error) {
       // Cleanup is idempotent: a failed panel load may already have removed
       // the slide-over before finally{} runs. Never turn that harmless state
@@ -1400,9 +1437,23 @@ export class PrestamypeClient implements OpportunitySource {
     const url = new URL(path, ORIGIN);
     if (!isAllowedNavigation(url))
       throw new PageStructureError("INVALID_URL", "navigation");
-    const response = await this.withDeadline(page.goto(url.href), deadline);
-    const status = response?.status();
+    let response = await this.withDeadline(page.goto(url.href), deadline);
+    let status = response?.status();
     console.info("Navigated", JSON.stringify({ path, status: status ?? null }));
+    if (status !== undefined && status >= 500) {
+      // The site itself failed. Its error page has none of the app's markup,
+      // which used to read as a changed page and pause the monitor until a
+      // person sent /recuperar. One retry, then leave it to the next tick.
+      await this.withDeadline(this.sleep(2_000), deadline);
+      response = await this.withDeadline(page.goto(url.href), deadline);
+      status = response?.status();
+      console.info(
+        "Navigated",
+        JSON.stringify({ path, status: status ?? null, retry: true }),
+      );
+      if (status !== undefined && status >= 500)
+        throw new Error(`Prestamype responded with HTTP ${status}`);
+    }
     if (status === 403 || status === 429) throw new RateLimitError(status);
     const landed = new URL(page.url());
     if (isLoginPath(landed)) throw new SessionExpiredError();
@@ -1559,6 +1610,11 @@ export class PrestamypeClient implements OpportunitySource {
       .then(() => this.closeResources())
       .catch(() => undefined);
   }
+}
+
+/** Quotes a company name for a Playwright `:text-is("...")` selector. */
+function escapeSelectorText(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
 }
 
 function toOpportunity(

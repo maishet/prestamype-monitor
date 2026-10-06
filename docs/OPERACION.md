@@ -78,6 +78,10 @@ Errores `PageStructureError` indican que cambió el DOM o faltan datos en la pá
 
 Si la tabla de oportunidades no aparece en 12 s, el ciclo reabre la página una vez. Si tampoco aparece, falla con `The opportunities table did not render` sin pausar el monitor: el siguiente ciclo lo reintenta. Solo se pausa por `PageStructureError (opportunitiesTable)` cuando hay filas visibles que ya no se pueden leer. El aviso `Wait budget ran out` incluye `state` con el número de tablas, filas y filas de carga.
 
+Un HTTP 5xx de Prestamype se reintenta una vez y después falla con `Prestamype responded with HTTP 5xx` sin pausar el monitor.
+
+Cada panel de detalle se acepta solo si su empresa coincide con la fila clicada. El panel que se está cerrando sigue en el DOM con su código de subasta, y leerlo guardaba la subasta de otra fila; ahora el cierre espera a que desaparezca y `Skipping opportunity detail` indica el `field` que faltó. `Wait budget ran out` para `panel` incluye `company`, la empresa del panel que quedó abierto.
+
 ## Flujo de validación
 
 1. Ejecutar `npm run typecheck` y las pruebas.

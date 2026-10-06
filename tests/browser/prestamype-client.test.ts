@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+
+import { load } from "cheerio";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -50,9 +52,35 @@ interface FakePageOptions {
  * A page whose content is the captured markup. Clicks are recorded and drive
  * the same state transitions the real slide-over does.
  */
+const escapeHtml = (value: string): string =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+
+/** The captured panel, re-headed as if it had been opened for this row. */
+function panelFor(row: { commercialName: string; legalName: string }): string {
+  return PANEL.replace(
+    /<p class="title">[^<]*<\/p>/u,
+    `<p class="title">${escapeHtml(row.commercialName)}</p>`,
+  ).replace(
+    /<p class="sub-title">[^<]*<\/p>/u,
+    `<p class="sub-title">${escapeHtml(row.legalName)}</p>`,
+  );
+}
+
+/** A capture taken with the slide-over open, as the board shows it closed. */
+function withoutPanel(html: string): string {
+  if (!html.includes('class="panel-main"')) return html;
+  const $ = load(html);
+  $(".container-panel").remove();
+  return $.html();
+}
+
 function createFakePage(options: FakePageOptions = {}) {
   const clicks: string[] = [];
-  const table = options.table ?? TABLE;
+  const table = withoutPanel(options.table ?? TABLE);
+  const rows = parseOpportunityRows(table, { logSkipped: false });
   let current = table;
   let url = "https://www.prestamype.com/app/inversionista/oportunidades";
 
@@ -60,12 +88,25 @@ function createFakePage(options: FakePageOptions = {}) {
     current = html;
   };
 
+  // The row a click selector points at: by the company name the client asks
+  // for, else by position, else the panel fixture's own row.
+  const rowFor = (selector: string) => {
+    const named = /text-is\("((?:[^"\\]|\\.)*)"\)/u.exec(selector);
+    if (named !== null) {
+      const name = named[1]!.replaceAll('\\"', '"').replaceAll("\\\\", "\\");
+      return rows.find((row) => row.commercialName === name);
+    }
+    const position = /nth=(\d+)/u.exec(selector);
+    return position === null ? rows[1] : rows[Number(position[1])];
+  };
+
   const locator = (selector: string): LocatorLike => {
     const self: LocatorLike = {
       async click() {
         clicks.push(selector);
         options.onClick?.(selector);
-        if (selector.includes("cell-content")) setHtml(PANEL);
+        if (selector.includes("cell-content"))
+          setHtml(panelFor(rowFor(selector) ?? rows[1]!));
         else if (selector.includes("Deudor")) setHtml(DEUDOR);
         else if (selector.includes("Proveedor")) setHtml(PROVEEDOR);
         else if (selector.includes("icon-close")) setHtml(table);
@@ -80,7 +121,8 @@ function createFakePage(options: FakePageOptions = {}) {
           return false;
         if (selector.includes("captcha")) return false;
         if (selector.includes("next-button")) return false;
-        if (selector.includes("panel-main")) return current === PANEL;
+        if (selector.includes("panel-main"))
+          return current.includes('class="panel-main"');
         return true;
       },
       async textContent() {
@@ -90,7 +132,7 @@ function createFakePage(options: FakePageOptions = {}) {
         if (selector.includes("tab-item")) return "Deudor";
         return "";
       },
-      nth: () => self,
+      nth: (index: number) => locator(`${selector} >> nth=${index}`),
       first: () => self,
       locator: (nested: string) => locator(`${selector} ${nested}`),
     };
@@ -562,6 +604,91 @@ describe("PrestamypeClient scan", () => {
     await client.close();
     expect(opportunities.length).toBeGreaterThan(0);
     expect(fake.clicks.some((s) => s.includes("row_table"))).toBe(true);
+  });
+
+  it("waits for this row's panel instead of reading the one still closing", async () => {
+    // Live sequence: the slide-over for row A is still in the DOM, auction
+    // code and all, when row B is clicked. Reading it stored A's auction
+    // under B's key, so B was never evaluated and A was saved several times.
+    const rows = parseOpportunityRows(TABLE, { logSkipped: false });
+    let opened: (typeof rows)[number] | undefined;
+    let closing: string | null = null;
+    let lingeringReads = 0;
+    const fake = createFakePage({
+      onClick: (selector) => {
+        if (selector.includes("cell-content")) {
+          const position = /nth=(\d+)/u.exec(selector);
+          opened = position === null ? undefined : rows[Number(position[1])];
+        } else if (selector.includes("icon-close") && opened !== undefined) {
+          // The Invertir panel stays in the DOM for a while after its close
+          // is clicked, whatever else gets clicked meanwhile.
+          closing = panelFor(opened);
+          lingeringReads = 3;
+        }
+      },
+    });
+    const content = fake.page.content;
+    fake.page.content = async () => {
+      if (closing !== null && lingeringReads > 0) {
+        lingeringReads -= 1;
+        return closing;
+      }
+      return content();
+    };
+    const client = createClient(fake.page);
+    client.beginScan();
+    const opportunities = await client.listEligibleOpportunities(
+      { ...config, minimumAnnualReturnPct: 14 },
+      {},
+    );
+    await client.close();
+    const expected = rows
+      .filter((row) => row.annualReturnPct >= 14)
+      .map((row) => row.commercialName);
+    expect(opportunities.map((item) => item.commercialName)).toEqual(expected);
+  });
+
+  it("lets the closing panel leave before clicking the next row", async () => {
+    const events: string[] = [];
+    let closingReads = 0;
+    const fake = createFakePage({
+      onClick: (selector) => {
+        if (selector.includes("icon-close")) {
+          events.push("click:close");
+          closingReads = 2;
+        } else if (selector.includes("cell-content")) events.push("click:row");
+      },
+    });
+    const content = fake.page.content;
+    fake.page.content = async () => {
+      if (closingReads > 0) {
+        closingReads -= 1;
+        events.push("read:panel");
+        return PANEL;
+      }
+      const html = await content();
+      events.push(
+        html.includes('class="panel-main"') ? "read:panel" : "read:table",
+      );
+      return html;
+    };
+    const client = createClient(fake.page);
+    client.beginScan();
+    await client.listEligibleOpportunities(
+      { ...config, minimumAnnualReturnPct: 14 },
+      {},
+    );
+    await client.close();
+    const close = events.indexOf("click:close");
+    const next = events.indexOf("click:row", close);
+    expect(close).toBeGreaterThan(-1);
+    expect(next).toBeGreaterThan(close);
+    // The two stale reads and then the table, all before the next click.
+    expect(events.slice(close + 1, next)).toEqual([
+      "read:panel",
+      "read:panel",
+      "read:table",
+    ]);
   });
 
   it("does not fail when a panel already disappeared before cleanup", async () => {
@@ -1164,6 +1291,51 @@ describe("PrestamypeClient failure handling", () => {
     client.beginScan();
     await client.getPortfolio();
     await expect(client.close()).resolves.toBeUndefined();
+  });
+
+  it("retries a 5xx once and then fails without pausing the monitor", async () => {
+    const fake = createFakePage();
+    const goto = fake.page.goto;
+    const statuses = [500, 503, 200];
+    let navigations = 0;
+    fake.page.goto = async (target) => {
+      await goto(target);
+      navigations += 1;
+      return {
+        status: () => statuses[Math.min(navigations, statuses.length) - 1]!,
+      };
+    };
+    const client = createClient(fake.page);
+    client.beginScan();
+    // The site's own error page has none of the app's markup. Reading that as
+    // a changed page paused the monitor until someone sent /recuperar.
+    const failure = await client
+      .listEligibleOpportunities(config, {})
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(PageStructureError);
+    expect((failure as Error).message).toBe(
+      "Prestamype responded with HTTP 503",
+    );
+    expect(navigations).toBe(2);
+    await client.close();
+  });
+
+  it("carries on when the retry after a 5xx succeeds", async () => {
+    const fake = createFakePage();
+    const goto = fake.page.goto;
+    let navigations = 0;
+    fake.page.goto = async (target) => {
+      await goto(target);
+      navigations += 1;
+      return { status: () => (navigations === 1 ? 502 : 200) };
+    };
+    const client = createClient(fake.page);
+    client.beginScan();
+    await expect(
+      client.listEligibleOpportunities(config, {}),
+    ).resolves.not.toHaveLength(0);
+    await client.close();
   });
 
   it("refuses to work after it has been closed", async () => {
