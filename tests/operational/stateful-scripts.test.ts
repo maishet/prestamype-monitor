@@ -6,12 +6,19 @@ import { describe, expect, it, vi } from "vitest";
 import { createScanHandler } from "../../src/lambda/handler.js";
 import { captureSession } from "../../src/cli/capture-session.js";
 
-const shells = ["pwsh", "powershell"].map(
-  (name) =>
-    execFileSync("where.exe", [name], { encoding: "utf8" })
-      .trim()
-      .split(/\r?\n/)[0]!,
-);
+// Windows has both shells; Linux CI runners only ship pwsh.
+const lookup = process.platform === "win32" ? "where.exe" : "which";
+const shells = ["pwsh", "powershell"].flatMap((name) => {
+  try {
+    return [
+      execFileSync(lookup, [name], { encoding: "utf8" })
+        .trim()
+        .split(/\r?\n/)[0]!,
+    ];
+  } catch {
+    return [];
+  }
+});
 const fixturePath = resolve("tests/operational");
 const fullConfig = {
   PK: { S: "CONFIG" },

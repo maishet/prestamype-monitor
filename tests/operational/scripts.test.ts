@@ -12,18 +12,32 @@ const scripts = [
   "deactivate-monitor.ps1",
   "resume-monitor.ps1",
 ] as const;
-const shells = ["pwsh", "powershell"].map((name) => ({
-  name,
-  path: execFileSync("where.exe", [name], { encoding: "utf8" })
-    .trim()
-    .split(/\r?\n/)[0]!,
-}));
+// Windows has both shells; Linux CI runners only ship pwsh.
+const lookup = process.platform === "win32" ? "where.exe" : "which";
+const shells = ["pwsh", "powershell"].flatMap((name) => {
+  try {
+    return [
+      {
+        name,
+        path: execFileSync(lookup, [name], { encoding: "utf8" })
+          .trim()
+          .split(/\r?\n/)[0]!,
+      },
+    ];
+  } catch {
+    return [];
+  }
+});
 
 function source(name: string): string {
   return readFileSync(resolve("scripts", name), "utf8");
 }
 
 describe("operational PowerShell scripts", () => {
+  it("has a PowerShell to validate the scripts with", () => {
+    expect(shells.length).toBeGreaterThan(0);
+  });
+
   it.each(shells.flatMap((shell) => scripts.map((name) => ({ shell, name }))))(
     "$name validates in $shell.name without AWS or prompts",
     ({ shell, name }) => {

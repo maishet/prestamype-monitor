@@ -41,8 +41,12 @@ describe("containerResources", () => {
   it("reports nothing rather than throwing where there is no procfs", () => {
     const resources = containerResources();
     expect(typeof resources).toBe("object");
-    for (const value of Object.values(resources))
-      expect(Number.isFinite(value)).toBe(true);
+    // Empty on Windows; on Linux (CI) the same numbers Lambda logs, plus the
+    // list of heaviest /tmp entries.
+    for (const [key, value] of Object.entries(resources)) {
+      if (key === "heaviest") expect(Array.isArray(value)).toBe(true);
+      else expect(Number.isFinite(value)).toBe(true);
+    }
   });
 });
 
