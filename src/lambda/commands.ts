@@ -15,6 +15,7 @@ import type {
   Opportunity,
   Evaluation,
 } from "../domain/types.js";
+import { formatElapsed, formatLimaDateTime } from "../notifications/lima-time.js";
 
 const PUBLIC = new Set([
   "ayuda",
@@ -316,6 +317,126 @@ export function formatOpportunityAnalysis(item: {
   ].filter(Boolean).join("\n");
 }
 
+const errorLabels: Record<string, string> = {
+  SessionExpiredError: "sesión expirada",
+  SessionChallengeError: "verificación adicional (captcha)",
+  RateLimitError: "límite de solicitudes",
+  PageStructureError: "cambio de estructura de la página",
+  RuntimeError: "error inesperado",
+};
+
+const SESSION_PAUSES = new Set(["SessionExpiredError", "SessionChallengeError"]);
+
+interface StatusConfig {
+  enabled?: boolean;
+  paused_until?: string | null;
+  pause_reason?: string | null;
+  last_scan_at?: string;
+  last_scan_summary?: string;
+  last_error?: { class?: string; message?: string; timestamp?: string };
+  costLimits?: { configuredMemoryGb: number; monthlyGbSecondsLimit: number };
+}
+
+function reasonLabel(reason: string): string {
+  if (reason.startsWith("cost:"))
+    return `presupuesto mensual (${reason.slice(5)})`;
+  return errorLabels[reason] ?? reason;
+}
+
+function when(value: string, now: Date): string {
+  return `${formatLimaDateTime(value)} (${formatElapsed(value, now)})`;
+}
+
+/** null when the monitor may run now; otherwise how long the pause lasts. */
+function activePause(cfg: StatusConfig, now: Date): string | null {
+  if (!cfg.paused_until) return null;
+  if (cfg.paused_until === "manual") return "hasta revisión manual";
+  const until = Date.parse(cfg.paused_until);
+  if (!Number.isFinite(until) || until <= now.getTime()) return null;
+  return `hasta ${formatLimaDateTime(until)}`;
+}
+
+function pauseAction(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  if (SESSION_PAUSES.has(reason))
+    return "Acción: ejecuta npm run auth:capture en un equipo con navegador y luego /recuperar.";
+  if (reason === "PageStructureError")
+    return "Acción: corrige el parser y luego usa /recuperar.";
+  if (reason === "RateLimitError")
+    return "Acción: espera a que venza la pausa (o usa scripts/resume-monitor.ps1 si es manual).";
+  if (reason.startsWith("cost:"))
+    return "Acción: revisa el consumo; la pausa por presupuesto solo se retira con scripts/resume-monitor.ps1.";
+  return null;
+}
+
+function lastErrorLines(cfg: StatusConfig, now: Date): string[] {
+  const error = cfg.last_error;
+  if (!error?.class) return ["Último error: ninguno registrado"];
+  const at = error.timestamp ? ` · ${when(error.timestamp, now)}` : "";
+  return [
+    `Último error: ${reasonLabel(error.class)}${at}`,
+    ...(error.message ? [`  ${error.message.slice(0, 200)}`] : []),
+  ];
+}
+
+export function formatMonitorStatus(
+  cfg: StatusConfig,
+  usageGbSeconds: number,
+  now = new Date(),
+): string {
+  const pause = activePause(cfg, now);
+  const reason = pause && cfg.pause_reason ? reasonLabel(cfg.pause_reason) : null;
+  const state = !cfg.enabled
+    ? "⛔ desactivado (/reanudar para activarlo)"
+    : pause
+      ? `⏸️ en pausa${reason ? ` por ${reason}` : ""}`
+      : "✅ activo";
+  const limit = cfg.costLimits?.monthlyGbSecondsLimit ?? 0;
+  const ratio = limit > 0 ? ` (${Math.round((usageGbSeconds / limit) * 100)}%)` : "";
+  const action = pause ? pauseAction(cfg.pause_reason) : null;
+  return [
+    `Monitor: ${state}`,
+    ...(pause ? [`Pausa: ${pause}`] : []),
+    `Último escaneo: ${cfg.last_scan_at ? when(cfg.last_scan_at, now) : "aún sin registro"}`,
+    `Resultado: ${cfg.last_scan_summary ?? "sin registro"}`,
+    ...lastErrorLines(cfg, now),
+    ...(action ? [action] : []),
+    `Consumo del mes: ${usageGbSeconds.toFixed(0)} / ${limit} GB-s${ratio}, incluye la reserva de comandos.`,
+    "Horas en zona Lima (24 h).",
+  ].join("\n");
+}
+
+export function formatSessionStatus(
+  cfg: StatusConfig,
+  hasSession: boolean,
+  now = new Date(),
+): string {
+  const reason = activePause(cfg, now) ? cfg.pause_reason : null;
+  const rejected =
+    reason && SESSION_PAUSES.has(reason) && cfg.last_error?.timestamp
+      ? ` el ${formatLimaDateTime(cfg.last_error.timestamp)}`
+      : "";
+  const state = !hasSession
+    ? "❌ ausente (no hay sesión guardada)"
+    : reason === "SessionExpiredError"
+      ? `❌ expirada: Prestamype la rechazó${rejected}`
+      : reason === "SessionChallengeError"
+        ? `❌ bloqueada: Prestamype pidió verificación${rejected}`
+        : "✅ guardada (cifrada)";
+  const action =
+    !hasSession && !(reason && SESSION_PAUSES.has(reason))
+      ? pauseAction("SessionExpiredError")
+      : pauseAction(reason);
+  return [
+    `Sesión Prestamype: ${state}`,
+    `Pausa activa: ${reason ? reasonLabel(reason) : "ninguna"}`,
+    `Último escaneo: ${cfg.last_scan_at ? when(cfg.last_scan_at, now) : "aún sin registro"}`,
+    ...lastErrorLines(cfg, now),
+    action ?? "No se detecta una pausa por sesión.",
+    "Horas en zona Lima (24 h).",
+  ].join("\n");
+}
+
 export function isOpportunityOpenInLima(
   closesAt: string,
   now = new Date(),
@@ -450,20 +571,11 @@ async function execute(
     const gb =
       ((usage?.durationMs ?? 0) / 1000) * cfg.costLimits.configuredMemoryGb +
       (usage?.commandGbSeconds ?? 0);
-    return `Monitor: ${cfg.enabled ? "activo" : "desactivado"}\nPausa: ${cfg.paused_until ?? "ninguna"}\nÚltimo escaneo: ${cfg.last_scan_at ?? "aún sin registro"}\nResultado: ${cfg.last_scan_summary ?? "sin registro"}\nConsumo registrado + reserva comandos: ${gb.toFixed(0)} GB-s / ${cfg.costLimits.monthlyGbSecondsLimit}\nNo incluye otros proyectos ni solicitudes rechazadas.\nÚltimo error: ${cfg.last_error?.name ?? cfg.last_error?.kind ?? "ninguno registrado"}`;
+    return formatMonitorStatus(cfg as StatusConfig, gb);
   }
   if (command === "sesion-estado" || command === "sesionestado") {
     const session = await get({ PK: "SESSION", SK: "PRESTAMYPE" });
-    const pause = cfg.pause_reason ?? "ninguna";
-    const lastError = cfg.last_error?.name ?? cfg.last_error?.kind ?? "ninguno";
-    const sessionState = session ? "disponible (cifrada)" : "ausente";
-    const attention =
-      pause === "SessionExpiredError" || pause === "SessionChallengeError"
-        ? "Acción: ejecuta npm run auth:capture en un equipo con navegador y luego /recuperar."
-        : pause === "PageStructureError"
-          ? "Acción: revisa el error de estructura; después usa /recuperar si ya fue corregido."
-          : "No se detecta una pausa por sesión.";
-    return `Sesión Prestamype: ${sessionState}\nPausa relacionada: ${pause}\nÚltimo error: ${lastError}\n${attention}`;
+    return formatSessionStatus(cfg as StatusConfig, session !== undefined);
   }
   if (command === "pausar") {
     await db.send(

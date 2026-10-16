@@ -35,6 +35,14 @@ en las consultas públicas. Los nombres de usuario no otorgan permisos.
 - `/actualizarportafolio`: marca una actualización manual del snapshot de
   `/mis-inversiones`; se ejecuta en el próximo ciclo, después de consultar
   `/oportunidades`, y deja el caché vigente por siete días.
+- `/estado` y `/sesionestado` muestran el último error guardado (tipo, mensaje
+  y antigüedad), la pausa vigente y la acción para salir de ella. Las horas se
+  muestran en zona Lima, formato 24 h.
+- Avisos automáticos al chat privado del propietario: sesión vencida, captcha,
+  límite de solicitudes, cambio de estructura y pausa por costo se notifican al
+  ocurrir. Un error inesperado también se notifica, pero el mismo error repetido
+  se silencia durante 6 h. Si Telegram no responde, el aviso queda pendiente y se
+  reintenta al inicio de cada ejecución programada.
 - `/pausar` desactiva futuras ejecuciones; no interrumpe una que ya empezó.
 - `/reanudar` activa el monitor, pero nunca elimina una pausa de seguridad o costo.
 - Duplicados, solicitudes no autorizadas y límites alcanzados se descartan sin

@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createCommandHandler,
+  formatMonitorStatus,
   formatOpportunityAnalysis,
+  formatSessionStatus,
   isOpportunityOpenInLima,
   type CommandDependencies,
 } from "../../src/lambda/commands.js";
@@ -182,5 +184,67 @@ describe("opportunity closing date", () => {
         new Date("2026-09-15T05:00:00.000Z"),
       ),
     ).toBe(false);
+  });
+});
+
+describe("status commands", () => {
+  const now = new Date("2026-10-15T23:30:00.000Z");
+  const expired = {
+    enabled: true,
+    paused_until: "manual",
+    pause_reason: "SessionExpiredError",
+    last_scan_at: "2026-10-14T16:19:08.846Z",
+    last_scan_summary: "9 evaluadas; 0 alertas enviadas",
+    last_error: {
+      class: "SessionExpiredError",
+      message: "Login page detected",
+      timestamp: "2026-10-14T16:21:00.000Z",
+    },
+    costLimits: { configuredMemoryGb: 1, monthlyGbSecondsLimit: 400_000 },
+  };
+
+  it("/estado shows the stored error and its pause in Lima time", () => {
+    const text = formatMonitorStatus(expired, 242_343, now);
+    expect(text).toContain("en pausa por sesión expirada");
+    expect(text).toContain("Último escaneo: 14/10/2026 11:19 (hace 31 h)");
+    expect(text).toContain("Último error: sesión expirada · 14/10/2026 11:21");
+    expect(text).toContain("Login page detected");
+    expect(text).toContain("npm run auth:capture");
+    expect(text).toContain("(61%)");
+    expect(text).not.toContain("2026-10-14T");
+  });
+
+  it("/estado reports an active monitor without a stale pause", () => {
+    const text = formatMonitorStatus(
+      {
+        enabled: true,
+        paused_until: "2026-10-15T20:00:00.000Z",
+        pause_reason: "RateLimitError",
+        costLimits: { configuredMemoryGb: 1, monthlyGbSecondsLimit: 400_000 },
+      },
+      0,
+      now,
+    );
+    expect(text).toContain("Monitor: ✅ activo");
+    expect(text).not.toContain("Pausa:");
+    expect(text).toContain("Último error: ninguno registrado");
+  });
+
+  it("/sesionestado says an expired session is expired, not available", () => {
+    const text = formatSessionStatus(expired, true, now);
+    expect(text).toContain("❌ expirada: Prestamype la rechazó el 14/10/2026 11:21");
+    expect(text).toContain("Pausa activa: sesión expirada");
+    expect(text).not.toContain("disponible");
+  });
+
+  it("/sesionestado confirms a healthy session", () => {
+    const text = formatSessionStatus(
+      { enabled: true, last_scan_at: "2026-10-15T23:28:00.000Z" },
+      true,
+      now,
+    );
+    expect(text).toContain("✅ guardada (cifrada)");
+    expect(text).toContain("15/10/2026 18:28 (hace 2 min)");
+    expect(text).toContain("No se detecta una pausa por sesión.");
   });
 });

@@ -407,10 +407,7 @@ describe("scan Lambda handler", () => {
           throw new RateLimitError(429);
         }),
       });
-      f.store.loadConfig.mockImplementation(async () => ({
-        ...f.config(),
-        rate_limit_count: initial,
-      }));
+      await f.store.saveConfig({ ...f.config(), rate_limit_count: initial });
       await f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 });
       expect(f.config().paused_until).toBe(pause);
       expect(f.config().rate_limit_count).toBe(expected);
@@ -441,5 +438,60 @@ describe("scan Lambda handler", () => {
     // The next run drains the outbox before doing anything else.
     await f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 });
     expect(f.config().pending_runtime_alert).toBeUndefined();
+  });
+  it("tells the admin chat, in Lima time, that the session expired", async () => {
+    const notifyDiagnostic = vi.fn(async () => undefined);
+    const f = fixture({
+      runMonitor: vi.fn(async () => {
+        throw new SessionExpiredError();
+      }),
+      notifyDiagnostic,
+    });
+    await f.handler(EVENT, {
+      awsRequestId: "run-1",
+      getRemainingTimeInMillis: () => 30_000,
+    });
+    expect(notifyDiagnostic).toHaveBeenCalledTimes(1);
+    const [message] = notifyDiagnostic.mock.calls[0] as unknown as [string];
+    expect(message).toContain("SESIÓN VENCIDA");
+    expect(message).toContain("npm run auth:capture");
+    // 12:00 UTC is 07:00 in Lima.
+    expect(message).toContain("26/08/2026 07:00");
+    expect(message).toContain("\n");
+    expect(f.config().pending_runtime_alert).toBeUndefined();
+    expect(f.config().paused_until).toBe("manual");
+  });
+  it("mutes a repeated unexpected error but reports a new one", async () => {
+    const notifyDiagnostic = vi.fn<(message: string) => Promise<void>>(
+      async () => undefined,
+    );
+    const runMonitor = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("browser crashed"))
+      .mockRejectedValueOnce(new Error("browser crashed"))
+      .mockRejectedValueOnce(new Error("network down"));
+    const f = fixture({ runMonitor, notifyDiagnostic });
+    for (let run = 0; run < 3; run += 1)
+      await expect(
+        f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 }),
+      ).rejects.toThrow("Monitor invocation failed");
+    expect(notifyDiagnostic).toHaveBeenCalledTimes(2);
+    expect(String(notifyDiagnostic.mock.calls[1]?.[0])).toContain(
+      "network down",
+    );
+  });
+  it("keeps the primary error when an unexpected-error alert fails", async () => {
+    const f = fixture({
+      runMonitor: vi.fn(async () => {
+        throw new Error("boom");
+      }),
+      notifyDiagnostic: vi.fn(async () => {
+        throw new Error("telegram");
+      }),
+    });
+    await expect(
+      f.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 }),
+    ).rejects.toThrow("Monitor invocation failed");
+    expect(f.config().pending_runtime_alert).toBeDefined();
   });
 });

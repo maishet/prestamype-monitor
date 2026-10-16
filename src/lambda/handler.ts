@@ -13,12 +13,16 @@ import { PrestamypeClient } from "../browser/prestamype-client.js";
 import type { EncryptedSession, MonitorConfig } from "../domain/types.js";
 import { TelegramClient } from "../notifications/telegram-client.js";
 import { createAdminDiagnosticNotifier } from "../notifications/diagnostic-notifier.js";
+import { formatLimaDateTime } from "../notifications/lima-time.js";
+import { formatTechnicalAlert } from "../notifications/telegram-message.js";
 import { decryptSession as decryptStoredSession } from "../security/session-crypto.js";
 import { redactSensitiveText } from "../security/redaction.js";
 import {
   LambdaRuntimeError,
   runtimeErrorKind,
   storedRuntimeError,
+  type RuntimeErrorKind,
+  type StoredRuntimeError,
 } from "../runtime/errors.js";
 import type {
   CostDecision,
@@ -236,6 +240,72 @@ function runIdFrom(context: LambdaContextLike): string {
   return id !== undefined && /^[A-Za-z0-9-]{1,128}$/.test(id) ? id : "unknown";
 }
 
+// The same unexpected failure every 2 minutes must not flood the admin chat.
+const REPEATED_ERROR_SILENCE_MS = 6 * 3_600_000;
+
+function isRepeatedError(
+  previous: unknown,
+  current: StoredRuntimeError,
+): boolean {
+  if (typeof previous !== "object" || previous === null) return false;
+  const last = previous as Partial<StoredRuntimeError>;
+  const elapsed =
+    Date.parse(current.timestamp) - Date.parse(String(last.timestamp));
+  return (
+    last.class === current.class &&
+    last.message === current.message &&
+    Number.isFinite(elapsed) &&
+    elapsed < REPEATED_ERROR_SILENCE_MS
+  );
+}
+
+/** The admin-chat text for a failed scan; every pausing failure says how to leave the pause. */
+function runtimeAlertMessage(
+  kind: RuntimeErrorKind,
+  error: StoredRuntimeError,
+  pausedUntil: unknown,
+): string {
+  // HTML escaping would expand these past the 1,000-character outbox limit.
+  const detail = error.message.replaceAll(/[<>&"']/gu, "").slice(0, 200);
+  const recapture =
+    "Acción: ejecuta npm run auth:capture en un equipo con navegador y luego /recuperar.";
+  switch (kind) {
+    case "SessionExpiredError":
+      return formatTechnicalAlert({
+        type: "SESSION_EXPIRED",
+        detectedAt: error.timestamp,
+        safeDetail: `Prestamype rechazó la sesión guardada. Monitor pausado: no habrá alertas hasta recapturarla.\n${recapture}`,
+      });
+    case "SessionChallengeError":
+      return formatTechnicalAlert({
+        type: "CAPTCHA",
+        detectedAt: error.timestamp,
+        safeDetail: `Prestamype pidió una verificación adicional. Monitor pausado.\n${recapture}`,
+      });
+    case "RateLimitError":
+      return formatTechnicalAlert({
+        type: "RATE_LIMIT",
+        detectedAt: error.timestamp,
+        safeDetail:
+          typeof pausedUntil === "string" && pausedUntil !== "manual"
+            ? `Prestamype limitó las solicitudes. Monitor pausado hasta ${formatLimaDateTime(pausedUntil)} (hora Lima); se reanuda solo.`
+            : "Prestamype limitó las solicitudes por tercera vez. Monitor pausado sin fecha; retíralo con scripts/resume-monitor.ps1 cuando lo revises.",
+      });
+    case "PageStructureError":
+      return formatTechnicalAlert({
+        type: "DOM_CHANGED",
+        detectedAt: error.timestamp,
+        safeDetail: `${detail}\nMonitor pausado. Corrige el parser y luego usa /recuperar.`,
+      });
+    default:
+      return formatTechnicalAlert({
+        type: "RUNTIME_ERROR",
+        detectedAt: error.timestamp,
+        safeDetail: `${detail}\nEl monitor sigue activo y reintentará en el próximo ciclo. Este mismo error no se repetirá aquí durante 6 h.`,
+      });
+  }
+}
+
 export function createScanHandler(dependencies: ScanHandlerDependencies) {
   const savePatch = async (
     base: ScanRuntimeConfig,
@@ -268,9 +338,9 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
         throw new LambdaRuntimeError("Invalid runtime alert outbox");
       signal.throwIfAborted();
       const message = redactSensitiveText(pending.message)
-        .replaceAll(/\s+/gu, " ")
-        .trim()
-        .slice(0, 500);
+        .replaceAll(/[^\S\n]+/gu, " ")
+        .replaceAll(/\n{3,}/gu, "\n\n")
+        .trim();
       if (message === "")
         throw new LambdaRuntimeError("Invalid runtime alert outbox");
       await dependencies.notifyDiagnostic(message, { signal });
@@ -463,22 +533,30 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
           pause_reason: kind,
         };
       }
-      if (kind === "PageStructureError") {
-        const pending: PendingRuntimeAlert = {
-          key: `page-structure:${runId}`,
-          message: `PageStructureError: ${savedError.message}`,
-        };
+      if (kind === "PageStructureError")
         patch = {
           ...patch,
           paused_until: "manual",
           pause_reason: kind,
-          pending_runtime_alert: pending,
         };
-      }
+      const notify =
+        current.pending_runtime_alert === undefined &&
+        !(kind === "RuntimeError" && isRepeatedError(current.last_error, savedError));
+      if (notify)
+        patch = {
+          ...patch,
+          pending_runtime_alert: {
+            key: `${kind}:${runId}`,
+            message: runtimeAlertMessage(kind, savedError, patch.paused_until),
+          } satisfies PendingRuntimeAlert,
+        };
       await savePatch(current, patch);
-      if (kind === "PageStructureError") {
+      if (notify) {
         const latest = await dependencies.store.loadConfig();
-        if (latest !== null && !(await drainPending(latest, controller.signal)))
+        const delivered =
+          latest === null || (await drainPending(latest, controller.signal));
+        // A generic failure keeps its own error; the outbox retries next run.
+        if (!delivered && kind !== "RuntimeError")
           throw new LambdaRuntimeError("Runtime alert delivery failed");
       }
       if (kind === "RuntimeError") {
@@ -653,11 +731,15 @@ export async function handler(
       tableName: requiredEnvironment("TABLE_NAME"),
     });
     const latest = await repository.loadConfig<ScanRuntimeConfig>();
+    const failure = latest?.last_error as Partial<StoredRuntimeError> | undefined;
     message =
       typeof latest?.last_scan_at === "string" &&
       Date.parse(latest.last_scan_at) >= requestedAt
         ? `Escaneo terminado: ${String(latest.last_scan_summary)}. Las alertas nuevas se enviaron a los chats habituales.`
-        : "Solicitud procesada sin un escaneo nuevo: puede haber otro en curso, una pausa o el monitor desactivado. Consulta /estado.";
+        : typeof failure?.timestamp === "string" &&
+            Date.parse(failure.timestamp) >= requestedAt
+          ? `El escaneo falló: ${String(failure.class)} (${formatLimaDateTime(failure.timestamp)}, hora Lima). Revisa el aviso técnico y /estado.`
+          : "Solicitud procesada sin un escaneo nuevo: puede haber otro en curso, una pausa o el monitor desactivado. Consulta /estado.";
   } catch (error) {
     message =
       "El escaneo no pudo completarse. Consulta /estado para revisar el estado del monitor.";

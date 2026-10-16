@@ -6,6 +6,7 @@ import type {
   PortfolioSnapshot,
 } from "../domain/types.js";
 import { redactSensitiveText } from "../security/redaction.js";
+import { formatLimaDateTime } from "./lima-time.js";
 
 const TELEGRAM_MESSAGE_LIMIT = 4_000;
 const MAX_TEXT_FIELD_RENDERED_LENGTH = 400;
@@ -18,6 +19,7 @@ type TechnicalAlertType =
   | "RATE_LIMIT"
   | "DOM_CHANGED"
   | "COST_PAUSE"
+  | "RUNTIME_ERROR"
   | "RECOVERED";
 
 interface TechnicalAlertFields {
@@ -37,16 +39,6 @@ interface MessageLine {
 const amountFormatter = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
-});
-
-const limaDateTimeFormatter = new Intl.DateTimeFormat("es-PE", {
-  timeZone: "America/Lima",
-  day: "2-digit",
-  month: "2-digit",
-  year: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
 });
 
 function escapeHtml(value: string): string {
@@ -91,13 +83,6 @@ function formatMoney(cents: number, currency: Currency = "PEN"): string {
 
 function formatPercentage(value: number): string {
   return Number.isFinite(value) ? `${value.toFixed(2)}%` : "no disponible";
-}
-
-function formatLimaDateTime(value: Date | string): string {
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime())
-    ? "no disponible"
-    : limaDateTimeFormatter.format(date);
 }
 
 function decisionPresentation(decision: Evaluation["decision"]): string {
@@ -396,6 +381,7 @@ const technicalTitles: Readonly<Record<TechnicalAlertType, string>> = {
   RATE_LIMIT: "⏳ LÍMITE DE SOLICITUDES",
   DOM_CHANGED: "🧩 CAMBIO DE ESTRUCTURA",
   COST_PAUSE: "💰 PAUSA POR COSTO",
+  RUNTIME_ERROR: "⚠️ ERROR EN EL ESCANEO",
   RECOVERED: "✅ SERVICIO RECUPERADO",
 };
 
@@ -414,7 +400,7 @@ export function formatTechnicalAlert(event: TechnicalAlertEvent): string {
   }
   if (event.detectedAt !== undefined) {
     lines.push({
-      html: `Detectada: ${formatLimaDateTime(event.detectedAt)}`,
+      html: `Detectada: ${formatLimaDateTime(event.detectedAt)} (hora Lima)`,
       priority: "normal",
     });
   }

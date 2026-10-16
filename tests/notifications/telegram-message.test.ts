@@ -308,7 +308,7 @@ describe("formatTechnicalAlert", () => {
 
     expect(message).toContain(title);
     expect(message).toContain("Detalle &lt;verificado&gt; &amp; sin secretos");
-    expect(message).toContain("27/08/2026, 10:30");
+    expect(message).toContain("27/08/2026 10:30");
     expect(message.length).toBeLessThan(4000);
   });
 
