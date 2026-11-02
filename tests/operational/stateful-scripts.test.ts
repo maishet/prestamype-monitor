@@ -415,7 +415,62 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
     }
   });
   it.each([
-    ["cost pause", "manual", "cost:MONTHLY_LIMIT", true],
+    ["cost_paused_month", { cost_paused_month: { S: "2020-01" } }],
+    ["last_scan_at fallback", { last_scan_at: { S: "2020-01-20T14:01:00Z" } }],
+  ])(
+    "resumes a cost pause from a previous month (%s)",
+    (_label, monthInfo) => {
+      const dir = mkdtempSync(join(tmpdir(), "prestamype-ops-"));
+      const statePath = join(dir, "state.json");
+      const config = {
+        ...structuredClone(fullConfig),
+        enabled: { BOOL: true },
+        paused_until: { S: "manual" },
+        pause_reason: { S: "cost:GB_SECONDS" },
+        ...monthInfo,
+      };
+      try {
+        writeFileSync(
+          statePath,
+          JSON.stringify({ config, messages: [], blacklist: {}, calls: [] }),
+        );
+        run(shell, "resume-monitor.ps1", statePath);
+        const state = JSON.parse(readFileSync(statePath, "utf8"));
+        expect(state.config.paused_until).toBeUndefined();
+        expect(state.config.pause_reason).toBeUndefined();
+        expect(state.config.cost_paused_month).toBeUndefined();
+        expect(state.config.enabled).toEqual({ BOOL: true });
+        expect(state.messages).toEqual([]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("rejects a cost pause from the current month", () => {
+    const dir = mkdtempSync(join(tmpdir(), "prestamype-ops-"));
+    const statePath = join(dir, "state.json");
+    const config = {
+      ...structuredClone(fullConfig),
+      paused_until: { S: "manual" },
+      pause_reason: { S: "cost:GB_SECONDS" },
+      cost_paused_month: { S: new Date().toISOString().slice(0, 7) },
+    };
+    try {
+      writeFileSync(
+        statePath,
+        JSON.stringify({ config, messages: [], blacklist: {}, calls: [] }),
+      );
+      expect(() => run(shell, "resume-monitor.ps1", statePath)).toThrow();
+      const state = JSON.parse(readFileSync(statePath, "utf8"));
+      expect(state.config).toEqual(config);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["cost pause without a known month", "manual", "cost:MONTHLY_LIMIT", true],
     ["rate limit manual pause", "manual", "RateLimitError", true],
     ["other manual pause", "manual", "OperatorPause", true],
     ["timed pause", "2026-09-01T12:00:00.000Z", "SessionExpiredError", true],

@@ -351,6 +351,7 @@ describe("scan Lambda handler", () => {
       expect(f.config().pending_runtime_alert).toBeUndefined();
       if (action === "PAUSE") {
         expect(f.config().paused_until).toBe("manual");
+        expect(f.config().cost_paused_month).toBe("2026-08");
         expect(f.dependencies.runMonitor).not.toHaveBeenCalled();
       } else {
         expect(f.config().cost_warning_month).toBe("2026-08");

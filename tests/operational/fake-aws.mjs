@@ -50,7 +50,10 @@ if (service === "cloudformation") {
   process.stdout.write("{}");
 } else if (service === "dynamodb" && operation === "update-item") {
   const expression = input.UpdateExpression;
-  if (expression === "REMOVE paused_until, pause_reason") {
+  if (
+    expression === "REMOVE paused_until, pause_reason" ||
+    expression === "REMOVE paused_until, pause_reason, cost_paused_month"
+  ) {
     const expectedReason = input.ExpressionAttributeValues[":reason"]?.S;
     if (
       state.failResumeCondition ||
@@ -65,6 +68,8 @@ if (service === "cloudformation") {
     }
     delete state.config.paused_until;
     delete state.config.pause_reason;
+    if (expression.endsWith("cost_paused_month"))
+      delete state.config.cost_paused_month;
   } else if (expression === "SET enabled = :enabled") {
     if (
       !state.config ||

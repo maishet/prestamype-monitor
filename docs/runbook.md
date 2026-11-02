@@ -43,7 +43,7 @@ npm run auth:capture
 ./scripts/activate-monitor.ps1
 ```
 
-`resume-monitor.ps1` exige escribir exactamente `REANUDAR`, mantiene `enabled=false`, no envía mensajes y solo retira una pausa `manual` cuyo motivo exacto sea `SessionExpiredError`, `SessionChallengeError` o `PageStructureError`. También puede usarse para `PageStructureError`, pero únicamente después de corregir y desplegar el cambio de DOM y antes de probar con un escaneo único. La escritura es condicional: si otro proceso cambia el estado entre lectura y actualización, falla sin modificarlo. No lo uses para `RateLimitError`, motivos `cost:*`, pausas temporales ni pausas manuales de otro origen.
+`resume-monitor.ps1` exige escribir exactamente `REANUDAR`, mantiene `enabled=false`, no envía mensajes y solo retira una pausa `manual` cuyo motivo exacto sea `SessionExpiredError`, `SessionChallengeError` o `PageStructureError`. También puede usarse para `PageStructureError`, pero únicamente después de corregir y desplegar el cambio de DOM y antes de probar con un escaneo único. La escritura es condicional: si otro proceso cambia el estado entre lectura y actualización, falla sin modificarlo. Las pausas `cost:*` solo se retiran en un mes posterior al de la pausa (ver Diagnóstico y costes). No lo uses para `RateLimitError`, pausas temporales ni pausas manuales de otro origen.
 
 ## Pruebas y operación
 
@@ -73,7 +73,7 @@ Puede quedar un mensaje ya en vuelo; confirma que no aparecen nuevos ciclos tras
 
 - Consulta logs de las funciones scan y supervisor, la edad/cantidad de mensajes SQS, la DLQ, throttles/errores Lambda, capacidad consumida DynamoDB y gasto/Budget. La supervisión corre cada diez minutos y solo recupera ciclos atrasados de forma idempotente.
 - `COST_PAUSE` requiere revisión del consumo mensual antes de reactivar. También pausa ante sesión vencida, CAPTCHA, rate limit o cambios de DOM que necesiten intervención. No fuerces reintentos ante CAPTCHA o rate limit.
-- Una pausa de coste o rate limit no se desbloquea con `resume-monitor.ps1`. Revisa consumo y presupuesto para coste; para rate limit espera la pausa temporal o realiza la intervención operativa aprobada. El script falla de forma cerrada ante esos motivos.
+- Una pausa de coste (`cost:*`) solo se retira con `resume-monitor.ps1` cuando ya empezó un mes UTC posterior al de la pausa (campo `cost_paused_month`; en pausas antiguas, el mes de `last_scan_at`), porque el consumo se contabiliza por mes. Dentro del mismo mes el script falla; revisa consumo y presupuesto antes de reanudar. Antes de reanudar, comprueba que `configuredMemoryGb` coincide con el `MemorySize` real de la Lambda de escaneo, o el guard subestimará el consumo. Para rate limit espera la pausa temporal o realiza la intervención operativa aprobada; el script falla de forma cerrada ante ese motivo.
 - Los logs deben contener categorías y correlaciones sanitizadas, nunca token, chat ID, clave, cookies, cabeceras, HTML privado, errores crudos ni registros completos de DynamoDB. Retención prevista: siete días.
 - Revisa al menos semanalmente invocaciones, GB-segundos, solicitudes SQS/DynamoDB/SSM, logs ingeridos y presupuesto. Desactiva ante cualquier anomalía o correo de coste.
 

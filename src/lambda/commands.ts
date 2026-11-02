@@ -365,7 +365,7 @@ function pauseAction(reason: string | null | undefined): string | null {
   if (reason === "RateLimitError")
     return "Acción: espera a que venza la pausa (o usa scripts/resume-monitor.ps1 si es manual).";
   if (reason.startsWith("cost:"))
-    return "Acción: revisa el consumo; la pausa por presupuesto solo se retira con scripts/resume-monitor.ps1.";
+    return "Acción: revisa el consumo; la pausa por presupuesto se retira con scripts/resume-monitor.ps1 a partir del mes siguiente.";
   return null;
 }
 

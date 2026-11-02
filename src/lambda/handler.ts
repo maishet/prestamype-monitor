@@ -418,6 +418,7 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
         await savePatch(config, {
           paused_until: "manual",
           pause_reason: `cost:${cost.reason}`,
+          cost_paused_month: monthOf(now),
           pending_runtime_alert: pending,
         });
         if (

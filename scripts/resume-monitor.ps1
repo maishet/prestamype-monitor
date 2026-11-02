@@ -75,14 +75,33 @@ try {
         throw "No se puede reanudar: no existe una pausa manual recuperable."
     }
     $reason = $item.pause_reason.S
-    if ($reason -notin @("SessionExpiredError", "SessionChallengeError", "PageStructureError")) {
+    if ($reason -like "cost:*") {
+        # El consumo se mide por mes (USAGE#AAAA-MM): una pausa de coste solo se
+        # retira cuando ya empezo un mes posterior al de la pausa.
+        $pausedMonth = $null
+        if (Has-Property $item "cost_paused_month") { $pausedMonth = $item.cost_paused_month.S }
+        elseif (Has-Property $item "last_scan_at") {
+            # ConvertFrom-Json convierte las fechas ISO en DateTime.
+            $scanAt = $item.last_scan_at.S
+            if ($scanAt -is [DateTime]) { $pausedMonth = $scanAt.ToUniversalTime().ToString("yyyy-MM") }
+            else { $pausedMonth = ([string]$scanAt).Substring(0, [Math]::Min(7, ([string]$scanAt).Length)) }
+        }
+        if ($pausedMonth -notmatch '^\d{4}-\d{2}$') {
+            throw "No se puede reanudar: no se conoce el mes de la pausa por coste."
+        }
+        $currentMonth = [DateTime]::UtcNow.ToString("yyyy-MM")
+        if ([string]::CompareOrdinal($currentMonth, $pausedMonth) -le 0) {
+            throw "No se puede reanudar: la pausa por coste es de $pausedMonth y el consumo mensual aun no se reinicio."
+        }
+        $removeCostMonth = ", cost_paused_month"
+    } elseif ($reason -notin @("SessionExpiredError", "SessionChallengeError", "PageStructureError")) {
         throw "No se puede reanudar: el motivo requiere otra intervencion."
-    }
+    } else { $removeCostMonth = "" }
 
     $request = @{
         TableName = $tableName
         Key = @{ PK = @{ S = "CONFIG" }; SK = @{ S = "MONITOR" } }
-        UpdateExpression = "REMOVE paused_until, pause_reason"
+        UpdateExpression = "REMOVE paused_until, pause_reason$removeCostMonth"
         ConditionExpression = "attribute_exists(PK) AND paused_until = :manual AND pause_reason = :reason"
         ExpressionAttributeValues = @{
             ":manual" = @{ S = "manual" }
