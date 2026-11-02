@@ -26,7 +26,7 @@ $tableName = & aws cloudformation describe-stacks --stack-name $StackName --regi
 if ($LASTEXITCODE -ne 0 -or $tableName -notmatch '^[A-Za-z0-9_.-]{3,255}$') { throw "No se pudo resolver TableName de forma segura." }
 $configKey = @{ PK = @{ S = "CONFIG" }; SK = @{ S = "MONITOR" } }
 $monitor = @{ M = @{ allowedRisks = @{ L = @(@{ S = "A+" }, @{ S = "A" }, @{ S = "B" }, @{ S = "C" }) }; minimumAnnualReturnPct = @{ N = "15" }; allowedCurrencies = @{ L = @(@{ S = "PEN" }) }; minimumInvestmentCents = @{ N = "10000" }; highPriorityScore = @{ N = "80" }; reviewScore = @{ N = "70" }; detailRefreshIntervalMs = @{ N = "900000" } } }
-$costLimits = @{ M = @{ configuredMemoryGb = @{ N = "1" }; monthlyGbSecondsLimit = @{ N = "400000" } } }
+$costLimits = @{ M = @{ configuredMemoryGb = @{ N = "2" }; monthlyGbSecondsLimit = @{ N = "650000" } } }
 $configTemp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 try {
     Write-JsonFile $configTemp @{ TableName = $tableName; Key = $configKey; ConsistentRead = $true }

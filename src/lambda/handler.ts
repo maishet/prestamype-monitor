@@ -54,7 +54,18 @@ export interface PendingRuntimeAlert {
   readonly key: string;
   readonly message: string;
   readonly warning_month?: string;
+  /** One-off reminder: recorded as `credits_reminder_sent` once delivered. */
+  readonly reminder_id?: string;
 }
+
+// Free-plan credits end on 2027-03-02; from a month earlier the monitor reminds
+// once to lower monthlyGbSecondsLimit or the scan cadence.
+const CREDITS_REMINDER_ID = "credits-2027-03-02";
+const CREDITS_REMINDER_FROM = Date.parse("2027-02-01T00:00:00Z");
+const CREDITS_REMINDER_MESSAGE =
+  "Recordatorio: los créditos gratuitos de AWS vencen el 2 de marzo de 2027. " +
+  "Antes de esa fecha baja costLimits.monthlyGbSecondsLimit a 400000 y/o pasa el escaneo a cada 4 minutos " +
+  "(cron(0/4 14-23 ? * MON-FRI *) en template.yaml), o decide pasar la cuenta a un plan de pago.";
 
 export interface ScanRuntimeStore {
   loadConfig(): Promise<ScanRuntimeConfig | null>;
@@ -333,7 +344,9 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
         pending.message.length === 0 ||
         pending.message.length > 1_000 ||
         (pending.warning_month !== undefined &&
-          !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(pending.warning_month))
+          !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(pending.warning_month)) ||
+        (pending.reminder_id !== undefined &&
+          !/^[A-Za-z0-9._-]{1,64}$/.test(pending.reminder_id))
       )
         throw new LambdaRuntimeError("Invalid runtime alert outbox");
       signal.throwIfAborted();
@@ -353,6 +366,9 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
         ...(pending.warning_month === undefined
           ? {}
           : { cost_warning_month: pending.warning_month }),
+        ...(pending.reminder_id === undefined
+          ? {}
+          : { credits_reminder_sent: pending.reminder_id }),
       } as ScanRuntimeConfig);
       return true;
     } catch {
@@ -384,6 +400,31 @@ export function createScanHandler(dependencies: ScanHandlerDependencies) {
       let config = await dependencies.store.loadConfig();
       if (config?.pending_runtime_alert !== undefined) {
         if (!(await drainPending(config, controller.signal)))
+          throw new LambdaRuntimeError("Runtime alert delivery failed");
+        config = await dependencies.store.loadConfig();
+      }
+      if (
+        config !== null &&
+        typeof config === "object" &&
+        now.getTime() >= CREDITS_REMINDER_FROM &&
+        config.credits_reminder_sent !== CREDITS_REMINDER_ID &&
+        config.pending_runtime_alert === undefined
+      ) {
+        const pending: PendingRuntimeAlert = {
+          key: CREDITS_REMINDER_ID,
+          message: CREDITS_REMINDER_MESSAGE,
+          reminder_id: CREDITS_REMINDER_ID,
+        };
+        await savePatch(config, { pending_runtime_alert: pending });
+        if (
+          !(await drainPending(
+            (await dependencies.store.loadConfig()) ?? {
+              ...config,
+              pending_runtime_alert: pending,
+            },
+            controller.signal,
+          ))
+        )
           throw new LambdaRuntimeError("Runtime alert delivery failed");
         config = await dependencies.store.loadConfig();
       }

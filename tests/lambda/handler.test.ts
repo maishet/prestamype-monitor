@@ -358,6 +358,24 @@ describe("scan Lambda handler", () => {
       }
     },
   );
+  it("sends the credits-expiry reminder once from 2027-02-01", async () => {
+    const before = fixture({ clock: () => new Date("2027-01-31T20:00:00Z") });
+    await before.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 });
+    expect(before.dependencies.notifyDiagnostic).not.toHaveBeenCalled();
+    expect(before.config().credits_reminder_sent).toBeUndefined();
+
+    const after = fixture({ clock: () => new Date("2027-02-01T14:00:00Z") });
+    await after.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 });
+    expect(after.dependencies.notifyDiagnostic).toHaveBeenCalledTimes(1);
+    expect(after.dependencies.notifyDiagnostic).toHaveBeenCalledWith(
+      expect.stringContaining("2 de marzo de 2027"),
+      expect.anything(),
+    );
+    expect(after.config().credits_reminder_sent).toBe("credits-2027-03-02");
+    expect(after.config().pending_runtime_alert).toBeUndefined();
+    await after.handler(EVENT, { getRemainingTimeInMillis: () => 30_000 });
+    expect(after.dependencies.notifyDiagnostic).toHaveBeenCalledTimes(1);
+  });
   it("rejects hostile getters and invalid clock without leaking their causes", async () => {
     const context = Object.create(null) as {
       getRemainingTimeInMillis: () => number;

@@ -175,8 +175,9 @@ describe.each(shells)("stateful operational scripts in %s", (shell) => {
         state.config.monitor.M.allowedRisks.L.map((x: { S: string }) => x.S),
       ).toEqual(["A+", "A", "B", "C"]);
       expect(state.config.costLimits.M.monthlyGbSecondsLimit).toEqual({
-        N: "400000",
+        N: "650000",
       });
+      expect(state.config.costLimits.M.configuredMemoryGb).toEqual({ N: "2" });
       expect(helper.argv.join(" ")).not.toContain("TOP-SECRET");
       expect(helper.input).toContain("TOP-SECRET-TOKEN");
       expect(
