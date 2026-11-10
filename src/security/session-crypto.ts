@@ -17,6 +17,7 @@ type OfficialStorageState = Exclude<
 
 export type StorageCookie = OfficialStorageState["cookies"][number] & {
   partitionKey?: string;
+  _crHasCrossSiteAncestor?: boolean;
 };
 
 export interface StorageState extends Omit<OfficialStorageState, "cookies"> {
@@ -29,8 +30,12 @@ function assertKey(key: Uint8Array): void {
   }
 }
 
-function invalid(): never {
-  throw new Error(INVALID_MESSAGE);
+// The reason names the failing field, never its value, so a rejected
+// capture says what to fix without leaking session material.
+function invalid(reason?: string): never {
+  throw new Error(
+    reason === undefined ? INVALID_MESSAGE : `${INVALID_MESSAGE} (${reason})`,
+  );
 }
 
 function decodeBase64(
@@ -85,61 +90,79 @@ function hasOnlyKeys(
 
 function parseStorageState(value: unknown): StorageState {
   if (!isPlainRecord(value) || !hasOnlyKeys(value, ["cookies", "origins"]))
-    return invalid();
+    return invalid("state.keys");
   if (!Array.isArray(value.cookies) || !Array.isArray(value.origins))
-    return invalid();
+    return invalid("state.arrays");
   if (value.cookies.length > MAX_ITEMS || value.origins.length > MAX_ITEMS)
-    return invalid();
+    return invalid("state.size");
 
   const cookies = value.cookies.map((candidate) => {
-    if (
-      !isPlainRecord(candidate) ||
-      !hasOnlyKeys(candidate, [
-        "name",
-        "value",
-        "domain",
-        "path",
-        "expires",
-        "httpOnly",
-        "secure",
-        "sameSite",
-        "partitionKey",
-      ])
-    )
-      return invalid();
-    if (
-      !safeString(candidate.name) ||
-      !safeString(candidate.value) ||
-      !safeString(candidate.domain) ||
-      !safeString(candidate.path) ||
-      typeof candidate.expires !== "number" ||
-      !Number.isFinite(candidate.expires) ||
-      typeof candidate.httpOnly !== "boolean" ||
-      typeof candidate.secure !== "boolean" ||
-      !["Strict", "Lax", "None"].includes(candidate.sameSite as string)
-    )
-      return invalid();
+    const cookieKeys = [
+      "name",
+      "value",
+      "domain",
+      "path",
+      "expires",
+      "httpOnly",
+      "secure",
+      "sameSite",
+      "partitionKey",
+      "_crHasCrossSiteAncestor",
+    ];
+    if (!isPlainRecord(candidate)) return invalid("cookie.shape");
+    if (!hasOnlyKeys(candidate, cookieKeys))
+      return invalid(
+        `cookie.keys:${Object.keys(candidate)
+          .filter((key) => !cookieKeys.includes(key))
+          .join(",")}`,
+      );
+    const badFields = [
+      ...(["name", "value", "domain", "path"] as const).filter(
+        (field) => !safeString(candidate[field]),
+      ),
+      ...(typeof candidate.expires !== "number" ||
+      !Number.isFinite(candidate.expires)
+        ? ["expires"]
+        : []),
+      ...(typeof candidate.httpOnly !== "boolean" ? ["httpOnly"] : []),
+      ...(typeof candidate.secure !== "boolean" ? ["secure"] : []),
+      ...(candidate._crHasCrossSiteAncestor !== undefined &&
+      typeof candidate._crHasCrossSiteAncestor !== "boolean"
+        ? ["_crHasCrossSiteAncestor"]
+        : []),
+      ...(!["Strict", "Lax", "None"].includes(candidate.sameSite as string)
+        ? ["sameSite"]
+        : []),
+    ];
+    if (badFields.length > 0)
+      return invalid(`cookie.${badFields.join(",")}`);
     if (candidate.partitionKey !== undefined) {
-      if (!safeString(candidate.partitionKey)) return invalid();
+      if (!safeString(candidate.partitionKey)) return invalid("cookie.partitionKey");
       try {
         const partitionUrl = new URL(candidate.partitionKey);
-        if (partitionUrl.origin !== candidate.partitionKey) return invalid();
+        if (partitionUrl.origin !== candidate.partitionKey) return invalid("cookie.partitionKey");
       } catch {
-        return invalid();
+        return invalid("cookie.partitionKey");
       }
     }
     return {
-      name: candidate.name,
-      value: candidate.value,
-      domain: candidate.domain,
-      path: candidate.path,
-      expires: candidate.expires,
-      httpOnly: candidate.httpOnly,
-      secure: candidate.secure,
+      name: candidate.name as string,
+      value: candidate.value as string,
+      domain: candidate.domain as string,
+      path: candidate.path as string,
+      expires: candidate.expires as number,
+      httpOnly: candidate.httpOnly as boolean,
+      secure: candidate.secure as boolean,
       sameSite: candidate.sameSite as StorageCookie["sameSite"],
       ...(candidate.partitionKey === undefined
         ? {}
         : { partitionKey: candidate.partitionKey }),
+      ...(candidate._crHasCrossSiteAncestor === undefined
+        ? {}
+        : {
+            _crHasCrossSiteAncestor:
+              candidate._crHasCrossSiteAncestor as boolean,
+          }),
     };
   });
   const origins = value.origins.map((candidate) => {
@@ -150,7 +173,7 @@ function parseStorageState(value: unknown): StorageState {
       !Array.isArray(candidate.localStorage) ||
       candidate.localStorage.length > MAX_ITEMS
     )
-      return invalid();
+      return invalid("origin.shape");
     try {
       const origin = new URL(candidate.origin);
       if (
@@ -158,9 +181,9 @@ function parseStorageState(value: unknown): StorageState {
         origin.username !== "" ||
         origin.password !== ""
       )
-        return invalid();
+        return invalid("origin.url");
     } catch {
-      return invalid();
+      return invalid("origin.url");
     }
     const localStorage = candidate.localStorage.map((entry) => {
       if (
@@ -169,7 +192,7 @@ function parseStorageState(value: unknown): StorageState {
         !safeString(entry.name) ||
         !safeString(entry.value)
       )
-        return invalid();
+        return invalid("localStorage.entry");
       return { name: entry.name, value: entry.value };
     });
     return { origin: candidate.origin, localStorage };
@@ -184,7 +207,7 @@ export function encryptSession(
   assertKey(key);
   const validated = parseStorageState(storageState);
   const plaintext = Buffer.from(JSON.stringify(validated), "utf8");
-  if (plaintext.byteLength > MAX_CIPHERTEXT_BYTES) return invalid();
+  if (plaintext.byteLength > MAX_CIPHERTEXT_BYTES) return invalid("size");
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   cipher.setAAD(AAD);

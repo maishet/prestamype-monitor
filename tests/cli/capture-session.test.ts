@@ -22,6 +22,7 @@ function harness(
   const state = { cookies: [], origins: [] };
   let launchOptions: object | undefined;
   let visibilityChecks = 0;
+  const waitOptions: unknown[] = [];
   const page = {
     async goto(url: string) {
       events.push(`goto:${url}`);
@@ -29,8 +30,9 @@ function harness(
         return await new Promise<void>(() => undefined);
     },
     url: () => "https://www.prestamype.com/app/inversionista/oportunidades",
-    async waitForSelector(selector: string) {
+    async waitForSelector(selector: string, options?: { timeout?: number }) {
       events.push(`wait:${selector}`);
+      waitOptions.push(options);
       if (mode === "pending") return await new Promise<void>(() => undefined);
     },
     locator(selector: string) {
@@ -88,6 +90,7 @@ function harness(
     saved,
     store,
     getLaunchOptions: () => launchOptions,
+    waitOptions,
     getVisibilityChecks: () => visibilityChecks,
   };
 }
@@ -186,12 +189,19 @@ describe("captureSession", () => {
     const output = vi.fn();
     await captureSession({ launcher: h.launcher, store: h.store, key, output });
 
-    expect(output).toHaveBeenCalledTimes(1);
-    expect(output).toHaveBeenCalledWith(
+    expect(output).toHaveBeenCalledTimes(2);
+    expect(output).toHaveBeenNthCalledWith(
+      1,
       "Inicia sesión manualmente y vuelve aquí",
+    );
+    expect(output).toHaveBeenNthCalledWith(
+      2,
+      "Sesión guardada y cifrada. Envía /recuperar en Telegram para reanudar el monitor.",
     );
     expect(JSON.stringify(output.mock.calls)).not.toContain("secret");
     expect(h.getLaunchOptions()).toEqual({ headless: false });
+    // Logging in takes longer than Playwright's 30 s default.
+    expect(h.waitOptions).toEqual([{ timeout: 0 }]);
     expect(h.saved).toHaveLength(1);
     expect(h.events.slice(-3)).toEqual([
       "save",

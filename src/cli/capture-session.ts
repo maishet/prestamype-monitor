@@ -24,7 +24,10 @@ export class CaptureSessionError extends Error {
 interface CapturePage {
   goto(url: string): Promise<unknown>;
   url(): string;
-  waitForSelector(selector: string): Promise<unknown>;
+  waitForSelector(
+    selector: string,
+    options?: { timeout?: number },
+  ): Promise<unknown>;
   locator(selector: string): { isVisible(): Promise<boolean> };
   close?(): Promise<void>;
 }
@@ -188,7 +191,9 @@ async function waitForAuthentication(
   try {
     await Promise.race([
       raceWithAbort(
-        page.waitForSelector(AUTHENTICATED_MARKER),
+        // A person types credentials here; Playwright's 30 s default cut
+        // real logins short. The capture's own deadline (signal) governs.
+        page.waitForSelector(AUTHENTICATED_MARKER, { timeout: 0 }),
         authenticationSignal,
       ),
       challenge,
@@ -315,6 +320,9 @@ export async function captureSession(
       ),
       controller.signal,
     );
+    dependencies.output(
+      "Sesión guardada y cifrada. Envía /recuperar en Telegram para reanudar el monitor.",
+    );
   } catch (error) {
     primaryError = error;
   }
@@ -408,9 +416,13 @@ if (
 ) {
   void runCaptureSessionCli().catch((error: unknown) => {
     console.error(
-      error instanceof CaptureSessionError
+      error instanceof CaptureSessionError ||
+        (error instanceof Error &&
+          error.message.startsWith("Invalid encrypted session"))
         ? error.message
-        : "Session capture failed safely",
+        : `Session capture failed safely (${
+            error instanceof Error ? error.name : "unknown error"
+          })`,
     );
     process.exitCode = 1;
   });

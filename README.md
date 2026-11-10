@@ -93,12 +93,12 @@ El origen canónico de la aplicación es `https://www.prestamype.com`. El domini
 La autenticación se completa manualmente en un navegador visible. La herramienta no pide ni almacena tu contraseña. El adaptador AWS cifra el estado de sesión con AES-256-GCM antes de guardarlo en DynamoDB.
 
 ```powershell
-$env:TABLE_NAME = "prestamype-monitor"
-$env:SESSION_KEY_PARAMETER = "/prestamype/monitor/session-key"
 npm run auth:capture
 ```
 
-Inicia sesión en la ventana de Chromium y completa tú mismo cualquier verificación legítima. Si falta el navegador local, instala Chromium para Playwright con `npx playwright install chromium`.
+Sin `TABLE_NAME` ni `SESSION_KEY_PARAMETER` definidos, la captura los lee de la Lambda `prestamype-monitor-scan` (otra función: `PRESTAMYPE_SCAN_FUNCTION`), así la sesión se guarda justo donde el monitor la busca. Si los defines, deben ser los reales del stack (output `TableName` y `/prestamype/prod/session-key`); valores distintos guardan la sesión en un lugar que el monitor nunca lee.
+
+Inicia sesión en la ventana de Chromium y completa tú mismo cualquier verificación legítima. Al terminar debe aparecer «Sesión guardada y cifrada»; si no aparece, la sesión no se guardó y `/recuperar` volverá a pausar el monitor. Si falta el navegador local, instala Chromium para Playwright con `npx playwright install chromium`.
 
 Para un adaptador de captura local alternativo, configura `PRESTAMYPE_CAPTURE_ADAPTER` con un módulo que exporte `createCaptureDependencies`:
 

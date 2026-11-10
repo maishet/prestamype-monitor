@@ -41,6 +41,33 @@ describe("session crypto", () => {
     expect(Buffer.from(first.authTag, "base64")).toHaveLength(16);
   });
 
+  it("keeps Chromium's cross-site ancestor flag that Playwright 1.61 emits", () => {
+    const partitioned = {
+      ...state,
+      cookies: [{ ...state.cookies[0]!, _crHasCrossSiteAncestor: false }],
+    };
+    expect(decryptSession(encryptSession(partitioned, key), key)).toEqual(
+      partitioned,
+    );
+    const wrong = {
+      ...state,
+      cookies: [{ ...state.cookies[0]!, _crHasCrossSiteAncestor: "no" }],
+    };
+    expect(() => encryptSession(wrong, key)).toThrow(
+      "Invalid encrypted session (cookie._crHasCrossSiteAncestor)",
+    );
+  });
+
+  it("names an unknown cookie key without exposing values", () => {
+    const extra = {
+      ...state,
+      cookies: [{ ...state.cookies[0]!, surprise: "secret" }],
+    };
+    expect(() => encryptSession(extra, key)).toThrow(
+      "Invalid encrypted session (cookie.keys:surprise)",
+    );
+  });
+
   it("requires a Uint8Array key of exactly 32 bytes", () => {
     expect(() => encryptSession(state, new Uint8Array(31))).toThrow(
       "Encryption key must be exactly 32 bytes",
