@@ -406,6 +406,18 @@ describe("runMonitor", () => {
     );
   });
 
+  it("keeps the last delivered alert for /oportunidades and survives its failure", async () => {
+    const context = setup();
+    const recordLastAlert = vi.fn().mockRejectedValue(new Error("boom"));
+    Object.assign(context.repository, { recordLastAlert });
+    await runMonitor(context.dependencies, {
+      owner: "run",
+      lockTtlSeconds: 60,
+      alertLeaseSeconds: 30,
+    });
+    expect(recordLastAlert).toHaveBeenCalledTimes(1);
+  });
+
   it("marks an unalerted opportunity with missing histories for a retry", async () => {
     const context = setup({
       evaluation: {

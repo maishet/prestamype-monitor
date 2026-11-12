@@ -388,6 +388,15 @@ export async function runMonitor(
         );
       }
       await save(true);
+      try {
+        await dependencies.repository.recordLastAlert?.(
+          opportunity,
+          evaluation,
+          detectedAt ?? now,
+        );
+      } catch {
+        // Convenience for /oportunidades only: never fail a delivered alert over it.
+      }
     }
     result = { acquired: true, evaluated, alertsSent };
     console.info("Monitor scan completed", JSON.stringify(result));

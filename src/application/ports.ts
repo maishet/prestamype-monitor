@@ -50,6 +50,12 @@ export interface MonitorRepository {
   completeAlert(alertKey: string, owner: string): Promise<void>;
   /** Releases only a claim whose notification definitely failed before delivery. */
   releaseAlertClaim(alertKey: string, owner: string): Promise<void>;
+  /** Keeps the latest delivered alert on CONFIG so /oportunidades can show it at no read cost. */
+  recordLastAlert?(
+    opportunity: Opportunity,
+    evaluation: Evaluation,
+    alertedAt: Date,
+  ): Promise<void>;
 }
 
 export interface Notifier {

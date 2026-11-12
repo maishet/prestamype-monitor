@@ -366,6 +366,19 @@ function brief(item: StoredOpportunity, now: Date, position?: number): string {
   ].join("\n");
 }
 
+function lastAlertFrom(cfg: Record<string, unknown>): StoredOpportunity | undefined {
+  const alert = cfg.last_alert as
+    | { opportunity?: Opportunity; evaluation?: Evaluation; alertedAt?: string }
+    | undefined;
+  return alert?.opportunity && alert.evaluation
+    ? {
+        opportunity: alert.opportunity,
+        evaluation: alert.evaluation,
+        ...(alert.alertedAt ? { detailCheckedAt: alert.alertedAt } : {}),
+      }
+    : undefined;
+}
+
 function lastAlertedSection(item: StoredOpportunity, now: Date): string {
   const o = item.opportunity;
   const closed = daysUntil(o.closesAt, now);
@@ -392,41 +405,13 @@ export function formatOpportunityList(
       "No se ejecutó un escaneo: el monitor revisa solo en horario hábil y te avisa por aquí apenas aparece una. Usa /criterios para ver qué busca.",
       lastAlerted
         ? lastAlertedSection(lastAlerted, now)
-        : "Aún no se ha enviado ninguna alerta.",
+        : "Aún no tengo registro de una alerta reciente: apenas se envíe la próxima, la verás aquí.",
     ].join("\n\n");
   return [
     `Oportunidades abiertas que cumplen los criterios (${items.length}), de mayor a menor score:`,
     ...items.map((item, index) => brief(item, now, index + 1)),
     "Datos guardados por el monitor: confirma la disponibilidad real en Prestamype antes de decidir. Usa /criterios para entender el score.",
   ].join("\n\n");
-}
-
-/** Most recently alerted opportunity, open or not; detailCheckedAt is set when the alert goes out. */
-async function findLastAlerted(): Promise<StoredOpportunity | undefined> {
-  let cursor: Record<string, unknown> | undefined;
-  let latest: (StoredOpportunity & { detailCheckedAt?: string }) | undefined;
-  for (let page = 0; page < 10; page += 1) {
-    const result = await db.send(
-      new QueryCommand({
-        TableName: required("TABLE_NAME"),
-        IndexName: "EntityTypeIndex",
-        KeyConditionExpression: "GSI1PK = :type",
-        FilterExpression: "alerted = :yes",
-        ExpressionAttributeValues: { ":type": "OPPORTUNITY", ":yes": true },
-        ProjectionExpression: "opportunity,evaluation,detailCheckedAt",
-        ExclusiveStartKey: cursor,
-        Limit: 100,
-      }),
-    );
-    for (const item of (result.Items ?? []) as StoredOpportunity[]) {
-      if (!item.opportunity || !item.evaluation) continue;
-      if ((item.detailCheckedAt ?? "") >= (latest?.detailCheckedAt ?? ""))
-        latest = item;
-    }
-    cursor = result.LastEvaluatedKey;
-    if (!cursor) break;
-  }
-  return latest;
 }
 
 export function formatCriteria(monitor: MonitorConfig): string {
@@ -752,7 +737,7 @@ async function execute(
     return formatOpportunityList(
       items as StoredOpportunity[],
       new Date(),
-      items.length ? undefined : await findLastAlerted(),
+      items.length ? undefined : lastAlertFrom(cfg),
     );
   }
   if (!admin) return "Comando no autorizado.";

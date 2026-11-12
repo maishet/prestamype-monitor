@@ -778,6 +778,28 @@ export class DynamoRepository implements MonitorRepository, SessionStore {
     }
   }
 
+  async recordLastAlert(
+    opportunity: Opportunity,
+    evaluation: Evaluation,
+    alertedAt: Date,
+  ): Promise<void> {
+    await this.#send(
+      new UpdateCommand({
+        TableName: this.#tableName,
+        Key: { PK: "CONFIG", SK: "MONITOR" },
+        UpdateExpression: "SET last_alert = :alert",
+        ConditionExpression: "attribute_exists(PK)",
+        ExpressionAttributeValues: {
+          ":alert": {
+            opportunity,
+            evaluation,
+            alertedAt: alertedAt.toISOString(),
+          },
+        },
+      }),
+    );
+  }
+
   async recordScanResult(summary: string): Promise<void> {
     await this.#send(
       new UpdateCommand({

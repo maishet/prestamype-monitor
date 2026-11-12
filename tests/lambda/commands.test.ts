@@ -302,10 +302,10 @@ describe("public opportunity messages", () => {
     expect(text).toContain(`/detalle ${item.opportunity.id}`);
   });
 
-  it("says what to do when nothing is open and none was ever alerted", () => {
+  it("says what to do when nothing is open and no alert is recorded", () => {
     const text = formatOpportunityList([], now);
     expect(text).toContain("/criterios");
-    expect(text).toContain("Aún no se ha enviado ninguna alerta.");
+    expect(text).toContain("Aún no tengo registro de una alerta reciente");
   });
 
   it("shows the last alerted opportunity when nothing is open", () => {
