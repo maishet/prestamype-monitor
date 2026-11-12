@@ -255,23 +255,232 @@ async function claim(
     throw error;
   }
 }
-function brief(item: {
+type StoredOpportunity = {
   opportunity: Opportunity;
   evaluation: Evaluation;
   detailCheckedAt?: string;
-}): string {
+};
+
+const moneyFormatter = new Intl.NumberFormat("en-US", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+const SPANISH_MONTHS = [
+  "ene", "feb", "mar", "abr", "may", "jun",
+  "jul", "ago", "sep", "oct", "nov", "dic",
+];
+
+function money(cents: number, currency: Opportunity["currency"]): string {
+  return `${currency === "USD" ? "US$" : "S/"} ${moneyFormatter.format(cents / 100)}`;
+}
+
+function calendarDate(value: string | null): string | null {
+  const parts = /^(\d{4})-(\d{2})-(\d{2})/.exec(value ?? "");
+  const month = parts ? SPANISH_MONTHS[Number(parts[2]) - 1] : undefined;
+  return parts && month ? `${parts[3]} ${month} ${parts[1]}` : null;
+}
+
+function limaToday(now: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Lima",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
+function daysUntil(value: string | null, now: Date): number | null {
+  const date = /^\d{4}-\d{2}-\d{2}/.exec(value ?? "")?.[0];
+  if (!date) return null;
+  return Math.round(
+    (Date.parse(`${date}T00:00:00Z`) -
+      Date.parse(`${limaToday(now)}T00:00:00Z`)) /
+      86_400_000,
+  );
+}
+
+function closingLabel(closesAt: string | null, now: Date): string | null {
+  const days = daysUntil(closesAt, now);
+  const date = calendarDate(closesAt);
+  if (days === null || date === null) return null;
+  if (days < 0) return `Cerró el ${date}`;
+  if (days === 0) return "Cierra HOY";
+  if (days === 1) return `Cierra mañana (${date})`;
+  return `Cierra en ${days} días (${date})`;
+}
+
+const decisionLabels: Record<Evaluation["decision"], string> = {
+  INVEST: "🔴 INVERTIR",
+  REVIEW: "🟡 REVISAR",
+  DO_NOT_INVEST: "⛔ NO INVERTIR",
+  IGNORE: "ℹ️ REGISTRADA",
+};
+
+const warningLabels: Record<string, string> = {
+  "Debtor history is unavailable": "Sin historial del deudor",
+  "Supplier history is unavailable": "Sin historial del proveedor",
+};
+
+function historyLine(
+  label: string,
+  history: Opportunity["debtorHistory"],
+): string {
+  if (!history || history.totalAuctions <= 0)
+    return `${label}: sin historial disponible`;
+  const late = history.paidLate > 0 ? ` · ${history.paidLate} tarde` : "";
+  const overdue = history.overdue > 0 ? ` · ${history.overdue} vencidas` : "";
+  return `${label}: ${history.paidOnTime}/${history.totalAuctions} pagadas a tiempo${late}${overdue}`;
+}
+
+/** One entry of /oportunidades: what it is, how much it pays, until when, and why it ranks. */
+function brief(item: StoredOpportunity, now: Date, position?: number): string {
   const o = item.opportunity;
-  return `${o.commercialName}\nID: ${o.id}\n${o.currency} ${(o.totalAmountCents / 100).toFixed(2)} · ${o.annualReturnPct}% anual · Riesgo ${o.risk}\nScore ${item.evaluation.score}/100 · ${item.evaluation.decision}\nDatos: ${item.detailCheckedAt ?? "fecha desconocida"}`;
+  const e = item.evaluation;
+  const funded =
+    o.totalAmountCents > 0
+      ? Math.min(100, Math.round((o.fundedAmountCents / o.totalAmountCents) * 100))
+      : 0;
+  const monthly =
+    o.monthlyReturnPct === null ? "" : ` (${o.monthlyReturnPct.toFixed(2)}% mensual)`;
+  const term = daysUntil(o.dueAt, now) !== null && daysUntil(o.closesAt, now) !== null
+    ? daysUntil(o.dueAt, now)! - daysUntil(o.closesAt, now)!
+    : null;
+  const due = calendarDate(o.dueAt);
+  const timing = [
+    closingLabel(o.closesAt, now),
+    due ? `Pago ${due}${term !== null && term > 0 ? ` · plazo de ${term} días` : ""}` : null,
+  ].filter(Boolean);
+  const warnings = e.warnings.map((warning) => warningLabels[warning] ?? warning);
+  return [
+    `${position ? `${position}. ` : ""}${decisionLabels[e.decision]} · ${o.commercialName}`,
+    `📈 ${o.annualReturnPct.toFixed(2)}% anual${monthly} · ${o.risk === "PROTEGIDA" ? "Protegida 🛡" : `Riesgo ${o.risk}`}`,
+    `💰 Disponible ${money(o.remainingAmountCents, o.currency)} de ${money(o.totalAmountCents, o.currency)} (${funded}% financiado)`,
+    ...(timing.length ? [`⏱ ${timing.join(" · ")}`] : []),
+    `👥 ${historyLine("Deudor", o.debtorHistory)}`,
+    `     ${historyLine("Proveedor", o.supplierHistory)}`,
+    ...warnings.map((warning) => `⚠️ ${warning}`),
+    `⭐ Score ${e.score.toFixed(1)}/100`,
+    `🔎 Datos de ${item.detailCheckedAt ? `${formatLimaDateTime(item.detailCheckedAt)} (Lima)` : "fecha desconocida"}`,
+    `ID: ${o.id}`,
+    `Más info: /detalle ${o.id}`,
+  ].join("\n");
+}
+
+function lastAlertedSection(item: StoredOpportunity, now: Date): string {
+  const o = item.opportunity;
+  const closed = daysUntil(o.closesAt, now);
+  const state =
+    closed !== null && closed < 0
+      ? "ya cerró"
+      : o.remainingAmountCents <= 0
+        ? "ya se financió por completo"
+        : "ya no cumple los criterios con los datos más recientes";
+  return [
+    `Última oportunidad alertada (${state}):`,
+    brief(item, now),
+  ].join("\n");
+}
+
+export function formatOpportunityList(
+  items: StoredOpportunity[],
+  now = new Date(),
+  lastAlerted?: StoredOpportunity,
+): string {
+  if (!items.length)
+    return [
+      "No hay oportunidades abiertas que cumplan tus criterios en este momento.",
+      "No se ejecutó un escaneo: el monitor revisa solo en horario hábil y te avisa por aquí apenas aparece una. Usa /criterios para ver qué busca.",
+      lastAlerted
+        ? lastAlertedSection(lastAlerted, now)
+        : "Aún no se ha enviado ninguna alerta.",
+    ].join("\n\n");
+  return [
+    `Oportunidades abiertas que cumplen los criterios (${items.length}), de mayor a menor score:`,
+    ...items.map((item, index) => brief(item, now, index + 1)),
+    "Datos guardados por el monitor: confirma la disponibilidad real en Prestamype antes de decidir. Usa /criterios para entender el score.",
+  ].join("\n\n");
+}
+
+/** Most recently alerted opportunity, open or not; detailCheckedAt is set when the alert goes out. */
+async function findLastAlerted(): Promise<StoredOpportunity | undefined> {
+  let cursor: Record<string, unknown> | undefined;
+  let latest: (StoredOpportunity & { detailCheckedAt?: string }) | undefined;
+  for (let page = 0; page < 10; page += 1) {
+    const result = await db.send(
+      new QueryCommand({
+        TableName: required("TABLE_NAME"),
+        IndexName: "EntityTypeIndex",
+        KeyConditionExpression: "GSI1PK = :type",
+        FilterExpression: "alerted = :yes",
+        ExpressionAttributeValues: { ":type": "OPPORTUNITY", ":yes": true },
+        ProjectionExpression: "opportunity,evaluation,detailCheckedAt",
+        ExclusiveStartKey: cursor,
+        Limit: 100,
+      }),
+    );
+    for (const item of (result.Items ?? []) as StoredOpportunity[]) {
+      if (!item.opportunity || !item.evaluation) continue;
+      if ((item.detailCheckedAt ?? "") >= (latest?.detailCheckedAt ?? ""))
+        latest = item;
+    }
+    cursor = result.LastEvaluatedKey;
+    if (!cursor) break;
+  }
+  return latest;
+}
+
+export function formatCriteria(monitor: MonitorConfig): string {
+  const currencyNames: Record<string, string> = { PEN: "soles (PEN)", USD: "dólares (USD)" };
+  const protectedMinimum =
+    monitor.minimumProtectedAnnualReturnPct !== undefined
+      ? `\n   (las protegidas piden mínimo ${monitor.minimumProtectedAnnualReturnPct}%)`
+      : "";
+  return [
+    "Qué busca el monitor",
+    "",
+    "Filtros obligatorios (si falla uno, la oportunidad se descarta):",
+    `• Moneda: ${monitor.allowedCurrencies.map((c) => currencyNames[c] ?? c).join(" o ")}`,
+    `• Riesgo: ${monitor.allowedRisks.join(", ")}`,
+    `• Retorno anual mínimo: ${monitor.minimumAnnualReturnPct}%${protectedMinimum}`,
+    `• Monto disponible mínimo: ${moneyFormatter.format(monitor.minimumInvestmentCents / 100)} (en la moneda de la oportunidad)`,
+    "• Sin coincidencias con lista negra ni señales de cobranza problemática",
+    "",
+    "Score de 0 a 100 (suma de 7 factores):",
+    "• Historial del deudor: hasta 30 (pagos a tiempo, morosidad, atraso)",
+    "• Historial del proveedor: hasta 20",
+    "• Retorno anual: hasta 15 (más puntos desde 15% hacia arriba)",
+    "• Experiencia: hasta 15 (cuántas subastas y monto se han financiado)",
+    "• Riesgo: hasta 10 (A+/A/Protegida suman más que B o C)",
+    "• Plazo: hasta 5 (mejor mientras más corto, ideal ≤ 90 días)",
+    "• Concentración: hasta 5 (no depender de un solo deudor)",
+    "",
+    "Qué significa cada resultado:",
+    `🟡 REVISAR: score desde ${monitor.reviewScore}. Merece que lo mires.`,
+    `🔴 INVERTIR: score desde ${monitor.highPriorityScore}. Máxima prioridad.`,
+    "ℹ️ REGISTRADA: pasa los filtros pero no llega al score mínimo; no se avisa.",
+    "",
+    "El score es una regla del monitor, no una probabilidad de cobro ni una recomendación financiera. El monitor no invierte por ti.",
+    "Ver ejemplos reales: /oportunidades",
+  ].join("\n");
 }
 
 const componentLabels: Record<string, string> = {
-  return: "Retorno",
+  return: "Retorno anual",
   risk: "Riesgo",
   debtorHistory: "Historial del deudor",
   supplierHistory: "Historial del proveedor",
   experience: "Experiencia",
   term: "Plazo",
   concentration: "Concentración",
+};
+const componentMaximums: Record<string, number> = {
+  return: 15,
+  risk: 10,
+  debtorHistory: 30,
+  supplierHistory: 20,
+  experience: 15,
+  term: 5,
+  concentration: 5,
 };
 
 export function formatOpportunityAnalysis(item: {
@@ -458,7 +667,7 @@ async function execute(
 ): Promise<string> {
   if (command === "ayuda" || command === "start")
     return (
-      "Consultas de datos guardados:\n/oportunidades\n/detalle ID\n/criterios\n/ayuda" +
+      "Consultas de datos guardados:\n/oportunidades — las 5 mejores abiertas ahora, con retorno, plazo e historial\n/detalle ID — una oportunidad con su desglose de score (el ID sale de /oportunidades)\n/criterios — qué busca el monitor y cómo se calcula el score\n/ayuda — este mensaje" +
       (admin
         ? "\n\nAdministración privada:\n/analizar CODIGO\n/estado\n/sesionestado\n/actualizarportafolio\n/escanear\n/pausar\n/reanudar\n/recuperar\n\nLímites: 1 comando cada 3 s; 2.000/mes entre todos. Escaneos manuales: 1 cada 10 min, máximo 5/día."
         : "")
@@ -474,13 +683,16 @@ async function execute(
       item.evaluation.components as Record<string, number>,
     )
       .filter(([name]) => admin || name !== "concentration")
-      .map(([name, points]) => `${name}: ${points.toFixed(1)}`)
+      .map(
+        ([name, points]) =>
+          `• ${componentLabels[name] ?? name}: ${points.toFixed(1)}${componentMaximums[name] ? ` / ${componentMaximums[name]}` : ""}`,
+      )
       .join("\n");
     return (
-      brief(item as { opportunity: Opportunity; evaluation: Evaluation }) +
-      "\n" +
+      brief(item as StoredOpportunity, new Date()) +
+      "\n\nDesglose del score:\n" +
       components +
-      "\nInformación guardada; la disponibilidad puede haber cambiado."
+      "\n\nInformación guardada; la disponibilidad puede haber cambiado."
     );
   }
   const cfg = await get(configKey);
@@ -514,7 +726,7 @@ async function execute(
     return "No encontré ese código entre las oportunidades guardadas. Revisa mayúsculas y minúsculas.";
   }
   if (command === "criterios")
-    return `Monedas: ${monitor.allowedCurrencies.join(", ")}\nRiesgos: ${monitor.allowedRisks.join(", ")}\nRetorno mínimo evaluado: ${monitor.minimumAnnualReturnPct}% anual\nREVISAR desde ${monitor.reviewScore}; INVERTIR desde ${monitor.highPriorityScore}.\nEl score es una regla del monitor, no una probabilidad de cobro. No se realizan inversiones.`;
+    return formatCriteria(monitor);
   if (command === "oportunidades") {
     const result = await db.send(
       new QueryCommand({
@@ -537,17 +749,11 @@ async function execute(
       )
       .sort((a, b) => b.evaluation.score - a.evaluation.score)
       .slice(0, 5);
-    return items.length
-      ? "Hasta 5 oportunidades guardadas, por score:\n\n" +
-          items
-            .map((item) =>
-              brief(
-                item as { opportunity: Opportunity; evaluation: Evaluation },
-              ),
-            )
-            .join("\n\n") +
-          "\n\nConfirma disponibilidad en Prestamype."
-      : "No hay oportunidades vigentes alertables en los registros consultados. No se ejecutó un escaneo.";
+    return formatOpportunityList(
+      items as StoredOpportunity[],
+      new Date(),
+      items.length ? undefined : await findLastAlerted(),
+    );
   }
   if (!admin) return "Comando no autorizado.";
   if (command === "actualizarportafolio") {

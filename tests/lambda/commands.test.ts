@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createCommandHandler,
+  formatCriteria,
   formatMonitorStatus,
+  formatOpportunityList,
   formatOpportunityAnalysis,
   formatSessionStatus,
   isOpportunityOpenInLima,
@@ -246,5 +248,91 @@ describe("status commands", () => {
     expect(text).toContain("✅ guardada (cifrada)");
     expect(text).toContain("15/10/2026 18:28 (hace 2 min)");
     expect(text).toContain("No se detecta una pausa por sesión.");
+  });
+});
+
+describe("public opportunity messages", () => {
+  const now = new Date("2026-09-10T15:00:00.000Z");
+  const item = {
+    opportunity: {
+      id: "a".repeat(32),
+      auctionCode: "abc12345",
+      commercialName: "MINERA SOL",
+      currency: "PEN" as const,
+      totalAmountCents: 10_000_000,
+      fundedAmountCents: 2_500_000,
+      remainingAmountCents: 7_500_000,
+      annualReturnPct: 18.5,
+      monthlyReturnPct: 1.43,
+      risk: "B" as const,
+      investmentType: "Confirming" as const,
+      closesAt: "2026-09-12",
+      dueAt: "2026-11-11",
+      collectionProblem: false,
+      debtor: { legalName: "DEUDOR", taxId: null },
+      supplier: { legalName: "", taxId: null },
+      debtorHistory: {
+        totalAuctions: 20, paidOnTime: 18, paidLate: 2, currentOnTime: 0,
+        overdue: 0, averageDelayDays: 3, delinquencyPct: 0, historicalAmountCents: 1,
+      },
+      supplierHistory: null,
+      url: "https://www.prestamype.com/app/inversionista/oportunidades",
+    },
+    evaluation: {
+      decision: "REVIEW" as const,
+      score: 72.34,
+      components: {},
+      reasons: [],
+      warnings: ["Supplier history is unavailable"],
+    },
+    detailCheckedAt: "2026-09-10T14:00:00.000Z",
+  };
+
+  it("explains what an opportunity pays, until when and why it ranks", () => {
+    const text = formatOpportunityList([item], now);
+    expect(text).toContain("1. 🟡 REVISAR · MINERA SOL");
+    expect(text).toContain("18.50% anual (1.43% mensual) · Riesgo B");
+    expect(text).toContain("Disponible S/ 75,000.00 de S/ 100,000.00 (25% financiado)");
+    expect(text).toContain("Cierra en 2 días (12 sep 2026)");
+    expect(text).toContain("plazo de 60 días");
+    expect(text).toContain("Deudor: 18/20 pagadas a tiempo · 2 tarde");
+    expect(text).toContain("Proveedor: sin historial disponible");
+    expect(text).toContain("Sin historial del proveedor");
+    expect(text).toContain("Score 72.3/100");
+    expect(text).toContain(`/detalle ${item.opportunity.id}`);
+  });
+
+  it("says what to do when nothing is open and none was ever alerted", () => {
+    const text = formatOpportunityList([], now);
+    expect(text).toContain("/criterios");
+    expect(text).toContain("Aún no se ha enviado ninguna alerta.");
+  });
+
+  it("shows the last alerted opportunity when nothing is open", () => {
+    const closed = {
+      ...item,
+      opportunity: { ...item.opportunity, closesAt: "2026-09-08" },
+    };
+    const text = formatOpportunityList([], now, closed);
+    expect(text).toContain("Última oportunidad alertada (ya cerró):");
+    expect(text).toContain("MINERA SOL");
+    expect(text).toContain("Cerró el 08 sep 2026");
+    expect(text).not.toContain("Cierra HOY");
+  });
+
+  it("describes filters, score factors and thresholds", () => {
+    const text = formatCriteria({
+      allowedCurrencies: ["PEN", "USD"],
+      allowedRisks: ["A+", "A", "B"],
+      minimumAnnualReturnPct: 13,
+      minimumInvestmentCents: 10_000,
+      reviewScore: 65,
+      highPriorityScore: 80,
+    });
+    expect(text).toContain("soles (PEN) o dólares (USD)");
+    expect(text).toContain("Retorno anual mínimo: 13%");
+    expect(text).toContain("Historial del deudor: hasta 30");
+    expect(text).toContain("REVISAR: score desde 65");
+    expect(text).toContain("INVERTIR: score desde 80");
   });
 });
