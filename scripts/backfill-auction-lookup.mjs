@@ -35,12 +35,24 @@ const limaToday = new Intl.DateTimeFormat("en-CA", {
   day: "2-digit",
 }).format(new Date());
 
-const credentials = aws([
-  "configure",
-  "export-credentials",
-  "--format",
-  "process",
-]);
+// `aws login` hands out short-lived keys (~15 min) and this run takes longer,
+// so re-export them whenever the SDK asks again (it does near expiration).
+const credentials = async () => {
+  const exported = aws([
+    "configure",
+    "export-credentials",
+    "--format",
+    "process",
+  ]);
+  return {
+    accessKeyId: exported.AccessKeyId,
+    secretAccessKey: exported.SecretAccessKey,
+    sessionToken: exported.SessionToken,
+    ...(exported.Expiration
+      ? { expiration: new Date(exported.Expiration) }
+      : {}),
+  };
+};
 const tableName = aws([
   "lambda",
   "get-function-configuration",
@@ -51,11 +63,7 @@ const db = DynamoDBDocumentClient.from(
   new DynamoDBClient({
     region,
     maxAttempts: 8,
-    credentials: {
-      accessKeyId: credentials.AccessKeyId,
-      secretAccessKey: credentials.SecretAccessKey,
-      sessionToken: credentials.SessionToken,
-    },
+    credentials,
   }),
 );
 
