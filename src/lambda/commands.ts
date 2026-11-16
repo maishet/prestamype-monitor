@@ -6,6 +6,7 @@ import {
   QueryCommand,
   TransactWriteCommand,
   UpdateCommand,
+  type QueryCommandOutput,
 } from "@aws-sdk/lib-dynamodb";
 import { SSMClient, GetParametersCommand } from "@aws-sdk/client-ssm";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
@@ -15,7 +16,10 @@ import type {
   Opportunity,
   Evaluation,
 } from "../domain/types.js";
-import { formatElapsed, formatLimaDateTime } from "../notifications/lima-time.js";
+import {
+  formatElapsed,
+  formatLimaDateTime,
+} from "../notifications/lima-time.js";
 
 const PUBLIC = new Set([
   "ayuda",
@@ -125,11 +129,18 @@ export function createCommandHandler(deps: CommandDependencies) {
     try {
       text = recognized
         ? await deps.execute(command, argument, admin)
-        : "Comando no disponible. Usa /ayuda.";
-    } catch {
-      console.warn("Telegram command failed", JSON.stringify({ command }));
-      text =
-        "No pude completar la solicitud. Consulta /estado antes de repetir una acción.";
+        : "No reconozco ese comando. Usa /ayuda para ver la lista.";
+    } catch (error) {
+      // Only the error class name: messages may carry AWS or account details.
+      const errorName = error instanceof Error ? error.name : typeof error;
+      console.warn(
+        "Telegram command failed",
+        JSON.stringify({ command, error: errorName }),
+      );
+      // /estado exists only for the admin; others just get a retry hint.
+      text = admin
+        ? "No pude completar la solicitud. Revisa /estado antes de repetirla, por si la acción ya se aplicó."
+        : "No pude completar la solicitud. Intenta de nuevo en un momento.";
     }
     // Telegram executes this method as the webhook response: no polling or extra sendMessage call.
     return response(
@@ -265,9 +276,22 @@ const moneyFormatter = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
+const integerFormatter = new Intl.NumberFormat("en-US", {
+  maximumFractionDigits: 0,
+});
 const SPANISH_MONTHS = [
-  "ene", "feb", "mar", "abr", "may", "jun",
-  "jul", "ago", "sep", "oct", "nov", "dic",
+  "ene",
+  "feb",
+  "mar",
+  "abr",
+  "may",
+  "jun",
+  "jul",
+  "ago",
+  "sep",
+  "oct",
+  "nov",
+  "dic",
 ];
 
 function money(cents: number, currency: Opportunity["currency"]): string {
@@ -320,6 +344,38 @@ const warningLabels: Record<string, string> = {
   "Debtor history is unavailable": "Sin historial del deudor",
   "Supplier history is unavailable": "Sin historial del proveedor",
 };
+const roleLabels: Record<string, string> = {
+  debtor: "deudor",
+  supplier: "proveedor",
+};
+
+/** The evaluator stores some reasons in English; show them in Spanish. */
+export function evaluationText(text: string): string {
+  const known = warningLabels[text];
+  if (known) return known;
+  let match = /^Risk (.+) is not allowed$/.exec(text);
+  if (match) return `Riesgo ${match[1]} fuera de los permitidos`;
+  match = /^Annual return is below ([\d.]+)%$/.exec(text);
+  if (match) return `Retorno anual menor al mínimo de ${match[1]}%`;
+  match = /^Currency (.+) is not allowed$/.exec(text);
+  if (match) return `Moneda ${match[1]} no permitida`;
+  match = /^Remaining amount is below (\d+) cents$/.exec(text);
+  if (match)
+    return `Monto disponible menor al mínimo de ${moneyFormatter.format(Number(match[1]) / 100)}`;
+  match = /^Blacklist match for (\w+): (.*)$/s.exec(text);
+  if (match)
+    return `En lista negra (${roleLabels[match[1]!] ?? match[1]}): ${match[2]}`;
+  return text;
+}
+
+/** Filtered-out opportunities are stored with score 0 and no components. */
+function wasScored(e: Evaluation): boolean {
+  return e.score > 0 || Object.keys(e.components).length > 0;
+}
+
+function riskLabel(risk: string): string {
+  return risk === "PROTEGIDA" ? "Protegida 🛡" : `Riesgo ${risk}`;
+}
 
 function historyLine(
   label: string,
@@ -333,40 +389,70 @@ function historyLine(
 }
 
 /** One entry of /oportunidades: what it is, how much it pays, until when, and why it ranks. */
-function brief(item: StoredOpportunity, now: Date, position?: number): string {
+function brief(
+  item: StoredOpportunity,
+  now: Date,
+  position?: number,
+  detailLink = true,
+): string {
   const o = item.opportunity;
   const e = item.evaluation;
   const funded =
     o.totalAmountCents > 0
-      ? Math.min(100, Math.round((o.fundedAmountCents / o.totalAmountCents) * 100))
+      ? Math.min(
+          100,
+          Math.round((o.fundedAmountCents / o.totalAmountCents) * 100),
+        )
       : 0;
   const monthly =
-    o.monthlyReturnPct === null ? "" : ` (${o.monthlyReturnPct.toFixed(2)}% mensual)`;
-  const term = daysUntil(o.dueAt, now) !== null && daysUntil(o.closesAt, now) !== null
-    ? daysUntil(o.dueAt, now)! - daysUntil(o.closesAt, now)!
-    : null;
+    o.monthlyReturnPct === null
+      ? ""
+      : ` (${o.monthlyReturnPct.toFixed(2)}% mensual)`;
+  const term =
+    daysUntil(o.dueAt, now) !== null && daysUntil(o.closesAt, now) !== null
+      ? daysUntil(o.dueAt, now)! - daysUntil(o.closesAt, now)!
+      : null;
   const due = calendarDate(o.dueAt);
   const timing = [
     closingLabel(o.closesAt, now),
-    due ? `Pago ${due}${term !== null && term > 0 ? ` · plazo de ${term} días` : ""}` : null,
+    due
+      ? `Pago ${due}${term !== null && term > 0 ? ` · plazo de ${term} días` : ""}`
+      : null,
   ].filter(Boolean);
-  const warnings = e.warnings.map((warning) => warningLabels[warning] ?? warning);
+  const warnings = e.warnings.map(evaluationText);
   return [
     `${position ? `${position}. ` : ""}${decisionLabels[e.decision]} · ${o.commercialName}`,
-    `📈 ${o.annualReturnPct.toFixed(2)}% anual${monthly} · ${o.risk === "PROTEGIDA" ? "Protegida 🛡" : `Riesgo ${o.risk}`}`,
+    `📈 ${o.annualReturnPct.toFixed(2)}% anual${monthly} · ${riskLabel(o.risk)}`,
     `💰 Disponible ${money(o.remainingAmountCents, o.currency)} de ${money(o.totalAmountCents, o.currency)} (${funded}% financiado)`,
     ...(timing.length ? [`⏱ ${timing.join(" · ")}`] : []),
     `👥 ${historyLine("Deudor", o.debtorHistory)}`,
     `     ${historyLine("Proveedor", o.supplierHistory)}`,
     ...warnings.map((warning) => `⚠️ ${warning}`),
-    `⭐ Score ${e.score.toFixed(1)}/100`,
+    wasScored(e)
+      ? `⭐ Score ${e.score.toFixed(1)}/100`
+      : "⭐ Sin score: no pasó los filtros obligatorios",
     `🔎 Datos de ${item.detailCheckedAt ? `${formatLimaDateTime(item.detailCheckedAt)} (Lima)` : "fecha desconocida"}`,
-    `ID: ${o.id}`,
-    `Más info: /detalle ${o.id}`,
+    ...(detailLink ? [`ID: ${o.id}`, `Más info: /detalle ${o.id}`] : []),
   ].join("\n");
 }
 
-function lastAlertFrom(cfg: Record<string, unknown>): StoredOpportunity | undefined {
+/** Score points per factor; concentration comes from the owner's portfolio. */
+function scoreBreakdown(
+  components: Readonly<Record<string, number>>,
+  includeConcentration: boolean,
+): string {
+  return Object.entries(components)
+    .filter(([name]) => includeConcentration || name !== "concentration")
+    .map(
+      ([name, points]) =>
+        `• ${componentLabels[name] ?? name}: ${points.toFixed(1)}${componentMaximums[name] ? ` / ${componentMaximums[name]}` : ""}`,
+    )
+    .join("\n");
+}
+
+function lastAlertFrom(
+  cfg: Record<string, unknown>,
+): StoredOpportunity | undefined {
   const alert = cfg.last_alert as
     | { opportunity?: Opportunity; evaluation?: Evaluation; alertedAt?: string }
     | undefined;
@@ -388,10 +474,9 @@ function lastAlertedSection(item: StoredOpportunity, now: Date): string {
       : o.remainingAmountCents <= 0
         ? "ya se financió por completo"
         : "ya no cumple los criterios con los datos más recientes";
-  return [
-    `Última oportunidad alertada (${state}):`,
-    brief(item, now),
-  ].join("\n");
+  return [`Última oportunidad alertada (${state}):`, brief(item, now)].join(
+    "\n",
+  );
 }
 
 export function formatOpportunityList(
@@ -402,7 +487,7 @@ export function formatOpportunityList(
   if (!items.length)
     return [
       "No hay oportunidades abiertas que cumplan tus criterios en este momento.",
-      "No se ejecutó un escaneo: el monitor revisa solo en horario hábil y te avisa por aquí apenas aparece una. Usa /criterios para ver qué busca.",
+      "Esta consulta usa los datos del último escaneo; no lanza uno nuevo. El monitor revisa Prestamype automáticamente en horario hábil y avisa aquí apenas aparece una. Usa /criterios para ver qué busca.",
       lastAlerted
         ? lastAlertedSection(lastAlerted, now)
         : "Aún no tengo registro de una alerta reciente: apenas se envíe la próxima, la verás aquí.",
@@ -415,7 +500,10 @@ export function formatOpportunityList(
 }
 
 export function formatCriteria(monitor: MonitorConfig): string {
-  const currencyNames: Record<string, string> = { PEN: "soles (PEN)", USD: "dólares (USD)" };
+  const currencyNames: Record<string, string> = {
+    PEN: "soles (PEN)",
+    USD: "dólares (USD)",
+  };
   const protectedMinimum =
     monitor.minimumProtectedAnnualReturnPct !== undefined
       ? `\n   (las protegidas piden mínimo ${monitor.minimumProtectedAnnualReturnPct}%)`
@@ -425,7 +513,7 @@ export function formatCriteria(monitor: MonitorConfig): string {
     "",
     "Filtros obligatorios (si falla uno, la oportunidad se descarta):",
     `• Moneda: ${monitor.allowedCurrencies.map((c) => currencyNames[c] ?? c).join(" o ")}`,
-    `• Riesgo: ${monitor.allowedRisks.join(", ")}`,
+    `• Riesgo: ${monitor.allowedRisks.map((risk) => (risk === "PROTEGIDA" ? "Protegida" : risk)).join(", ")}`,
     `• Retorno anual mínimo: ${monitor.minimumAnnualReturnPct}%${protectedMinimum}`,
     `• Monto disponible mínimo: ${moneyFormatter.format(monitor.minimumInvestmentCents / 100)} (en la moneda de la oportunidad)`,
     "• Sin coincidencias con lista negra ni señales de cobranza problemática",
@@ -468,47 +556,45 @@ const componentMaximums: Record<string, number> = {
   concentration: 5,
 };
 
-export function formatOpportunityAnalysis(item: {
-  opportunity: Opportunity;
-  evaluation: Evaluation;
-  alerted?: boolean;
-}, config: MonitorConfig): string {
+export function formatOpportunityAnalysis(
+  item: StoredOpportunity & { alerted?: boolean },
+  config: MonitorConfig,
+  now = new Date(),
+): string {
   const { opportunity: o, evaluation: e } = item;
-  const threshold = e.decision === "INVEST" ? config.highPriorityScore : config.reviewScore;
-  const gap = Math.max(0, config.reviewScore - e.score);
-  const passed = [
-    config.allowedCurrencies.includes(o.currency) ? `Moneda ${o.currency} permitida` : null,
-    config.allowedRisks.includes(o.risk) ? `Riesgo ${o.risk} permitido` : null,
-    o.annualReturnPct >= config.minimumAnnualReturnPct
-      ? `Retorno ${o.annualReturnPct.toFixed(2)}% supera el mínimo de ${config.minimumAnnualReturnPct}%`
-      : null,
-    o.remainingAmountCents >= config.minimumInvestmentCents
-      ? `Disponible ${o.currency} ${(o.remainingAmountCents / 100).toFixed(2)} supera el mínimo`
-      : null,
-  ].filter((value): value is string => value !== null);
-  const causes = [
-    ...e.reasons,
-    ...e.warnings,
-    ...(e.decision === "IGNORE" && e.score > 0
-      ? [`El score quedó ${gap.toFixed(1)} puntos por debajo del mínimo de ${config.reviewScore}`]
-      : []),
-  ];
-  const components = Object.entries(e.components)
-    .map(([name, points]) => `${componentLabels[name] ?? name}: ${points.toFixed(2)}`)
-    .join("\n");
+  const scored = wasScored(e);
+  const recommended = e.decision === "INVEST" || e.decision === "REVIEW";
+  const bullets = (lines: readonly string[]) =>
+    lines.map((line) => `• ${evaluationText(line)}`).join("\n");
+
+  // Explain the outcome from what the evaluator actually stored, not by
+  // re-checking today's config (which may have changed since).
+  let why: string;
+  if (e.decision === "DO_NOT_INVEST")
+    why = `Por qué se descartó:\n${bullets([...e.warnings, ...e.reasons])}`;
+  else if (!scored)
+    why = `Por qué no se avisó (no pasó los filtros obligatorios, así que no recibió score):\n${bullets(e.reasons)}`;
+  else if (!recommended)
+    why = `Por qué no se avisó:\n• Pasó los filtros, pero su score de ${e.score.toFixed(1)} quedó ${Math.max(0, config.reviewScore - e.score).toFixed(1)} puntos por debajo del mínimo de ${config.reviewScore} para avisar.`;
+  else
+    why = `Puntos a favor:\n${bullets(e.reasons)}${
+      e.warnings.length ? `\n\n⚠️ Advertencias:\n${bullets(e.warnings)}` : ""
+    }`;
+  const breakdown = scoreBreakdown(e.components, true);
+  const alerted = item.alerted
+    ? "✅ Se envió alerta"
+    : recommended
+      ? "No se registró alerta enviada"
+      : "No se envió alerta";
+
   return [
-    `Análisis: ${o.commercialName}`,
-    `Código: ${o.auctionCode}`,
-    `Monto: ${o.currency} ${(o.totalAmountCents / 100).toFixed(2)}`,
-    `Disponible: ${o.currency} ${(o.remainingAmountCents / 100).toFixed(2)}`,
-    `Retorno: ${o.annualReturnPct.toFixed(2)}% anual · Riesgo ${o.risk}`,
-    `Resultado: ${e.decision} · Score ${e.score.toFixed(1)}/100`,
-    `Umbral aplicable: ${threshold}/100 · Alertada: ${item.alerted ? "sí" : "no"}`,
-    passed.length ? `\nReglas cumplidas:\n• ${passed.join("\n• ")}` : "",
-    causes.length ? `\nPor qué no alertó / advertencias:\n• ${causes.join("\n• ")}` : "",
-    components ? `\nDesglose:\n${components}` : "",
-    "\nAnálisis basado en los datos guardados; la disponibilidad puede haber cambiado.",
-  ].filter(Boolean).join("\n");
+    `🔍 Análisis de la subasta ${o.auctionCode}`,
+    brief(item, now, undefined, true),
+    `${alerted} · avisa desde 🟡 ${config.reviewScore} (REVISAR) y 🔴 ${config.highPriorityScore} (INVERTIR)`,
+    why,
+    ...(breakdown ? [`Desglose del score:\n${breakdown}`] : []),
+    "Basado en los datos guardados por el monitor; la disponibilidad real puede haber cambiado.",
+  ].join("\n\n");
 }
 
 const errorLabels: Record<string, string> = {
@@ -519,7 +605,10 @@ const errorLabels: Record<string, string> = {
   RuntimeError: "error inesperado",
 };
 
-const SESSION_PAUSES = new Set(["SessionExpiredError", "SessionChallengeError"]);
+const SESSION_PAUSES = new Set([
+  "SessionExpiredError",
+  "SessionChallengeError",
+]);
 
 interface StatusConfig {
   enabled?: boolean;
@@ -563,13 +652,34 @@ function pauseAction(reason: string | null | undefined): string | null {
   return null;
 }
 
+/** Raw technical error text, shortened to what the owner can act on. */
+function errorDetail(message: string): string {
+  if (/Timeout \d+ms exceeded/.test(message))
+    return "Prestamype tardó demasiado en responder (tiempo de espera agotado).";
+  const firstLine = message.split(/\s+Call log:|\n/)[0]!.trim();
+  return firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine;
+}
+
 function lastErrorLines(cfg: StatusConfig, now: Date): string[] {
   const error = cfg.last_error;
   if (!error?.class) return ["Último error: ninguno registrado"];
   const at = error.timestamp ? ` · ${when(error.timestamp, now)}` : "";
+  // last_scan_at is written only when a scan finishes, so a later one means
+  // the error no longer applies.
+  const resolved =
+    error.timestamp !== undefined &&
+    cfg.last_scan_at !== undefined &&
+    Date.parse(cfg.last_scan_at) > Date.parse(error.timestamp);
+  if (resolved)
+    return [
+      `Último error: ${reasonLabel(error.class)}${at} · ya resuelto: el escaneo siguiente terminó bien`,
+    ];
+  // Known classes already read clearly in Spanish; their raw English message
+  // adds nothing. Unknown ones keep a short version of it.
+  const known = error.class in errorLabels && error.class !== "RuntimeError";
   return [
     `Último error: ${reasonLabel(error.class)}${at}`,
-    ...(error.message ? [`  ${error.message.slice(0, 200)}`] : []),
+    ...(error.message && !known ? [`  ${errorDetail(error.message)}`] : []),
   ];
 }
 
@@ -579,14 +689,16 @@ export function formatMonitorStatus(
   now = new Date(),
 ): string {
   const pause = activePause(cfg, now);
-  const reason = pause && cfg.pause_reason ? reasonLabel(cfg.pause_reason) : null;
+  const reason =
+    pause && cfg.pause_reason ? reasonLabel(cfg.pause_reason) : null;
   const state = !cfg.enabled
     ? "⛔ desactivado (/reanudar para activarlo)"
     : pause
       ? `⏸️ en pausa${reason ? ` por ${reason}` : ""}`
       : "✅ activo";
   const limit = cfg.costLimits?.monthlyGbSecondsLimit ?? 0;
-  const ratio = limit > 0 ? ` (${Math.round((usageGbSeconds / limit) * 100)}%)` : "";
+  const ratio =
+    limit > 0 ? ` (${Math.round((usageGbSeconds / limit) * 100)}%)` : "";
   const action = pause ? pauseAction(cfg.pause_reason) : null;
   return [
     `Monitor: ${state}`,
@@ -595,7 +707,7 @@ export function formatMonitorStatus(
     `Resultado: ${cfg.last_scan_summary ?? "sin registro"}`,
     ...lastErrorLines(cfg, now),
     ...(action ? [action] : []),
-    `Consumo del mes: ${usageGbSeconds.toFixed(0)} / ${limit} GB-s${ratio}, incluye la reserva de comandos.`,
+    `Consumo del mes: ${integerFormatter.format(usageGbSeconds)} / ${integerFormatter.format(limit)} GB-s${ratio}, incluido lo reservado para comandos`,
     "Horas en zona Lima (24 h).",
   ].join("\n");
 }
@@ -632,10 +744,10 @@ export function formatSessionStatus(
 }
 
 export function isOpportunityOpenInLima(
-  closesAt: string,
+  closesAt: string | null | undefined,
   now = new Date(),
 ): boolean {
-  const closeDate = closesAt.slice(0, 10);
+  const closeDate = (closesAt ?? "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(closeDate)) return false;
   const limaDate = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Lima",
@@ -645,85 +757,106 @@ export function isOpportunityOpenInLima(
   }).format(now);
   return closeDate >= limaDate;
 }
+export function formatHelp(admin: boolean): string {
+  const lines = [
+    "Comandos disponibles:",
+    "/oportunidades — las 5 mejores oportunidades abiertas ahora, con retorno, plazo e historial",
+    "/detalle ID — una oportunidad con el desglose de su score (el ID sale de /oportunidades)",
+    "/criterios — qué busca el monitor y cómo calcula el score",
+    "/ayuda — esta lista",
+  ];
+  if (admin)
+    lines.push(
+      "",
+      "Administración (solo en este chat privado):",
+      "/estado — estado del monitor, último escaneo, errores y consumo del mes",
+      "/sesionestado — si la sesión de Prestamype sigue siendo válida",
+      "/analizar CODIGO — por qué una subasta alertó o no (código de subasta de Prestamype)",
+      "/escanear — pide un escaneo ahora",
+      "/pausar — desactiva los escaneos automáticos",
+      "/reanudar — reactiva el monitor (no retira pausas de seguridad ni de presupuesto)",
+      "/recuperar — retira una pausa por sesión o por cambio en la página y escanea",
+      "/actualizarportafolio — vuelve a leer tu portafolio en el próximo escaneo",
+      "",
+      "Límites: 1 comando cada 3 s y 2.000 al mes entre todos. Escaneos manuales: 1 cada 10 min, máximo 5 al día.",
+    );
+  return lines.join("\n");
+}
+
 async function execute(
   command: string,
   argument: string,
   admin: boolean,
 ): Promise<string> {
-  if (command === "ayuda" || command === "start")
-    return (
-      "Consultas de datos guardados:\n/oportunidades — las 5 mejores abiertas ahora, con retorno, plazo e historial\n/detalle ID — una oportunidad con su desglose de score (el ID sale de /oportunidades)\n/criterios — qué busca el monitor y cómo se calcula el score\n/ayuda — este mensaje" +
-      (admin
-        ? "\n\nAdministración privada:\n/analizar CODIGO\n/estado\n/sesionestado\n/actualizarportafolio\n/escanear\n/pausar\n/reanudar\n/recuperar\n\nLímites: 1 comando cada 3 s; 2.000/mes entre todos. Escaneos manuales: 1 cada 10 min, máximo 5/día."
-        : "")
-    );
+  if (command === "ayuda" || command === "start") return formatHelp(admin);
   if (command === "detalle") {
     if (!/^[a-f0-9]{32}$/.test(argument))
-      return "Uso: /detalle ID (copia el ID de /oportunidades).";
+      return "Uso: /detalle ID\nEl ID aparece debajo de cada oportunidad en /oportunidades.";
     const item = await get(key(`OPPORTUNITY#${argument}`));
     if (!item?.opportunity || !item.evaluation)
-      return "Oportunidad no registrada.";
+      return "No encontré una oportunidad con ese ID. Cópialo tal cual desde /oportunidades.";
     // Concentration is derived from the owner's portfolio and must never be exposed.
-    const components = Object.entries(
+    const breakdown = scoreBreakdown(
       item.evaluation.components as Record<string, number>,
-    )
-      .filter(([name]) => admin || name !== "concentration")
-      .map(
-        ([name, points]) =>
-          `• ${componentLabels[name] ?? name}: ${points.toFixed(1)}${componentMaximums[name] ? ` / ${componentMaximums[name]}` : ""}`,
-      )
-      .join("\n");
-    return (
-      brief(item as StoredOpportunity, new Date()) +
-      "\n\nDesglose del score:\n" +
-      components +
-      "\n\nInformación guardada; la disponibilidad puede haber cambiado."
+      admin,
     );
+    return [
+      brief(item as StoredOpportunity, new Date(), undefined, false),
+      breakdown
+        ? `Desglose del score:\n${breakdown}`
+        : "Sin desglose: no pasó los filtros obligatorios, así que no recibió score.",
+      "Datos guardados por el monitor: confirma la disponibilidad real en Prestamype antes de decidir.",
+    ].join("\n\n");
   }
   const cfg = await get(configKey);
-  if (!cfg?.monitor) return "Configuración no disponible.";
+  if (!cfg?.monitor)
+    return "El monitor todavía no tiene configuración guardada.";
   const monitor = cfg.monitor as MonitorConfig;
   if (command === "analizar") {
     if (!/^[A-Za-z0-9]{4,32}$/.test(argument))
-      return "Uso: /analizar CODIGO (usa el código de subasta mostrado por Prestamype).";
+      return "Uso: /analizar CODIGO\nUsa el código de subasta que muestra Prestamype (por ejemplo, /analizar XGI0Hlf2).";
+    const analysis = (found: Record<string, unknown>) =>
+      formatOpportunityAnalysis(
+        found as StoredOpportunity & { alerted?: boolean },
+        monitor,
+      );
+    // AUCTION#<code> pointer written with every save (and backfilled for older
+    // records): two key reads instead of filtering the whole 1-RCU index,
+    // which the scan keeps busy and which throttled this command.
+    const pointer = await get(key(`AUCTION#${argument}`));
+    if (typeof pointer?.id === "string") {
+      const item = await get(key(`OPPORTUNITY#${pointer.id}`));
+      if (item?.opportunity && item.evaluation) return analysis(item);
+    }
+    return "No encontré ese código entre las oportunidades guardadas. Revisa mayúsculas y minúsculas: el código distingue entre ellas.";
+  }
+  if (command === "criterios") return formatCriteria(monitor);
+  if (command === "oportunidades") {
+    // Index sort key "C#<close date>#<id>": read only auctions closing today
+    // or later instead of the whole history (see opportunityIndexSortKey).
+    const rows: NonNullable<QueryCommandOutput["Items"]> = [];
     let cursor: Record<string, unknown> | undefined;
     for (let page = 0; page < 10; page += 1) {
-      const result = await db.send(new QueryCommand({
-        TableName: required("TABLE_NAME"),
-        IndexName: "EntityTypeIndex",
-        KeyConditionExpression: "GSI1PK = :type",
-        FilterExpression: "opportunity.auctionCode = :code",
-        ExpressionAttributeValues: { ":type": "OPPORTUNITY", ":code": argument },
-        ProjectionExpression: "opportunity,evaluation,alerted,detailCheckedAt",
-        ExclusiveStartKey: cursor,
-        Limit: 100,
-      }));
-      const found = result.Items?.find((item) => item.opportunity && item.evaluation);
-      if (found)
-        return formatOpportunityAnalysis(found as {
-          opportunity: Opportunity;
-          evaluation: Evaluation;
-          alerted?: boolean;
-        }, monitor);
+      const result = await db.send(
+        new QueryCommand({
+          TableName: required("TABLE_NAME"),
+          IndexName: "EntityTypeIndex",
+          KeyConditionExpression:
+            "GSI1PK = :type AND GSI1SK BETWEEN :from AND :to",
+          ExpressionAttributeValues: {
+            ":type": "OPPORTUNITY",
+            ":from": `C#${limaToday(new Date())}`,
+            ":to": "C#9999",
+          },
+          ProjectionExpression: "opportunity,evaluation,detailCheckedAt",
+          ExclusiveStartKey: cursor,
+        }),
+      );
+      rows.push(...(result.Items ?? []));
       cursor = result.LastEvaluatedKey;
       if (!cursor) break;
     }
-    return "No encontré ese código entre las oportunidades guardadas. Revisa mayúsculas y minúsculas.";
-  }
-  if (command === "criterios")
-    return formatCriteria(monitor);
-  if (command === "oportunidades") {
-    const result = await db.send(
-      new QueryCommand({
-        TableName: required("TABLE_NAME"),
-        IndexName: "EntityTypeIndex",
-        KeyConditionExpression: "GSI1PK = :type",
-        ExpressionAttributeValues: { ":type": "OPPORTUNITY" },
-        Limit: 100,
-        ProjectionExpression: "opportunity,evaluation,detailCheckedAt",
-      }),
-    );
-    const items = (result.Items ?? [])
+    const items = rows
       .filter(
         (item) =>
           item.opportunity &&
@@ -740,7 +873,46 @@ async function execute(
       items.length ? undefined : lastAlertFrom(cfg),
     );
   }
-  if (!admin) return "Comando no autorizado.";
+  if (!admin)
+    return "Ese comando solo está disponible en el chat privado del administrador.";
+  const status = cfg as StatusConfig;
+  const now = new Date();
+  const pause = activePause(status, now);
+  const pauseLabel = status.pause_reason
+    ? reasonLabel(status.pause_reason)
+    : "motivo no registrado";
+  // A timed pause that already ended is not a pause: clear it while turning
+  // the monitor on, but only if nobody replaced it in the meantime.
+  const enableClearingExpiredPause = () =>
+    db.send(
+      new UpdateCommand({
+        TableName: required("TABLE_NAME"),
+        Key: configKey,
+        UpdateExpression: status.paused_until
+          ? "SET enabled = :yes REMOVE paused_until, pause_reason"
+          : "SET enabled = :yes",
+        ConditionExpression: status.paused_until
+          ? "attribute_exists(PK) AND paused_until = :seen"
+          : "attribute_exists(PK) AND (attribute_not_exists(paused_until) OR paused_until = :null)",
+        ExpressionAttributeValues: status.paused_until
+          ? { ":yes": true, ":seen": status.paused_until }
+          : { ":yes": true, ":null": null },
+      }),
+    );
+  const requestScan = () =>
+    lambda.send(
+      new InvokeCommand({
+        FunctionName: required("SCAN_FUNCTION_NAME"),
+        InvocationType: "Event",
+        Payload: Buffer.from(
+          JSON.stringify({
+            kind: "telegram-scan",
+            schemaVersion: 1,
+            replyChatId: required("TELEGRAM_OWNER_ID"),
+          }),
+        ),
+      }),
+    );
   if (command === "actualizarportafolio") {
     await db.send(
       new UpdateCommand({
@@ -753,22 +925,28 @@ async function execute(
         },
       }),
     );
-    return "Actualización de portafolio solicitada. Se aplicará en el próximo escaneo.";
+    const blocked = !status.enabled
+      ? "\nEl monitor está desactivado: se hará cuando lo reactives con /reanudar."
+      : pause
+        ? `\nEl monitor está en pausa por ${pauseLabel}: se hará cuando se retire la pausa.`
+        : "";
+    return `Listo: tu portafolio se volverá a leer en el próximo escaneo.${blocked}`;
   }
   if (command === "estado") {
-    const usage = await get(
-      key(`USAGE#${new Date().toISOString().slice(0, 7)}`),
-    );
+    const usage = await get(key(`USAGE#${now.toISOString().slice(0, 7)}`));
     const gb =
-      ((usage?.durationMs ?? 0) / 1000) * cfg.costLimits.configuredMemoryGb +
+      ((usage?.durationMs ?? 0) / 1000) *
+        (status.costLimits?.configuredMemoryGb ?? 0) +
       (usage?.commandGbSeconds ?? 0);
-    return formatMonitorStatus(cfg as StatusConfig, gb);
+    return formatMonitorStatus(status, gb, now);
   }
   if (command === "sesion-estado" || command === "sesionestado") {
     const session = await get({ PK: "SESSION", SK: "PRESTAMYPE" });
-    return formatSessionStatus(cfg as StatusConfig, session !== undefined);
+    return formatSessionStatus(status, session !== undefined, now);
   }
   if (command === "pausar") {
+    if (!status.enabled)
+      return "El monitor ya estaba desactivado. Usa /reanudar para reactivarlo.";
     await db.send(
       new UpdateCommand({
         TableName: required("TABLE_NAME"),
@@ -778,78 +956,48 @@ async function execute(
         ExpressionAttributeValues: { ":no": false },
       }),
     );
-    return "Monitor desactivado. Una ejecución que ya empezó puede terminar. Usa /reanudar para activarlo.";
+    return "Monitor desactivado: no habrá escaneos automáticos. Si había uno en curso, terminará normalmente. Usa /reanudar para reactivarlo.";
   }
   if (command === "reanudar") {
-    if (cfg.paused_until)
-      return "Existe una pausa de seguridad o presupuesto. Revisa /estado y resuelve su causa; este comando no la elimina.";
-    await db.send(
-      new UpdateCommand({
-        TableName: required("TABLE_NAME"),
-        Key: configKey,
-        UpdateExpression: "SET enabled = :yes",
-        ConditionExpression:
-          "attribute_exists(PK) AND (attribute_not_exists(paused_until) OR paused_until = :null)",
-        ExpressionAttributeValues: { ":yes": true, ":null": null },
-      }),
-    );
-    return "Monitor activado. Se ejecutará según el horario configurado.";
+    if (pause)
+      return `No lo reactivé: hay una pausa por ${pauseLabel} (${pause}). /reanudar no retira pausas de seguridad ni de presupuesto.\n${pauseAction(status.pause_reason) ?? "Revisa /estado para ver qué hacer."}`;
+    if (status.enabled && !status.paused_until)
+      return "El monitor ya estaba activo. Usa /estado para ver el último escaneo.";
+    await enableClearingExpiredPause();
+    return "Monitor activado. Escaneará automáticamente según el horario configurado.";
   }
   if (command === "recuperar") {
+    if (!pause)
+      return "No hay ninguna pausa que retirar. Si quieres un escaneo ahora, usa /escanear.";
     const recoverable = new Set([
       "SessionExpiredError",
       "SessionChallengeError",
       "PageStructureError",
     ]);
-    if (
-      cfg.paused_until &&
-      cfg.pause_reason &&
-      !recoverable.has(String(cfg.pause_reason))
-    )
-      return `No se retiro la pausa ${cfg.pause_reason}. Resuelve primero la causa y usa /reanudar.`;
+    if (!recoverable.has(String(status.pause_reason)))
+      return `No retiré la pausa: es por ${pauseLabel} y /recuperar solo retira pausas por sesión o por cambio en la página.\n${pauseAction(status.pause_reason) ?? "Revisa /estado para ver qué hacer."}`;
     await db.send(
       new UpdateCommand({
         TableName: required("TABLE_NAME"),
         Key: configKey,
-        UpdateExpression: "SET enabled = :yes REMOVE paused_until, pause_reason",
+        UpdateExpression:
+          "SET enabled = :yes REMOVE paused_until, pause_reason",
         ConditionExpression: "attribute_exists(PK)",
         ExpressionAttributeValues: { ":yes": true },
       }),
     );
-    await lambda.send(
-      new InvokeCommand({
-        FunctionName: required("SCAN_FUNCTION_NAME"),
-        InvocationType: "Event",
-        Payload: Buffer.from(
-          JSON.stringify({
-            kind: "telegram-scan",
-            schemaVersion: 1,
-            replyChatId: required("TELEGRAM_OWNER_ID"),
-          }),
-        ),
-      }),
-    );
-    return "Pausa recuperable retirada y escaneo solicitado. Si la sesión sigue expirada, recaptúrala manualmente; Telegram te avisará y volverá a pausar el monitor.";
+    await requestScan();
+    return `Pausa por ${pauseLabel} retirada y escaneo solicitado. Te enviaré el resultado aquí. Si el problema sigue, el monitor volverá a pausarse y te avisaré.`;
   }
   if (command === "escanear") {
-    if (!cfg.enabled || cfg.paused_until)
-      return "Escaneo no solicitado: monitor desactivado o con pausa. Consulta /estado.";
-    await lambda.send(
-      new InvokeCommand({
-        FunctionName: required("SCAN_FUNCTION_NAME"),
-        InvocationType: "Event",
-        Payload: Buffer.from(
-          JSON.stringify({
-            kind: "telegram-scan",
-            schemaVersion: 1,
-            replyChatId: required("TELEGRAM_OWNER_ID"),
-          }),
-        ),
-      }),
-    );
-    return "Escaneo solicitado. Recibirás el resultado al finalizar; puede omitirse si ya existe otro escaneo o una pausa.";
+    if (!status.enabled)
+      return "No pedí el escaneo: el monitor está desactivado. Usa /reanudar primero.";
+    if (pause)
+      return `No pedí el escaneo: el monitor está en pausa por ${pauseLabel} (${pause}).\n${pauseAction(status.pause_reason) ?? "Revisa /estado para ver qué hacer."}`;
+    await requestScan();
+    return "Escaneo solicitado. Te enviaré el resultado aquí al terminar (suele tardar hasta 2 minutos). Si ya había otro escaneo en curso, este se omite.";
   }
-  return "Usa /ayuda.";
+  return "No reconozco ese comando. Usa /ayuda para ver la lista.";
 }
 export async function handler(event: WebhookEvent) {
   try {

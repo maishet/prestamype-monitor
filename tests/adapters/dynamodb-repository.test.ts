@@ -304,8 +304,65 @@ describe("DynamoRepository", () => {
     ).toEqual(["RUC#20123456789", "NAME#LERIBE"]);
   });
 
+  it("writes an AUCTION#code pointer without GSI keys after saving an opportunity", async () => {
+    const aws = client();
+    const repository = new DynamoRepository({ client: aws, tableName });
+    await repository.saveOpportunity(opportunity, evaluation, {
+      visibleFingerprint: "fp",
+      detailCheckedAt: "2026-08-30T00:00:00.000Z",
+    });
+    expect(aws.send).toHaveBeenCalledTimes(2);
+    expect((aws.send.mock.calls[1]![0] as PutCommand).input.Item).toEqual({
+      PK: "AUCTION#M5dGmP0G",
+      SK: "AUCTION#M5dGmP0G",
+      id: "opp-1",
+    });
+  });
+
+  it("treats the auction pointer as best effort and skips unusual codes", async () => {
+    const failing = {
+      send: vi.fn(async (command: DynamoCommand) => {
+        if ((command as PutCommand).input.Item?.PK === "AUCTION#M5dGmP0G")
+          throw new Error("throttled");
+        return {};
+      }),
+    };
+    await expect(
+      new DynamoRepository({ client: failing, tableName }).saveOpportunity(
+        opportunity,
+        evaluation,
+        { visibleFingerprint: "fp", detailCheckedAt: "x" },
+      ),
+    ).resolves.toBeUndefined();
+
+    const aws = client();
+    await new DynamoRepository({ client: aws, tableName }).saveOpportunity(
+      { ...opportunity, auctionCode: "bad code!" },
+      evaluation,
+      { visibleFingerprint: "fp", detailCheckedAt: "x" },
+    );
+    expect(aws.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not write the auction pointer when the opportunity save fails", async () => {
+    const aws = {
+      send: vi.fn(async () => {
+        throw new Error("boom");
+      }),
+    };
+    await expect(
+      new DynamoRepository({ client: aws, tableName }).saveOpportunity(
+        opportunity,
+        evaluation,
+        { visibleFingerprint: "fp", detailCheckedAt: "x" },
+      ),
+    ).rejects.toBeInstanceOf(DynamoRepositoryError);
+    expect(aws.send).toHaveBeenCalledTimes(1);
+  });
+
   it("stores GSI keys and queries paginated structured opportunity fingerprints without scanning", async () => {
     const aws = client(
+      {},
       {},
       {
         Items: [
@@ -332,7 +389,8 @@ describe("DynamoRepository", () => {
         PK: "OPPORTUNITY#opp-1",
         SK: "OPPORTUNITY#opp-1",
         GSI1PK: "OPPORTUNITY",
-        GSI1SK: "opp-1",
+        // Sorted by close date so /oportunidades can read only open ones.
+        GSI1SK: "C#2026-09-01#opp-1",
         opportunity,
         evaluation,
         visibleFingerprint: "fp",
@@ -347,7 +405,8 @@ describe("DynamoRepository", () => {
         alerted: false,
       },
     });
-    const firstQuery = aws.send.mock.calls[1]![0];
+    // calls[1] is the AUCTION#code pointer written by saveOpportunity.
+    const firstQuery = aws.send.mock.calls[2]![0];
     expect(firstQuery).toBeInstanceOf(QueryCommand);
     expect((firstQuery as QueryCommand).input).toMatchObject({
       IndexName: "EntityTypeIndex",
@@ -355,7 +414,7 @@ describe("DynamoRepository", () => {
       ExpressionAttributeValues: { ":opportunity": "OPPORTUNITY" },
     });
     expect(
-      (aws.send.mock.calls[2]![0] as QueryCommand).input.ExclusiveStartKey,
+      (aws.send.mock.calls[3]![0] as QueryCommand).input.ExclusiveStartKey,
     ).toEqual({
       PK: "OPPORTUNITY#opp-1",
       SK: "OPPORTUNITY#opp-1",
@@ -514,7 +573,8 @@ describe("DynamoRepository", () => {
   });
 
   it("enforces Dynamo PK/SK UTF-8 byte limits after adding prefixes", async () => {
-    const prefixBytes = Buffer.byteLength("OPPORTUNITY#", "utf8");
+    // The longest prefix an id gets is the index sort key "C#YYYY-MM-DD#".
+    const prefixBytes = Buffer.byteLength("C#2026-09-01#", "utf8");
     const maximumAsciiId = "a".repeat(1_024 - prefixBytes);
     const aws = client({});
     const repository = new DynamoRepository({ client: aws, tableName });
@@ -523,7 +583,8 @@ describe("DynamoRepository", () => {
       evaluation,
       { visibleFingerprint: "fp", detailCheckedAt: "x" },
     );
-    expect(aws.send).toHaveBeenCalledTimes(1);
+    // Opportunity item plus its AUCTION#code pointer.
+    expect(aws.send).toHaveBeenCalledTimes(2);
 
     aws.send.mockClear();
     for (const id of [

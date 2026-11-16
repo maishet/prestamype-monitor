@@ -373,7 +373,8 @@
                         "CONFIG",
                         "SESSION",
                         "USAGE#*",
-                        "OPPORTUNITY#*"
+                        "OPPORTUNITY#*",
+                        "AUCTION#*"
                       ]
                     }
                   }

@@ -38,6 +38,8 @@ describe("SAM infrastructure", () => {
     // it exists; it cannot read the session encryption key from SSM.
     expect(policy).toContain('"SESSION"');
     expect(policy).toContain("dynamodb:LeadingKeys");
+    // /analizar resolves auction codes through AUCTION#<code> pointers.
+    expect(policy).toContain('"AUCTION#*"');
     expect(policy).toContain("lambda:InvokeFunction");
   });
   it("configures one bounded Node 22 scan function", () => {

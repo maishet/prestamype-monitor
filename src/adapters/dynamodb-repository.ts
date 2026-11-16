@@ -82,6 +82,22 @@ const MAX_ITEM_BYTES = 380 * 1_024;
 const MAX_READ_PAGES = 1_000;
 const MAX_PK_BYTES = 2_048;
 const MAX_SK_BYTES = 1_024;
+/** Same shape /analizar accepts; anything else gets no lookup pointer. */
+const AUCTION_CODE = /^[A-Za-z0-9]{4,32}$/;
+
+/**
+ * GSI1SK = "C#<close date>#<id>", so /oportunidades can read only auctions
+ * closing today or later instead of the whole index. Unknown close dates sort
+ * first and are never "open". Older records keep the bare id; it never starts
+ * with "C#" (ids are lowercase hex), so they stay out of that range query.
+ */
+export function opportunityIndexSortKey(
+  opportunity: Pick<Opportunity, "id" | "closesAt">,
+): string {
+  const date =
+    /^\d{4}-\d{2}-\d{2}/.exec(opportunity.closesAt ?? "")?.[0] ?? "0000-00-00";
+  return `C#${date}#${opportunity.id}`;
+}
 const SAFE_AWS_ERROR_NAMES = new Set([
   "AbortError",
   "AccessDeniedException",
@@ -515,7 +531,10 @@ export class DynamoRepository implements MonitorRepository, SessionStore {
         `OPPORTUNITY#${opportunity.id}`,
         `OPPORTUNITY#${opportunity.id}`,
       );
-      const indexKey = dynamoKey("OPPORTUNITY", opportunity.id);
+      const indexKey = dynamoKey(
+        "OPPORTUNITY",
+        opportunityIndexSortKey(opportunity),
+      );
       const item = {
         ...primaryKey,
         GSI1PK: indexKey.PK,
@@ -538,6 +557,33 @@ export class DynamoRepository implements MonitorRepository, SessionStore {
       );
     } catch (error) {
       wrap(error);
+    }
+    await this.#saveAuctionLookup(opportunity);
+  }
+
+  /**
+   * Small code→id pointer so /analizar resolves an auction code with two key
+   * reads instead of filtering the whole 1-RCU index. It carries no GSI keys,
+   * so it never consumes index capacity. Best effort: the opportunity is
+   * already saved, and a missing pointer only falls back to the slow lookup.
+   */
+  async #saveAuctionLookup(opportunity: Opportunity): Promise<void> {
+    if (!AUCTION_CODE.test(opportunity.auctionCode)) return;
+    try {
+      await this.#send(
+        new PutCommand({
+          TableName: this.#tableName,
+          Item: {
+            ...dynamoKey(
+              `AUCTION#${opportunity.auctionCode}`,
+              `AUCTION#${opportunity.auctionCode}`,
+            ),
+            id: opportunity.id,
+          },
+        }),
+      );
+    } catch {
+      // Intentionally ignored; see method comment.
     }
   }
 
