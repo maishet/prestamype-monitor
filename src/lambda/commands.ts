@@ -504,17 +504,15 @@ export function formatCriteria(monitor: MonitorConfig): string {
     PEN: "soles (PEN)",
     USD: "dólares (USD)",
   };
-  const protectedMinimum =
-    monitor.minimumProtectedAnnualReturnPct !== undefined
-      ? `\n   (las protegidas piden mínimo ${monitor.minimumProtectedAnnualReturnPct}%)`
-      : "";
+  // No separate minimum for protected auctions here: the evaluator applies
+  // minimumAnnualReturnPct to every risk, protected included.
   return [
     "Qué busca el monitor",
     "",
     "Filtros obligatorios (si falla uno, la oportunidad se descarta):",
     `• Moneda: ${monitor.allowedCurrencies.map((c) => currencyNames[c] ?? c).join(" o ")}`,
     `• Riesgo: ${monitor.allowedRisks.map((risk) => (risk === "PROTEGIDA" ? "Protegida" : risk)).join(", ")}`,
-    `• Retorno anual mínimo: ${monitor.minimumAnnualReturnPct}%${protectedMinimum}`,
+    `• Retorno anual mínimo: ${monitor.minimumAnnualReturnPct}%`,
     `• Monto disponible mínimo: ${moneyFormatter.format(monitor.minimumInvestmentCents / 100)} (en la moneda de la oportunidad)`,
     "• Sin coincidencias con lista negra ni señales de cobranza problemática",
     "",

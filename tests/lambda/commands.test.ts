@@ -434,6 +434,20 @@ describe("public opportunity messages", () => {
     expect(text).toContain("REVISAR: score desde 65");
     expect(text).toContain("INVERTIR: score desde 80");
   });
+  it("does not advertise a protected minimum the evaluator does not apply", () => {
+    const text = formatCriteria({
+      allowedCurrencies: ["PEN"],
+      allowedRisks: ["A", "PROTEGIDA"],
+      minimumAnnualReturnPct: 16,
+      minimumProtectedAnnualReturnPct: 5,
+      minimumInvestmentCents: 10_000,
+      reviewScore: 65,
+      highPriorityScore: 80,
+    });
+    expect(text).toContain("Retorno anual mínimo: 16%\n");
+    expect(text).not.toContain("protegidas piden");
+    expect(text).toContain("Riesgo: A, Protegida");
+  });
 });
 
 describe("help and evaluator text", () => {
