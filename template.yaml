@@ -270,7 +270,7 @@
           "Schedule": {
             "Type": "Schedule",
             "Properties": {
-              "Schedule": "cron(0/2 14-23 ? * MON-FRI *)",
+              "Schedule": "cron(0/4 14-23 ? * MON-FRI *)",
               "Name": {
                 "Fn::Sub": "${AWS::StackName}-scan-schedule"
               },
