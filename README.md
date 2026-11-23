@@ -45,11 +45,11 @@
 
 ## ⚙️ Cómo funciona
 
-De lunes a viernes, EventBridge programa un escaneo cada 2 minutos entre las 09:00 y las 18:57, hora de Lima. Lambda adquiere un bloqueo en DynamoDB, valida que el monitor esté habilitado y dentro de sus límites, consulta las páginas permitidas, evalúa oportunidades nuevas o modificadas y envía las alertas por Telegram.
+De lunes a viernes, EventBridge programa un escaneo cada 4 minutos entre las 09:00 y las 18:56, hora de Lima. Lambda adquiere un bloqueo en DynamoDB, valida que el monitor esté habilitado y dentro de sus límites, consulta las páginas permitidas, evalúa oportunidades nuevas o modificadas y envía las alertas por Telegram.
 
 ```mermaid
 flowchart LR
-    EB["EventBridge<br/>L–V · cada 2 min"] --> L["AWS Lambda<br/>Node.js 22 + Playwright"]
+    EB["EventBridge<br/>L–V · cada 4 min"] --> L["AWS Lambda<br/>Node.js 22 + Playwright"]
     L <--> D[("DynamoDB<br/>config · sesión cifrada<br/>bloqueo · alertas")]
     L --> SSM[["SSM Parameter Store<br/>secretos y clave de sesión"]]
     L --> PM["Prestamype<br/>navegación de solo lectura"]

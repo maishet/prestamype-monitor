@@ -64,8 +64,9 @@ const CREDITS_REMINDER_ID = "credits-2027-03-02";
 const CREDITS_REMINDER_FROM = Date.parse("2027-02-01T00:00:00Z");
 const CREDITS_REMINDER_MESSAGE =
   "Recordatorio: los créditos gratuitos de AWS vencen el 2 de marzo de 2027. " +
-  "Antes de esa fecha baja costLimits.monthlyGbSecondsLimit a 400000 y/o pasa el escaneo a cada 4 minutos " +
-  "(cron(0/4 14-23 ? * MON-FRI *) en template.yaml), o decide pasar la cuenta a un plan de pago.";
+  "Antes de esa fecha baja costLimits.monthlyGbSecondsLimit a 400000 (el tope gratuito perpetuo de Lambda) " +
+  "y, si el consumo mensual no cabe, espacia más el escaneo (hoy cron(0/4 14-23 ? * MON-FRI *) en template.yaml), " +
+  "o decide pasar la cuenta a un plan de pago.";
 
 export interface ScanRuntimeStore {
   loadConfig(): Promise<ScanRuntimeConfig | null>;

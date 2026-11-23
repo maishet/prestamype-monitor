@@ -99,18 +99,24 @@ function hasBlacklistIdentity(
   );
 }
 
+// Sanitised AWS error metadata (name, statusCode, requestId) that adapters
+// attach to their errors; without it a transient DynamoDB failure is opaque.
+function describeError(item: unknown): string {
+  if (!(item instanceof Error)) return String(item);
+  const metadata = (item as { metadata?: unknown }).metadata;
+  const suffix =
+    typeof metadata === "object" && metadata !== null
+      ? ` ${JSON.stringify(metadata)}`
+      : "";
+  return `${item.name}: ${item.message}${suffix}`;
+}
+
 function collectError(errors: unknown[], error: unknown): void {
   errors.push(error);
   const detail =
     error instanceof AggregateError
-      ? error.errors.map((item) =>
-          item instanceof Error
-            ? `${item.name}: ${item.message}`
-            : String(item),
-        )
-      : error instanceof Error
-        ? `${error.name}: ${error.message}`
-        : String(error);
+      ? error.errors.map(describeError)
+      : describeError(error);
   console.error("Monitor error", detail);
 }
 
