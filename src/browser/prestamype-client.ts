@@ -121,7 +121,10 @@ export interface LocatorLike {
 }
 
 export interface PageLike {
-  goto(url: string): Promise<{ status(): number } | null>;
+  goto(
+    url: string,
+    options?: { waitUntil?: "load" | "domcontentloaded" },
+  ): Promise<{ status(): number } | null>;
   close?(): Promise<void>;
   url(): string;
   content(): Promise<string>;
@@ -1437,7 +1440,14 @@ export class PrestamypeClient implements OpportunitySource {
     const url = new URL(path, ORIGIN);
     if (!isAllowedNavigation(url))
       throw new PageStructureError("INVALID_URL", "navigation");
-    let response = await this.withDeadline(page.goto(url.href), deadline);
+    // The SPA renders after DOMContentLoaded and every caller waits for its own
+    // content. Waiting for `load` as well made a slow third-party resource
+    // burn the whole 12 s navigation budget before the table could appear.
+    const options = { waitUntil: "domcontentloaded" } as const;
+    let response = await this.withDeadline(
+      page.goto(url.href, options),
+      deadline,
+    );
     let status = response?.status();
     console.info("Navigated", JSON.stringify({ path, status: status ?? null }));
     if (status !== undefined && status >= 500) {
@@ -1445,7 +1455,10 @@ export class PrestamypeClient implements OpportunitySource {
       // which used to read as a changed page and pause the monitor until a
       // person sent /recuperar. One retry, then leave it to the next tick.
       await this.withDeadline(this.sleep(2_000), deadline);
-      response = await this.withDeadline(page.goto(url.href), deadline);
+      response = await this.withDeadline(
+        page.goto(url.href, options),
+        deadline,
+      );
       status = response?.status();
       console.info(
         "Navigated",
